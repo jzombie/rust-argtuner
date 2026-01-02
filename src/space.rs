@@ -1,0 +1,475 @@
+use crate::constants::HP_PREFIX;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SearchSpace {
+    pub params: Vec<ParamSpec>,
+}
+
+impl SearchSpace {
+    pub fn dims(&self) -> usize {
+        self.params.len()
+    }
+
+    pub fn validate_specs(&self) -> Result<(), String> {
+        for spec in &self.params {
+            spec.validate_spec()?;
+        }
+        Ok(())
+    }
+
+    pub fn values_from_unit(&self, coords: &[f64]) -> HashMap<String, String> {
+        let mut out = HashMap::new();
+        for (spec, coord) in self.params.iter().zip(coords.iter().cloned()) {
+            let value = spec.value_from_unit(coord);
+            out.insert(spec.name().to_string(), value);
+        }
+        out
+    }
+
+    pub fn fields_from_unit(&self, coords: &[f64]) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for (spec, coord) in self.params.iter().zip(coords.iter().cloned()) {
+            let value = spec.value_from_unit(coord);
+            out.insert(format!("{}{}", HP_PREFIX, spec.name()), value);
+        }
+        out
+    }
+
+    pub fn validate_value(&self, name: &str, value: &str) -> bool {
+        if let Some(spec) = self.params.iter().find(|p| p.name() == name) {
+            spec.validate(value)
+        } else {
+            // Unknown parameter, assume valid (or invalid? usually we ignore unknown params)
+            true
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "ParamSpecPre")]
+#[serde(tag = "type")]
+pub enum ParamSpec {
+    Float {
+        name: String,
+        min: f64,
+        max: f64,
+        #[serde(default, alias = "log")]
+        log_scale: bool,
+        #[serde(default)]
+        step: Option<f64>,
+        #[serde(default)]
+        format: Option<String>,
+    },
+    Int {
+        name: String,
+        min: i64,
+        max: i64,
+        #[serde(default)]
+        step: Option<i64>,
+    },
+    Choice {
+        name: String,
+        values: Vec<String>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ParamSpecPre {
+    Tagged(TaggedParamSpec),
+    Int {
+        name: String,
+        min: i64,
+        max: i64,
+        #[serde(default)]
+        step: Option<i64>,
+    },
+    Float {
+        name: String,
+        min: f64,
+        max: f64,
+        #[serde(default, alias = "log")]
+        log_scale: bool,
+        #[serde(default)]
+        step: Option<f64>,
+        #[serde(default)]
+        format: Option<String>,
+    },
+    Choice {
+        name: String,
+        #[serde(default)]
+        values: Vec<serde_json::Value>,
+        #[serde(default)]
+        value: Option<serde_json::Value>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum TaggedParamSpec {
+    Float {
+        name: String,
+        min: f64,
+        max: f64,
+        #[serde(default, alias = "log")]
+        log_scale: bool,
+        #[serde(default)]
+        step: Option<f64>,
+        #[serde(default)]
+        format: Option<String>,
+    },
+    Int {
+        name: String,
+        min: i64,
+        max: i64,
+        #[serde(default)]
+        step: Option<i64>,
+    },
+    Choice {
+        name: String,
+        #[serde(default)]
+        values: Vec<serde_json::Value>,
+        #[serde(default)]
+        value: Option<serde_json::Value>,
+    },
+}
+
+impl From<ParamSpecPre> for ParamSpec {
+    fn from(pre: ParamSpecPre) -> Self {
+        match pre {
+            ParamSpecPre::Tagged(tagged) => match tagged {
+                TaggedParamSpec::Float {
+                    name,
+                    min,
+                    max,
+                    log_scale,
+                    step,
+                    format,
+                } => ParamSpec::Float {
+                    name,
+                    min,
+                    max,
+                    log_scale,
+                    step,
+                    format,
+                },
+                TaggedParamSpec::Int {
+                    name,
+                    min,
+                    max,
+                    step,
+                } => ParamSpec::Int {
+                    name,
+                    min,
+                    max,
+                    step,
+                },
+                TaggedParamSpec::Choice {
+                    name,
+                    values,
+                    value,
+                } => ParamSpec::Choice {
+                    name,
+                    values: resolve_values(values, value),
+                },
+            },
+            ParamSpecPre::Choice {
+                name,
+                values,
+                value,
+            } => ParamSpec::Choice {
+                name,
+                values: resolve_values(values, value),
+            },
+            ParamSpecPre::Int {
+                name,
+                min,
+                max,
+                step,
+            } => ParamSpec::Int {
+                name,
+                min,
+                max,
+                step,
+            },
+            ParamSpecPre::Float {
+                name,
+                min,
+                max,
+                log_scale,
+                step,
+                format,
+            } => ParamSpec::Float {
+                name,
+                min,
+                max,
+                log_scale,
+                step,
+                format,
+            },
+        }
+    }
+}
+
+fn resolve_values(values: Vec<serde_json::Value>, value: Option<serde_json::Value>) -> Vec<String> {
+    if let Some(v) = value {
+        vec![value_to_string(v)]
+    } else {
+        values_to_strings(values)
+    }
+}
+
+fn value_to_string(v: serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Null => "null".to_string(),
+        _ => v.to_string(),
+    }
+}
+
+fn values_to_strings(values: Vec<serde_json::Value>) -> Vec<String> {
+    values.into_iter().map(value_to_string).collect()
+}
+
+impl ParamSpec {
+    pub fn name(&self) -> &str {
+        match self {
+            ParamSpec::Float { name, .. } => name,
+            ParamSpec::Int { name, .. } => name,
+            ParamSpec::Choice { name, .. } => name,
+        }
+    }
+
+    pub fn validate_spec(&self) -> Result<(), String> {
+        match self {
+            ParamSpec::Float {
+                name,
+                log_scale,
+                step,
+                ..
+            } => {
+                if *log_scale && step.is_some() {
+                    return Err(format!(
+                        "parameter '{}' cannot use step with log_scale",
+                        name
+                    ));
+                }
+                if let Some(step) = step {
+                    if *step <= 0.0 {
+                        return Err(format!("parameter '{}' step must be > 0", name));
+                    }
+                }
+                Ok(())
+            }
+            ParamSpec::Int { name, step, .. } => {
+                if let Some(step) = step {
+                    if *step <= 0 {
+                        return Err(format!("parameter '{}' step must be > 0", name));
+                    }
+                }
+                Ok(())
+            }
+            ParamSpec::Choice { .. } => Ok(()),
+        }
+    }
+
+    pub fn validate(&self, value: &str) -> bool {
+        match self {
+            ParamSpec::Float { min, max, step, .. } => {
+                if let Ok(v) = value.parse::<f64>() {
+                    if v < *min || v > *max {
+                        return false;
+                    }
+                    if let Some(step) = step.filter(|s| *s > 0.0) {
+                        let steps = (v - *min) / step;
+                        let delta = (steps - steps.round()).abs();
+                        let tol = 1e-9_f64.max(steps.abs() * 1e-9);
+                        delta <= tol
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                }
+            }
+            ParamSpec::Int { min, max, step, .. } => {
+                if let Ok(v) = value.parse::<i64>() {
+                    if v < *min || v > *max {
+                        return false;
+                    }
+                    if let Some(step) = step.filter(|s| *s > 0) {
+                        (v - *min) % step == 0
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                }
+            }
+            ParamSpec::Choice { values, .. } => values.contains(&value.to_string()),
+        }
+    }
+
+    pub fn value_from_unit(&self, coord: f64) -> String {
+        let c = coord.clamp(0.0, 1.0);
+        match self {
+            ParamSpec::Float {
+                min,
+                max,
+                log_scale,
+                step,
+                format,
+                ..
+            } => {
+                let value = if *log_scale {
+                    let min = min.max(f64::MIN_POSITIVE).ln();
+                    let max = max.max(f64::MIN_POSITIVE).ln();
+                    (min + (max - min) * c).exp()
+                } else {
+                    min + (max - min) * c
+                };
+                let value = apply_float_step(value, *min, *max, *step);
+                format_value(value, format.as_deref())
+            }
+            ParamSpec::Int { min, max, step, .. } => {
+                let min_f = *min as f64;
+                let max_f = *max as f64;
+                let value = min_f + (max_f - min_f) * c;
+                let value = apply_int_step(value, *min, *max, *step);
+                value.to_string()
+            }
+            ParamSpec::Choice { values, .. } => {
+                if values.is_empty() {
+                    String::new()
+                } else {
+                    let idx = ((values.len() - 1) as f64 * c).round() as usize;
+                    values[idx.min(values.len() - 1)].clone()
+                }
+            }
+        }
+    }
+}
+
+fn apply_float_step(value: f64, min: f64, max: f64, step: Option<f64>) -> f64 {
+    let mut value = value;
+    if let Some(step) = step.filter(|s| *s > 0.0) {
+        let steps = ((value - min) / step).round();
+        value = min + steps * step;
+    }
+    value.clamp(min, max)
+}
+
+fn apply_int_step(value: f64, min: i64, max: i64, step: Option<i64>) -> i64 {
+    let mut value = value;
+    if let Some(step) = step.filter(|s| *s > 0) {
+        let min_f = min as f64;
+        let steps = ((value - min_f) / step as f64).round();
+        value = min_f + steps * step as f64;
+    }
+    let value = value.round() as i64;
+    value.clamp(min, max)
+}
+
+fn format_value(value: f64, format: Option<&str>) -> String {
+    match format {
+        Some(fmt) => {
+            if fmt == "{:.6}" {
+                format!("{value:.6}")
+            } else if fmt == "{:.4}" {
+                format!("{value:.4}")
+            } else if fmt == "{:.3}" {
+                format!("{value:.3}")
+            } else {
+                format!("{value}")
+            }
+        }
+        None => format!("{value}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ParamSpec, SearchSpace};
+
+    #[test]
+    fn maps_unit_to_values() {
+        let space = SearchSpace {
+            params: vec![
+                ParamSpec::Float {
+                    name: "lr".to_string(),
+                    min: 0.001,
+                    max: 0.01,
+                    log_scale: false,
+                    step: None,
+                    format: None,
+                },
+                ParamSpec::Int {
+                    name: "steps".to_string(),
+                    min: 10,
+                    max: 20,
+                    step: None,
+                },
+                ParamSpec::Choice {
+                    name: "mode".to_string(),
+                    values: vec!["a".to_string(), "b".to_string()],
+                },
+            ],
+        };
+        let values = space.values_from_unit(&[0.5, 0.0, 1.0]);
+        assert_eq!(values.get("steps").map(String::as_str), Some("10"));
+        assert_eq!(values.get("mode").map(String::as_str), Some("b"));
+        assert!(values.get("lr").unwrap().starts_with("0.00"));
+    }
+
+    #[test]
+    fn maps_unit_to_stepped_values() {
+        let space = SearchSpace {
+            params: vec![
+                ParamSpec::Float {
+                    name: "ratio".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                    log_scale: false,
+                    step: Some(0.1),
+                    format: Some("{:.3}".to_string()),
+                },
+                ParamSpec::Int {
+                    name: "buckets".to_string(),
+                    min: 0,
+                    max: 10,
+                    step: Some(2),
+                },
+            ],
+        };
+        let values = space.values_from_unit(&[0.26, 0.26]);
+        assert_eq!(values.get("ratio").map(String::as_str), Some("0.300"));
+        assert_eq!(values.get("buckets").map(String::as_str), Some("2"));
+        assert!(space.validate_value("ratio", "0.5"));
+        assert!(!space.validate_value("ratio", "0.55"));
+        assert!(space.validate_value("buckets", "6"));
+        assert!(!space.validate_value("buckets", "7"));
+    }
+
+    #[test]
+    fn rejects_log_scale_step_combo() {
+        let space = SearchSpace {
+            params: vec![ParamSpec::Float {
+                name: "lr".to_string(),
+                min: 1e-5,
+                max: 1e-2,
+                log_scale: true,
+                step: Some(1e-5),
+                format: None,
+            }],
+        };
+        let err = space
+            .validate_specs()
+            .expect_err("step + log_scale invalid");
+        assert!(err.contains("step"));
+        assert!(err.contains("log_scale"));
+    }
+}

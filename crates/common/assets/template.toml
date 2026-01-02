@@ -1,0 +1,18 @@
+template = "__ARGTUNER_TEMPLATE__"
+
+[project]
+metric_key = "metric"
+goal = "min"
+pruner = "none"
+inject_trial_placeholders = true
+
+[sampler]
+type = "random"
+
+[scheduler]
+type = "fixed"
+n_trials = 1
+seed = 7
+
+[space]
+params = []

@@ -1,0 +1,13 @@
+[package]
+name = "argtuner-interactive-probe"
+version.workspace = true
+edition.workspace = true
+
+# This crate is not intended for publishing
+publish = false
+
+[dependencies]
+argtuner-talkback = { workspace = true, features = ["clap"] }
+argtuner-talkback-derive = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+argtuner-common = { workspace = true }

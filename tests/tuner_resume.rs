@@ -1,0 +1,87 @@
+use argtuner::{
+    CommandTemplate, FIELD_SCORE, Project, ProjectSettings, Sampler, SamplerConfig, Scheduler,
+    SchedulerConfig, SearchSpace, TRIAL_PREFIX, TrialRecord, TrialStatus, Tuner,
+};
+use std::collections::BTreeMap;
+
+fn emit_result_command() -> String {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_emit_result") {
+        path
+    } else {
+        "cargo run -q -p argtuner --bin emit_result --".to_string()
+    }
+}
+
+#[test]
+fn tuner_skips_completed_trials() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("argtuner").join("resume");
+    let project = Project::new(&root);
+    project.ensure_dirs().expect("dirs");
+
+    // 1. Setup Project
+    let template = CommandTemplate::new(format!(
+        "{} --checkpoint-dir {{trial_dir}}",
+        emit_result_command()
+    ));
+    let space = SearchSpace { params: vec![] };
+
+    let project_settings = ProjectSettings {
+        metric_key: "metric".to_string(),
+        goal: argtuner::Goal::Min,
+        pruner: argtuner::Pruner::None,
+        inject_trial_placeholders: true,
+        checkpoint_arg: None,
+    };
+    let sampler = SamplerConfig {
+        kind: Sampler::Random,
+        ..SamplerConfig::default()
+    };
+    let scheduler = SchedulerConfig {
+        kind: Scheduler::Fixed,
+        n_trials: 2,
+        seed: 42,
+        ..SchedulerConfig::default()
+    };
+    let unified_config = argtuner::UnifiedConfig {
+        project: project_settings,
+        sampler,
+        scheduler,
+        space,
+        template: template.as_str().to_string(),
+    };
+    project
+        .save_unified_config(&unified_config)
+        .expect("save config");
+
+    // 2. Insert Completed Trial 0
+    let mut fields = BTreeMap::new();
+    fields.insert(format!("{TRIAL_PREFIX}config_id"), "0".to_string());
+    fields.insert(format!("{TRIAL_PREFIX}rung"), "0".to_string());
+    fields.insert(format!("{TRIAL_PREFIX}bracket"), "0".to_string());
+    fields.insert(FIELD_SCORE.to_string(), "0.5".to_string());
+    project
+        .store()
+        .expect("store")
+        .append(&TrialRecord {
+            trial_id: 0,
+            status: TrialStatus::Ok,
+            elapsed_ms: 10,
+            error: None,
+            fields,
+        })
+        .expect("append");
+
+    // 3. Run Tuner
+    let tuner = Tuner::new(project.clone());
+    tuner.run().expect("run");
+
+    // 4. Verify
+    // Should have 2 trials total (0 was pre-existing, 1 was run)
+    let rows = project.store().expect("store").load_rows().expect("rows");
+    let ok_rows = rows
+        .iter()
+        .filter(|row| row.get("status").map(String::as_str) == Some("ok"))
+        .count();
+    assert_eq!(ok_rows, 2);
+}

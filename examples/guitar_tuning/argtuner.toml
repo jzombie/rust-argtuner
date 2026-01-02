@@ -1,0 +1,58 @@
+template = '''
+  cargo run -p argtuner --example guitar_tuning -- \
+    --e2 {e2} \
+    --a2 {a2} \
+    --d3 {d3} \
+    --g3 {g3} \
+    --b3 {b3} \
+    --e4 {e4} \
+    --checkpoint-dir {trial_dir}
+'''
+
+[project]
+metric_key = "mean_abs"
+goal = "min"
+inject_trial_placeholders = true
+
+[sampler]
+type = "pso"
+
+[sampler.pso]
+iters = 24
+particles = 18
+
+[scheduler]
+type = "fixed"
+n_trials = 60
+seed = 7
+
+[space]
+[[space.params]]
+name = "e2"
+min = 70.0
+max = 95.0
+
+[[space.params]]
+name = "a2"
+min = 95.0
+max = 125.0
+
+[[space.params]]
+name = "d3"
+min = 130.0
+max = 165.0
+
+[[space.params]]
+name = "g3"
+min = 180.0
+max = 215.0
+
+[[space.params]]
+name = "b3"
+min = 230.0
+max = 265.0
+
+[[space.params]]
+name = "e4"
+min = 310.0
+max = 350.0

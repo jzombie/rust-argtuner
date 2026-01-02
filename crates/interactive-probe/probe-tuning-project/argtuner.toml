@@ -1,0 +1,17 @@
+template = "cargo run -q -p argtuner-interactive-probe -- --metric-key metric --checkpoint-dir {trial_dir}"
+
+[project]
+metric_key = "metric"
+
+[sampler]
+type = "random"
+
+[scheduler]
+type = "fixed"
+n_trials = 5
+
+[space]
+[[space.params]]
+name = "lr"
+min = 0.001
+max = 0.01
