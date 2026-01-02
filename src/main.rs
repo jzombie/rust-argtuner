@@ -1,5 +1,6 @@
 use argtuner::project::Project;
 use argtuner::tuner::Tuner;
+use argtuner::validate::validate_project_config;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -40,6 +41,15 @@ enum Commands {
         /// Polling interval (ms)
         #[arg(long, default_value_t = 500)]
         poll_ms: u64,
+    },
+    /// Show the scheduler plan for a project
+    Plan {
+        /// Path to the project directory
+        #[arg(value_name = "PROJECT_DIR")]
+        path: PathBuf,
+        /// Optional config id to visualize within the plan
+        #[arg(long)]
+        config_id: Option<usize>,
     },
 }
 
@@ -83,6 +93,40 @@ fn main() {
             if let Err(e) = watch_ui::run(db_path, *poll_ms) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
+            }
+        }
+        Commands::Plan { path, config_id } => {
+            let project = Project::new(path);
+            match project.load_config() {
+                Ok(config) => {
+                    let template = match project.read_template() {
+                        Ok(template) => template,
+                        Err(err) => {
+                            eprintln!("Error: failed to read template: {err}");
+                            std::process::exit(1);
+                        }
+                    };
+                    let template_placeholders = template.placeholders().unwrap_or_default();
+                    let space = match project.read_space() {
+                        Ok(space) => space,
+                        Err(err) => {
+                            eprintln!("Error: failed to read search space: {err}");
+                            std::process::exit(1);
+                        }
+                    };
+                    if let Err(err) =
+                        validate_project_config(&config, &template, &space, &template_placeholders)
+                    {
+                        eprintln!("Error: {}", err);
+                        std::process::exit(1);
+                    }
+                    let plan = argtuner::scheduler::build_plan(&config, *config_id);
+                    println!("{}", plan.render(*config_id));
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
     }

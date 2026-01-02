@@ -328,8 +328,15 @@ impl Project {
 
     pub fn load_config(&self) -> std::io::Result<ProjectConfig> {
         let data = std::fs::read_to_string(self.unified_config_path())?;
-        let config: UnifiedConfig = toml::from_str(&data)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        let config: UnifiedConfig = toml::from_str(&data).map_err(|err| {
+            let mut message = err.to_string();
+            if message.contains("unknown field `budget_placeholder`") {
+                message.push_str(
+                    "; note: budget_placeholder belongs under [scheduler.successive_halving]",
+                );
+            }
+            std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+        })?;
         Ok(ProjectConfig::from_sections(
             config.project,
             config.sampler,

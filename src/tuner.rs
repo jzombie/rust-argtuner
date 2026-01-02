@@ -7,15 +7,15 @@ use argmin::solver::particleswarm::ParticleSwarm;
 
 use crate::analysis::{print_hparam_impact, print_top_trials};
 use crate::command::CommandObjective;
-use crate::command::CommandTemplate;
 use crate::constants::{
     FIELD_SCORE, FIELD_TRIAL_BRACKET, FIELD_TRIAL_CONFIG_ID, FIELD_TRIAL_ID, FIELD_TRIAL_RUNG,
-    FIELD_TRIAL_STATUS, PLACEHOLDER_TRIAL_DIR, PLACEHOLDER_TRIAL_ID,
+    FIELD_TRIAL_STATUS,
 };
 use crate::project::{Project, Sampler};
 use crate::scheduler::Scheduler;
 use crate::scheduler::{SchedulerBinding, TrialScheduler};
 use crate::store::{TrialStatus, TrialStore};
+use crate::validate::validate_project_config;
 
 pub struct Tuner {
     project: Project,
@@ -53,43 +53,12 @@ impl Tuner {
                 })?;
         }
         let template = self.project.read_template()?;
-        let checkpoint_arg = config
-            .checkpoint_arg
-            .as_deref()
-            .unwrap_or("--checkpoint-dir");
-        if !template_has_checkpoint_dir(&template, checkpoint_arg) {
-            return Err(format!("template must include {checkpoint_arg} {{trial_dir}}").into());
-        }
         let template_placeholders = template.placeholders().unwrap_or_default();
-
         let space = self.project.read_space()?;
-        space
-            .validate_specs()
+        validate_project_config(&config, &template, &space, &template_placeholders)
             .map_err(|err| -> Box<dyn Error> { err.into() })?;
 
-        // Validation
-        let space_params: Vec<_> = space.params.iter().map(|p| p.name()).collect();
         let scheduler_binding = SchedulerBinding::new(&config);
-        for p in &template_placeholders {
-            if !space_params.contains(&p.as_str())
-                && p != PLACEHOLDER_TRIAL_ID
-                && p != PLACEHOLDER_TRIAL_DIR
-                && !scheduler_binding.allows_placeholder(p)
-            {
-                return Err(
-                    format!("template placeholder {{{}}} not found in search space", p).into(),
-                );
-            }
-        }
-        for param in &space_params {
-            if !template_placeholders.contains(&param.to_string()) {
-                eprintln!(
-                    "Warning: parameter '{}' defined in search space but not used in template",
-                    param
-                );
-            }
-        }
-
         let store = if let Some(temp_root) = temp_root.as_ref() {
             let trials_path = temp_root.path().join(crate::TRIALS_CSV_FILENAME);
             TrialStore::new(trials_path, template.clone())
@@ -126,9 +95,6 @@ impl Tuner {
                 )?;
             }
             Sampler::Random => {
-                scheduler_binding
-                    .validate_template(&template_placeholders)
-                    .map_err(|err| -> Box<dyn Error> { err.into() })?;
                 let scheduler: Box<dyn TrialScheduler> = scheduler_binding.build(objective.dims());
                 let completed = load_completed_trials(objective.store())?;
                 run_scheduled(objective, scheduler, completed)?;
@@ -138,72 +104,6 @@ impl Tuner {
         print_top_trials(&store_for_summary, 10);
         print_hparam_impact(&store_for_summary, config.goal, &config.metric_key);
         Ok(())
-    }
-}
-
-fn template_has_checkpoint_dir(template: &CommandTemplate, checkpoint_arg: &str) -> bool {
-    let text = template.as_str();
-    if let Ok(tokens) = shell_words::split(text) {
-        return tokens_have_checkpoint_dir(&tokens, checkpoint_arg);
-    }
-    let has_flag = text.contains(checkpoint_arg);
-    has_flag && text.contains("{trial_dir}")
-}
-
-fn tokens_have_checkpoint_dir(tokens: &[String], checkpoint_arg: &str) -> bool {
-    for (idx, token) in tokens.iter().enumerate() {
-        let arg_eq = format!("{checkpoint_arg}=");
-        if let Some(value) = token.strip_prefix(&arg_eq)
-            && value.contains("{trial_dir}")
-        {
-            return true;
-        }
-        if token == checkpoint_arg
-            && let Some(next) = tokens.get(idx + 1)
-            && next.contains("{trial_dir}")
-        {
-            return true;
-        }
-    }
-    false
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{template_has_checkpoint_dir, tokens_have_checkpoint_dir};
-    use crate::command::CommandTemplate;
-
-    #[test]
-    fn tokens_detect_checkpoint_dir() {
-        assert!(tokens_have_checkpoint_dir(
-            &["--checkpoint-dir".to_string(), "{trial_dir}".to_string()],
-            "--checkpoint-dir"
-        ));
-        assert!(tokens_have_checkpoint_dir(
-            &["--checkpoint_dir={trial_dir}".to_string()],
-            "--checkpoint_dir"
-        ));
-        assert!(tokens_have_checkpoint_dir(
-            &[
-                "--checkpoint-dir".to_string(),
-                "{trial_dir}/sub".to_string()
-            ],
-            "--checkpoint-dir"
-        ));
-        assert!(!tokens_have_checkpoint_dir(
-            &["--checkpoint-dir".to_string(), "out".to_string()],
-            "--checkpoint-dir"
-        ));
-    }
-
-    #[test]
-    fn template_detects_checkpoint_dir() {
-        let template = CommandTemplate::new("run --checkpoint-dir {trial_dir}".to_string());
-        assert!(template_has_checkpoint_dir(&template, "--checkpoint-dir"));
-        let template = CommandTemplate::new("run --checkpoint_dir={trial_dir}/x".to_string());
-        assert!(template_has_checkpoint_dir(&template, "--checkpoint_dir"));
-        let template = CommandTemplate::new("run --checkpoint-dir out".to_string());
-        assert!(!template_has_checkpoint_dir(&template, "--checkpoint-dir"));
     }
 }
 

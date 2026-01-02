@@ -82,6 +82,13 @@ argtuner rebuild-csv ./argtuner/my-project
 
 *Note: Tuning runs will automatically rebuild this after each trial.*
 
+Show the scheduler plan for a project (optionally a specific config id):
+
+```bash
+argtuner plan ./argtuner/my-project
+argtuner plan ./argtuner/my-project --config-id 3
+```
+
 ## Example: linear regression
 
 There is a runnable example in `crates/tuner/examples/linear_regression.rs`:

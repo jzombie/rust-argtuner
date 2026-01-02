@@ -1,11 +1,13 @@
 mod config;
 mod fixed;
+pub mod plan;
 mod successive_halving;
 
 use crate::{TrialOverrides, project::ProjectConfig};
 
 pub use config::Scheduler;
 pub use fixed::FixedScheduler;
+pub use plan::{ConfigPlanStep, PlanTier, SchedulerPlan, build_plan};
 pub use successive_halving::SuccessiveHalvingScheduler;
 
 #[derive(Debug, Clone, Copy)]

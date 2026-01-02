@@ -89,7 +89,7 @@ fn scientific_notation_values_parse_in_space() {
         max = 1e-2
         log = false
     "#};
-    
+
     let config = toml::from_str::<UnifiedConfig>(toml).expect("config parses");
     let mut floats = config.space.params.iter().filter_map(|param| match param {
         argtuner::ParamSpec::Float { name, min, max, .. } => Some((name.as_str(), *min, *max)),
