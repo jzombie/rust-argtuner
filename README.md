@@ -330,9 +330,9 @@ Notes:
 
 ## CSV behavior
 
-- The CSV is the source of truth for each trial’s hyperparameters after a trial
-  is created. Trial resumes and command reconstruction use the recorded `hp.*`
-  values, which are treated as immutable for that trial.
+- The SQLite database is the source of truth; the CSV is a mirrored snapshot.
+  Trial resumes and command reconstruction use the recorded `hp.*` values from
+  the database, which are treated as immutable for that trial.
 - Columns are grouped as core trial fields, then `metric.*`, then `trial.*`,
   then `hp.*`.
 - Core fields are unprefixed for readability/stability:

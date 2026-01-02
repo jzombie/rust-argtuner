@@ -8,5 +8,5 @@ fn main() {
     fields.insert("last_epoch".to_string(), "7".to_string());
     let _ = argtuner_talkback::emit_event(argtuner_common::EventKind::EpochEnd, &fields);
     let _ =
-        argtuner_talkback::emit_event(argtuner_common::EventKind::EarlyStopped, &BTreeMap::new());
+        argtuner_talkback::emit_event(argtuner_common::EventKind::EarlyStopped, &BTreeMap::<String, String>::new());
 }

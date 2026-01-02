@@ -28,5 +28,5 @@ fn main() {
         epoch: 1,
     });
     let _ =
-        argtuner_talkback::emit_event(argtuner_common::EventKind::EarlyStopped, &BTreeMap::new());
+        argtuner_talkback::emit_event(argtuner_common::EventKind::EarlyStopped, &BTreeMap::<String, String>::new());
 }
