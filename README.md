@@ -74,6 +74,14 @@ Show the project config and template:
 argtuner show ./argtuner/my-project
 ```
 
+Rebuild `trials.csv` from `trials.sqlite` (for example, after manual edits or a corrupt CSV):
+
+```bash
+argtuner rebuild-csv ./argtuner/my-project
+```
+
+*Note: Tuning runs will automatically rebuild this after each trial.*
+
 ## Example: linear regression
 
 There is a runnable example in `crates/tuner/examples/linear_regression.rs`:
