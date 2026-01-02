@@ -55,3 +55,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 
 [dev-dependencies]
 indoc = "2.0.7"
+
+[package.metadata.cargo-udeps.ignore]
+windows-sys = true
