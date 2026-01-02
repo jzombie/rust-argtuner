@@ -45,13 +45,13 @@ fn parse_message(input: &str) -> Result<Vec<ParsedItem>, String> {
 pub fn parse_output(output: &str, prefix: &str) -> Result<Vec<ParsedItem>, String> {
     let mut items = Vec::new();
     for line in output.lines() {
-        let line = sanitize_line(line);
-        let line = line.trim();
-        if !line.starts_with(prefix) {
-            continue;
-        }
-        let rest = &line[prefix.len()..];
-        let msg = rest.trim_start();
+        let line = strip_ansi(line);
+        let start_idx = match line.find(prefix) {
+            Some(idx) => idx,
+            None => continue,
+        };
+        let rest = &line[start_idx + prefix.len()..];
+        let msg = rest.trim();
         if msg.is_empty() {
             continue;
         }
@@ -68,13 +68,13 @@ pub fn parse_output(output: &str, prefix: &str) -> Result<Vec<ParsedItem>, Strin
 pub fn parse_prefix_lines(output: &str, prefix: &str) -> Result<Vec<Vec<ParsedItem>>, String> {
     let mut lines_items: Vec<Vec<ParsedItem>> = Vec::new();
     for line in output.lines() {
-        let line = sanitize_line(line);
-        let line = line.trim();
-        if !line.starts_with(prefix) {
-            continue;
-        }
-        let rest = &line[prefix.len()..];
-        let msg = rest.trim_start();
+        let line = strip_ansi(line);
+        let start_idx = match line.find(prefix) {
+            Some(idx) => idx,
+            None => continue,
+        };
+        let rest = &line[start_idx + prefix.len()..];
+        let msg = rest.trim();
         if msg.is_empty() {
             continue;
         }
@@ -88,7 +88,7 @@ pub fn parse_prefix_lines(output: &str, prefix: &str) -> Result<Vec<Vec<ParsedIt
 
 // Workaround for control characters in subprocess output causing macOS tests to
 // fail in GitHub Actions. Note, local development macOS does not have this issue.
-fn sanitize_line(line: &str) -> String {
+fn strip_ansi(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars().peekable();
     while let Some(ch) = chars.next() {
@@ -117,9 +117,6 @@ fn sanitize_line(line: &str) -> String {
                 }
                 _ => {}
             }
-            continue;
-        }
-        if ch.is_ascii_control() {
             continue;
         }
         out.push(ch);
