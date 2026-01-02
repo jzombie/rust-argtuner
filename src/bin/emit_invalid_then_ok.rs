@@ -2,6 +2,12 @@ use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 
+#[derive(serde::Serialize)]
+struct EvaluationResult {
+    score: f64,
+    epoch: usize,
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut marker: Option<String> = None;
@@ -42,10 +48,4 @@ fn main() {
             epoch: 1,
         });
     }
-}
-
-#[derive(serde::Serialize)]
-struct EvaluationResult {
-    score: f64,
-    epoch: usize,
 }

@@ -2,6 +2,12 @@ use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 
+#[derive(serde::Serialize)]
+struct EvaluationResult {
+    value: f64,
+    epoch: usize,
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut marker: Option<String> = None;
@@ -23,10 +29,4 @@ fn main() {
     });
     let _ =
         argtuner_talkback::emit_event(argtuner_common::EventKind::EarlyStopped, &BTreeMap::new());
-}
-
-#[derive(serde::Serialize)]
-struct EvaluationResult {
-    value: f64,
-    epoch: usize,
 }

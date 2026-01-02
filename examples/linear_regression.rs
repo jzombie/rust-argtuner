@@ -1,6 +1,12 @@
 use argtuner_talkback_derive::talkback_args;
 use clap::Parser;
 
+#[derive(serde::Serialize)]
+struct LinearRegressionResult {
+    loss: f64,
+    epoch: usize,
+}
+
 #[talkback_args]
 #[derive(Debug, Parser)]
 struct ExampleArgs {
@@ -53,10 +59,4 @@ fn main() {
         loss: mse,
         epoch: steps,
     });
-}
-
-#[derive(serde::Serialize)]
-struct LinearRegressionResult {
-    loss: f64,
-    epoch: usize,
 }
