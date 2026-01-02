@@ -45,6 +45,7 @@ fn parse_message(input: &str) -> Result<Vec<ParsedItem>, String> {
 pub fn parse_output(output: &str, prefix: &str) -> Result<Vec<ParsedItem>, String> {
     let mut items = Vec::new();
     for line in output.lines() {
+        let line = sanitize_line(line);
         let line = line.trim();
         if !line.starts_with(prefix) {
             continue;
@@ -67,6 +68,7 @@ pub fn parse_output(output: &str, prefix: &str) -> Result<Vec<ParsedItem>, Strin
 pub fn parse_prefix_lines(output: &str, prefix: &str) -> Result<Vec<Vec<ParsedItem>>, String> {
     let mut lines_items: Vec<Vec<ParsedItem>> = Vec::new();
     for line in output.lines() {
+        let line = sanitize_line(line);
         let line = line.trim();
         if !line.starts_with(prefix) {
             continue;
@@ -82,4 +84,10 @@ pub fn parse_prefix_lines(output: &str, prefix: &str) -> Result<Vec<Vec<ParsedIt
         }
     }
     Ok(lines_items)
+}
+
+// Workaround for control characters in subprocess output causing macOS tests to
+// fail in GitHub Actions. Note, local development macOS does not have this issue.
+fn sanitize_line(line: &str) -> String {
+    line.chars().filter(|c| !c.is_ascii_control()).collect()
 }
