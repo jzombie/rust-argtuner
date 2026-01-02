@@ -258,18 +258,18 @@ impl ParamSpec {
                         name
                     ));
                 }
-                if let Some(step) = step {
-                    if *step <= 0.0 {
-                        return Err(format!("parameter '{}' step must be > 0", name));
-                    }
+                if let Some(step) = step
+                    && *step <= 0.0
+                {
+                    return Err(format!("parameter '{}' step must be > 0", name));
                 }
                 Ok(())
             }
             ParamSpec::Int { name, step, .. } => {
-                if let Some(step) = step {
-                    if *step <= 0 {
-                        return Err(format!("parameter '{}' step must be > 0", name));
-                    }
+                if let Some(step) = step
+                    && *step <= 0
+                {
+                    return Err(format!("parameter '{}' step must be > 0", name));
                 }
                 Ok(())
             }

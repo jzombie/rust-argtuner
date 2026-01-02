@@ -53,8 +53,7 @@ impl CommandOutput {
                             }
                             argtuner_common::EventKind::InvalidConfig => {
                                 if let Some(err) = fields.get("error") {
-                                    map.entry("error".to_string())
-                                        .or_insert(err.clone());
+                                    map.entry("error".to_string()).or_insert(err.clone());
                                 }
                             }
                             _ => {}
@@ -130,10 +129,7 @@ impl CommandResultPayload {
     }
 
     pub fn epoch_fields(&self) -> Vec<BTreeMap<String, String>> {
-        self.epoch_results
-            .iter()
-            .map(payload_fields_from)
-            .collect()
+        self.epoch_results.iter().map(payload_fields_from).collect()
     }
 }
 
@@ -340,6 +336,6 @@ mod tests {
         let payload = output.parse_payload(crate::RESULT_PREFIX).expect("payload");
         let metric = payload.get_metric("metric").expect("metric");
         assert_eq!(metric, 0.2);
-        assert!(payload.data.get("aux").is_none());
+        assert!(!payload.data.contains_key("aux"));
     }
 }

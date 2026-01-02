@@ -96,7 +96,7 @@ fn strip_ansi(line: &str) -> String {
             match chars.peek().copied() {
                 Some('[') => {
                     chars.next();
-                    while let Some(c) = chars.next() {
+                    for c in chars.by_ref() {
                         if ('@'..='~').contains(&c) {
                             break;
                         }
@@ -105,7 +105,7 @@ fn strip_ansi(line: &str) -> String {
                 Some(']') => {
                     chars.next();
                     let mut prev_esc = false;
-                    while let Some(c) = chars.next() {
+                    for c in chars.by_ref() {
                         if c == '\u{07}' {
                             break;
                         }

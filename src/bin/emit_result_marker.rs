@@ -11,10 +11,10 @@ fn main() {
         }
     }
 
-    if let Some(path) = marker {
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(file, "1");
-        }
+    if let Some(path) = marker
+        && let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path)
+    {
+        let _ = writeln!(file, "1");
     }
 
     let _ = argtuner_talkback::emit_epoch_end(&EvaluationResult {

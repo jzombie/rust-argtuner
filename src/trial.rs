@@ -56,14 +56,13 @@ pub fn enforce_hp_immutability(
         return;
     };
     for (key, value) in existing {
-        if key.starts_with(crate::HP_PREFIX) {
-            if let Some(next) = out_fields.get(key) {
-                if next != value {
-                    eprintln!("warn: preserving existing {key}={value} (new value {next} ignored)");
-                }
-            }
-            out_fields.insert(key.clone(), value.clone());
+        if key.starts_with(crate::HP_PREFIX)
+            && let Some(next) = out_fields.get(key)
+            && next != value
+        {
+            eprintln!("warn: preserving existing {key}={value} (new value {next} ignored)");
         }
+        out_fields.insert(key.clone(), value.clone());
     }
 }
 
@@ -88,9 +87,9 @@ mod tests {
         let merged = merge_running_fields(existing, &rendered);
         assert_eq!(merged.get("score").map(String::as_str), Some("0.5"));
         assert_eq!(merged.get("hp.lr").map(String::as_str), Some("0.1"));
-        assert!(merged.get(crate::FIELD_TRIAL_STATUS).is_none());
-        assert!(merged.get(crate::FIELD_TRIAL_ELAPSED_MS).is_none());
-        assert!(merged.get(crate::FIELD_TRIAL_ERROR).is_none());
+        assert!(!merged.contains_key(crate::FIELD_TRIAL_STATUS));
+        assert!(!merged.contains_key(crate::FIELD_TRIAL_ELAPSED_MS));
+        assert!(!merged.contains_key(crate::FIELD_TRIAL_ERROR));
     }
 
     #[test]

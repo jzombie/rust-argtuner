@@ -21,15 +21,9 @@ pub struct Tuner {
     project: Project,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct RunOptions {
     pub dry_run: bool,
-}
-
-impl Default for RunOptions {
-    fn default() -> Self {
-        Self { dry_run: false }
-    }
 }
 
 impl Tuner {
@@ -159,17 +153,16 @@ fn template_has_checkpoint_dir(template: &CommandTemplate, checkpoint_arg: &str)
 fn tokens_have_checkpoint_dir(tokens: &[String], checkpoint_arg: &str) -> bool {
     for (idx, token) in tokens.iter().enumerate() {
         let arg_eq = format!("{checkpoint_arg}=");
-        if let Some(value) = token.strip_prefix(&arg_eq) {
-            if value.contains("{trial_dir}") {
-                return true;
-            }
+        if let Some(value) = token.strip_prefix(&arg_eq)
+            && value.contains("{trial_dir}")
+        {
+            return true;
         }
-        if token == checkpoint_arg {
-            if let Some(next) = tokens.get(idx + 1) {
-                if next.contains("{trial_dir}") {
-                    return true;
-                }
-            }
+        if token == checkpoint_arg
+            && let Some(next) = tokens.get(idx + 1)
+            && next.contains("{trial_dir}")
+        {
+            return true;
         }
     }
     false
@@ -348,10 +341,10 @@ fn load_completed_trials(store: &TrialStore) -> Result<CompletedTrialMap, Box<dy
 
 fn parse_usize_field(row: &BTreeMap<String, String>, keys: &[&str]) -> Option<usize> {
     for key in keys {
-        if let Some(value) = row.get(*key) {
-            if let Ok(parsed) = value.parse::<usize>() {
-                return Some(parsed);
-            }
+        if let Some(value) = row.get(*key)
+            && let Ok(parsed) = value.parse::<usize>()
+        {
+            return Some(parsed);
         }
     }
     None

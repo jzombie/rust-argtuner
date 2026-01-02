@@ -80,7 +80,7 @@ impl TrialDb {
                         serde_json::from_str(&fields_json).map_err(to_from_sql_error)?;
                     Ok(TrialRecord {
                         trial_id: row.get::<_, i64>(0)? as usize,
-                        status: TrialStatus::from_str(&status)
+                        status: TrialStatus::parse(&status)
                             .ok_or_else(|| rusqlite::Error::InvalidQuery)?,
                         elapsed_ms: row.get::<_, i64>(2)? as u128,
                         error: row.get::<_, Option<String>>(3)?,
@@ -108,7 +108,7 @@ impl TrialDb {
                     serde_json::from_str(&fields_json).map_err(to_from_sql_error)?;
                 Ok(TrialRecord {
                     trial_id: row.get::<_, i64>(0)? as usize,
-                    status: TrialStatus::from_str(&status)
+                    status: TrialStatus::parse(&status)
                         .ok_or_else(|| rusqlite::Error::InvalidQuery)?,
                     elapsed_ms: row.get::<_, i64>(2)? as u128,
                     error: row.get::<_, Option<String>>(3)?,
@@ -139,7 +139,7 @@ impl TrialDb {
                     serde_json::from_str(&fields_json).map_err(to_from_sql_error)?;
                 Ok(TrialRecord {
                     trial_id: row.get::<_, i64>(0)? as usize,
-                    status: TrialStatus::from_str(&status)
+                    status: TrialStatus::parse(&status)
                         .ok_or_else(|| rusqlite::Error::InvalidQuery)?,
                     elapsed_ms: row.get::<_, i64>(2)? as u128,
                     error: row.get::<_, Option<String>>(3)?,
@@ -196,7 +196,7 @@ impl TrialDb {
 }
 
 fn to_io_error(err: rusqlite::Error) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, err)
+    std::io::Error::other(err)
 }
 
 fn to_sql_conversion_error(err: serde_json::Error) -> rusqlite::Error {

@@ -1,4 +1,6 @@
-use argtuner::{CommandTemplate, HP_PREFIX, TRIALS_CSV_FILENAME, TrialRecord, TrialStatus, TrialStore};
+use argtuner::{
+    CommandTemplate, HP_PREFIX, TRIALS_CSV_FILENAME, TrialRecord, TrialStatus, TrialStore,
+};
 use indoc::indoc;
 use std::collections::BTreeMap;
 use std::path::PathBuf;

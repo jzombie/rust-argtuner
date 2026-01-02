@@ -75,10 +75,7 @@ fn main() -> io::Result<()> {
                         Some(value) => value,
                         None => {
                             // No extra positional value; keep kv-only.
-                            talkback.emit_event(
-                                argtuner_common::EventKind::EpochEnd,
-                                &fields,
-                            )?;
+                            talkback.emit_event(argtuner_common::EventKind::EpochEnd, &fields)?;
                             continue;
                         }
                     };
