@@ -7,7 +7,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+argtuner-common = { workspace = true }
 argtuner-talkback = { workspace = true, features = ["clap"] }
 argtuner-talkback-derive = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-argtuner-common = { workspace = true }
