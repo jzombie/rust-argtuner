@@ -3,6 +3,7 @@
 name = "argtuner"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 default-run = "argtuner"
 
 [workspace]
@@ -18,6 +19,7 @@ resolver = "2"
 authors = ["Jeremy Harris <jeremy.harris@zenosmosis.com>"]
 version = "0.1.0-alpha"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
 # Don't publish yet
 publish = false
