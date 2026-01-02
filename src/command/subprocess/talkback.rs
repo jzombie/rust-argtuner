@@ -89,5 +89,40 @@ pub fn parse_prefix_lines(output: &str, prefix: &str) -> Result<Vec<Vec<ParsedIt
 // Workaround for control characters in subprocess output causing macOS tests to
 // fail in GitHub Actions. Note, local development macOS does not have this issue.
 fn sanitize_line(line: &str) -> String {
-    line.chars().filter(|c| !c.is_ascii_control()).collect()
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            match chars.peek().copied() {
+                Some('[') => {
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    let mut prev_esc = false;
+                    while let Some(c) = chars.next() {
+                        if c == '\u{07}' {
+                            break;
+                        }
+                        if prev_esc && c == '\\' {
+                            break;
+                        }
+                        prev_esc = c == '\u{1b}';
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if ch.is_ascii_control() {
+            continue;
+        }
+        out.push(ch);
+    }
+    out
 }
