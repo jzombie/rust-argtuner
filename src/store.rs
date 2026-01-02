@@ -30,12 +30,20 @@ impl TrialStatus {
         }
     }
 
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
+        value.parse().ok()
+    }
+}
+
+impl std::str::FromStr for TrialStatus {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "running" => Some(TrialStatus::Running),
-            "ok" => Some(TrialStatus::Ok),
-            "error" => Some(TrialStatus::Error),
-            _ => None,
+            "running" => Ok(TrialStatus::Running),
+            "ok" => Ok(TrialStatus::Ok),
+            "error" => Ok(TrialStatus::Error),
+            _ => Err(()),
         }
     }
 }
@@ -237,7 +245,7 @@ fn rows_with_headers(records: &[TrialRecord]) -> (Vec<String>, Vec<BTreeMap<Stri
 
 fn fill_row(mut row: BTreeMap<String, String>, headers: &[String]) -> BTreeMap<String, String> {
     for header in headers {
-        row.entry(header.clone()).or_insert_with(String::new);
+        row.entry(header.clone()).or_default();
     }
     row
 }

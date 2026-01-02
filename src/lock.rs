@@ -23,6 +23,7 @@ impl ProjectLock {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&lock_path)?;
         try_lock_exclusive(&file)?;
         let mut guard = Self {

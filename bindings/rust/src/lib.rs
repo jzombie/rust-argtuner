@@ -187,10 +187,10 @@ fn resolve_bin_path() -> String {
     let from_current = std::env::current_exe().ok();
     let from_args = std::env::args().next().map(std::path::PathBuf::from);
     let candidate = from_current.or(from_args);
-    if let Some(path) = candidate {
-        if let Some(resolved) = normalize_bin_path(&path) {
-            return resolved;
-        }
+    if let Some(path) = candidate
+        && let Some(resolved) = normalize_bin_path(&path)
+    {
+        return resolved;
     }
     "binary".to_string()
 }
@@ -199,12 +199,11 @@ fn resolve_bin_path() -> String {
 fn normalize_bin_path(path: &std::path::Path) -> Option<String> {
     let path = path.to_path_buf();
     let is_rs = path.extension().and_then(|ext| ext.to_str()) == Some("rs");
-    if is_rs || !path.exists() {
-        if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
-            if let Some(resolved) = try_target_bin(stem) {
-                return Some(resolved);
-            }
-        }
+    if (is_rs || !path.exists())
+        && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+        && let Some(resolved) = try_target_bin(stem)
+    {
+        return Some(resolved);
     }
     Some(path.display().to_string())
 }
@@ -294,10 +293,10 @@ fn parse_value(value: &str) -> serde_json::Value {
     if let Ok(v) = trimmed.parse::<i64>() {
         return serde_json::Value::Number(v.into());
     }
-    if let Ok(v) = trimmed.parse::<f64>() {
-        if let Some(number) = serde_json::Number::from_f64(v) {
-            return serde_json::Value::Number(number);
-        }
+    if let Ok(v) = trimmed.parse::<f64>()
+        && let Some(number) = serde_json::Number::from_f64(v)
+    {
+        return serde_json::Value::Number(number);
     }
     serde_json::Value::String(value.to_string())
 }

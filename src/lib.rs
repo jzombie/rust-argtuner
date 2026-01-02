@@ -10,6 +10,7 @@ pub mod store;
 pub mod trial;
 pub mod tuner;
 pub mod utils;
+pub mod validate;
 pub use constants::*;
 pub mod workspace;
 pub use workspace::workspace_root;

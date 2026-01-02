@@ -1,5 +1,11 @@
 use std::collections::BTreeMap;
 
+#[derive(serde::Serialize)]
+struct EvaluationResult {
+    value: String,
+    epoch: usize,
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut version = "0.0.0".to_string();
@@ -29,10 +35,4 @@ fn main() {
         value: result_value,
         epoch: 1,
     });
-}
-
-#[derive(serde::Serialize)]
-struct EvaluationResult {
-    value: String,
-    epoch: usize,
 }

@@ -10,7 +10,7 @@ use crate::{
 };
 use rand::SeedableRng;
 
-use super::{ScheduledTrial, TrialScheduler, TrialToken, sample_unit};
+use super::{ScheduledTrial, TrialScheduler, TrialToken, plan, sample_unit};
 
 #[derive(Debug, Clone)]
 pub struct SuccessiveHalvingScheduler {
@@ -63,8 +63,8 @@ impl SuccessiveHalvingScheduler {
         budget_key: String,
         seed: u64,
     ) -> Self {
-        let budgets = build_budgets(min_epochs, max_epochs, eta);
-        let total_budget = calculate_total_budget(n_trials, &budgets, eta);
+        let budgets = plan::build_budgets(min_epochs, max_epochs, eta);
+        let total_budget = plan::calculate_total_budget(n_trials, &budgets, eta);
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let mut current = Vec::with_capacity(n_trials);
         for id in 0..n_trials {
@@ -225,37 +225,10 @@ impl TrialScheduler for SuccessiveHalvingScheduler {
     }
 }
 
-fn build_budgets(min_epochs: usize, max_epochs: usize, eta: usize) -> Vec<usize> {
-    let min_epochs = min_epochs.max(1);
-    let max_epochs = max_epochs.max(min_epochs);
-    let eta = eta.max(2);
-    let mut budgets = Vec::new();
-    let mut value = min_epochs;
-    while value < max_epochs {
-        budgets.push(value);
-        value = value.saturating_mul(eta);
-    }
-    budgets.push(max_epochs);
-    budgets
-}
-
-fn calculate_total_budget(n_trials: usize, budgets: &[usize], eta: usize) -> usize {
-    let mut total_epochs = 0;
-    let mut current_count = n_trials;
-    let mut previous_budget = 0;
-
-    for &budget in budgets {
-        let incremental_budget = budget.saturating_sub(previous_budget);
-        total_epochs += current_count * incremental_budget;
-        current_count = (current_count as f64 / eta as f64).ceil().max(1.0) as usize;
-        previous_budget = budget;
-    }
-    total_epochs
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{SuccessiveHalvingScheduler, build_budgets};
+    use super::SuccessiveHalvingScheduler;
+    use crate::scheduler::plan::build_budgets;
     use crate::{FIELD_TUNING_BUDGET_REMAINING, FIELD_TUNING_BUDGET_TOTAL, TrialScheduler};
     use std::collections::BTreeMap;
 

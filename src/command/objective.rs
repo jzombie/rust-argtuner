@@ -115,14 +115,13 @@ impl CommandObjective {
 
         let mut effective_overrides = overrides.clone();
 
-        if let Some(config_id_str) = effective_overrides.fields.get(FIELD_TRIAL_CONFIG_ID) {
-            if let Ok(config_id) = config_id_str.parse::<usize>() {
-                if let Ok(Some(parent_id)) = self.store.find_last_trial_for_config(config_id) {
-                    effective_overrides
-                        .fields
-                        .insert(FIELD_TRIAL_PARENT_ID.to_string(), parent_id.to_string());
-                }
-            }
+        if let Some(config_id_str) = effective_overrides.fields.get(FIELD_TRIAL_CONFIG_ID)
+            && let Ok(config_id) = config_id_str.parse::<usize>()
+            && let Ok(Some(parent_id)) = self.store.find_last_trial_for_config(config_id)
+        {
+            effective_overrides
+                .fields
+                .insert(FIELD_TRIAL_PARENT_ID.to_string(), parent_id.to_string());
         }
 
         if let Some(existing) = &existing_fields {
@@ -175,13 +174,13 @@ impl CommandObjective {
                 return Err(format!("trial artifacts dir failed: {err}"));
             }
 
-            if let Some(parent_id_str) = effective_overrides.fields.get(FIELD_TRIAL_PARENT_ID) {
-                if let Ok(parent_id) = parent_id_str.parse::<usize>() {
-                    let parent_dir = self.artifacts_dir.join(format!("trial_{parent_id}"));
-                    if parent_dir.exists() {
-                        crate::utils::copy_dir_recursive(&parent_dir, trial_dir)
-                            .map_err(|e| format!("failed to copy parent artifacts: {e}"))?;
-                    }
+            if let Some(parent_id_str) = effective_overrides.fields.get(FIELD_TRIAL_PARENT_ID)
+                && let Ok(parent_id) = parent_id_str.parse::<usize>()
+            {
+                let parent_dir = self.artifacts_dir.join(format!("trial_{parent_id}"));
+                if parent_dir.exists() {
+                    crate::utils::copy_dir_recursive(&parent_dir, trial_dir)
+                        .map_err(|e| format!("failed to copy parent artifacts: {e}"))?;
                 }
             }
         }
@@ -264,15 +263,15 @@ impl CommandObjective {
                 argtuner_common::BINDING_VERSION_EVENT,
                 argtuner_common::BINDING_VERSION_FIELD
             );
-            if let Some(version) = payload.data.get(&binding_version_key) {
-                if version != argtuner_talkback::BINDING_VERSION {
-                    eprintln!(
-                        "binding version mismatch: expected {} got {}",
-                        argtuner_talkback::BINDING_VERSION,
-                        version
-                    );
-                    std::process::exit(2);
-                }
+            if let Some(version) = payload.data.get(&binding_version_key)
+                && version != argtuner_talkback::BINDING_VERSION
+            {
+                eprintln!(
+                    "binding version mismatch: expected {} got {}",
+                    argtuner_talkback::BINDING_VERSION,
+                    version
+                );
+                std::process::exit(2);
             }
             let extra_fields = payload.to_fields();
             if payload.get_bool(argtuner_common::EventKind::InvalidConfig.as_str()) {
@@ -329,7 +328,10 @@ impl CommandObjective {
                         .or_insert(epoch_metric.to_string());
                     epoch_fields.insert(FIELD_METRIC.to_string(), self.metric_key.clone());
                     epoch_fields.insert(FIELD_SCORE.to_string(), epoch_score.to_string());
-                    crate::trial::enforce_hp_immutability(existing_fields.as_ref(), &mut epoch_fields);
+                    crate::trial::enforce_hp_immutability(
+                        existing_fields.as_ref(),
+                        &mut epoch_fields,
+                    );
                     self.store
                         .append_epoch(&TrialRecord {
                             trial_id,
@@ -694,8 +696,7 @@ mod tests {
     fn csv_parameter_conflict_is_resolved_by_using_existing_value() {
         let dir = tempfile::tempdir().expect("tempdir");
         // Template uses {x}
-        let json =
-            r#"{{"type":"event","name":"model.epoch_end","fields":{{"metric":"0.0","x_used":"{x}","epoch":"1"}}}}"#;
+        let json = r#"{{"type":"event","name":"model.epoch_end","fields":{{"metric":"0.0","x_used":"{x}","epoch":"1"}}}}"#;
         let template =
             crate::CommandTemplate::new(format!("echo '{}{}'", crate::RESULT_PREFIX, json));
         let store = crate::TrialStore::new(

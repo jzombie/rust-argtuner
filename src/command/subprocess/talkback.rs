@@ -45,12 +45,13 @@ fn parse_message(input: &str) -> Result<Vec<ParsedItem>, String> {
 pub fn parse_output(output: &str, prefix: &str) -> Result<Vec<ParsedItem>, String> {
     let mut items = Vec::new();
     for line in output.lines() {
-        let line = line.trim();
-        if !line.starts_with(prefix) {
-            continue;
-        }
-        let rest = &line[prefix.len()..];
-        let msg = rest.trim_start();
+        let line = strip_ansi(line);
+        let start_idx = match line.find(prefix) {
+            Some(idx) => idx,
+            None => continue,
+        };
+        let rest = &line[start_idx + prefix.len()..];
+        let msg = rest.trim();
         if msg.is_empty() {
             continue;
         }
@@ -67,12 +68,13 @@ pub fn parse_output(output: &str, prefix: &str) -> Result<Vec<ParsedItem>, Strin
 pub fn parse_prefix_lines(output: &str, prefix: &str) -> Result<Vec<Vec<ParsedItem>>, String> {
     let mut lines_items: Vec<Vec<ParsedItem>> = Vec::new();
     for line in output.lines() {
-        let line = line.trim();
-        if !line.starts_with(prefix) {
-            continue;
-        }
-        let rest = &line[prefix.len()..];
-        let msg = rest.trim_start();
+        let line = strip_ansi(line);
+        let start_idx = match line.find(prefix) {
+            Some(idx) => idx,
+            None => continue,
+        };
+        let rest = &line[start_idx + prefix.len()..];
+        let msg = rest.trim();
         if msg.is_empty() {
             continue;
         }
@@ -82,4 +84,42 @@ pub fn parse_prefix_lines(output: &str, prefix: &str) -> Result<Vec<Vec<ParsedIt
         }
     }
     Ok(lines_items)
+}
+
+// Workaround for control characters in subprocess output causing macOS tests to
+// fail in GitHub Actions. Note, local development macOS does not have this issue.
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            match chars.peek().copied() {
+                Some('[') => {
+                    chars.next();
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    let mut prev_esc = false;
+                    for c in chars.by_ref() {
+                        if c == '\u{07}' {
+                            break;
+                        }
+                        if prev_esc && c == '\\' {
+                            break;
+                        }
+                        prev_esc = c == '\u{1b}';
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
 }

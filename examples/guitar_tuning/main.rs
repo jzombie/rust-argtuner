@@ -1,6 +1,14 @@
 use argtuner_talkback_derive::talkback_args;
 use clap::Parser;
 
+#[derive(serde::Serialize)]
+struct TuningResult {
+    mean_abs: String,
+    max_abs_error: String,
+    rmse: String,
+    epoch: usize,
+}
+
 #[talkback_args]
 #[derive(Debug, Parser)]
 struct ProbeArgs {
@@ -86,12 +94,4 @@ fn main() {
         rmse: format!("{:.6}", rmse),
         epoch: 1,
     });
-}
-
-#[derive(serde::Serialize)]
-struct TuningResult {
-    mean_abs: String,
-    max_abs_error: String,
-    rmse: String,
-    epoch: usize,
 }

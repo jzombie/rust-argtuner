@@ -56,6 +56,57 @@ fn template_line() -> &'static str {
 }
 
 #[test]
+fn scientific_notation_values_parse_in_space() {
+    let toml = indoc! {r#"
+        template = "echo {lr} {dec}"
+
+        [project]
+        metric_key = "metric"
+        goal = "min"
+        pruner = "none"
+        inject_trial_placeholders = true
+
+        [sampler]
+        type = "random"
+
+        [scheduler]
+        type = "fixed"
+        n_trials = 1
+        seed = 7
+
+        [space]
+        [[space.params]]
+        type = "Float"
+        name = "lr"
+        min = 1e-3
+        max = 0.1
+        log = false
+
+        [[space.params]]
+        type = "Float"
+        name = "dec"
+        min = 0.0005
+        max = 1e-2
+        log = false
+    "#};
+
+    let config = toml::from_str::<UnifiedConfig>(toml).expect("config parses");
+    let mut floats = config.space.params.iter().filter_map(|param| match param {
+        argtuner::ParamSpec::Float { name, min, max, .. } => Some((name.as_str(), *min, *max)),
+        _ => None,
+    });
+    let (name, min, max) = floats.next().expect("lr param");
+    assert_eq!(name, "lr");
+    assert!((min - 1e-3).abs() < 1e-12);
+    assert!((max - 0.1).abs() < 1e-12);
+
+    let (name, min, max) = floats.next().expect("dec param");
+    assert_eq!(name, "dec");
+    assert!((min - 0.0005).abs() < 1e-12);
+    assert!((max - 1e-2).abs() < 1e-12);
+}
+
+#[test]
 fn missing_sampler_section_is_error() {
     let toml = format!(
         "{template}\n\n{project}\n\n{scheduler}\n\n{space}\n",

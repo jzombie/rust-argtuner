@@ -71,22 +71,22 @@ fn run_app(
 
         terminal.draw(|frame| draw_ui(frame, app))?;
 
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if !app.trials.is_empty() {
-                            app.selected = app.selected.saturating_sub(1);
-                        }
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+        {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if !app.trials.is_empty() {
+                        app.selected = app.selected.saturating_sub(1);
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if !app.trials.is_empty() {
-                            app.selected = (app.selected + 1).min(app.trials.len() - 1);
-                        }
-                    }
-                    _ => {}
                 }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if !app.trials.is_empty() {
+                        app.selected = (app.selected + 1).min(app.trials.len() - 1);
+                    }
+                }
+                _ => {}
             }
         }
     }
