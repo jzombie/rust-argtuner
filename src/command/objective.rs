@@ -874,8 +874,7 @@ mod tests {
             "name": name,
             "fields": fields,
         });
-        let s = payload.to_string();
-        s.replace("{", "{{").replace("}", "}}")
+        crate::command::template::CommandTemplate::embed_json(&payload)
     }
 
     #[test]

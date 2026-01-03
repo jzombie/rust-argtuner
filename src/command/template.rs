@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
+use serde_json::Value as JsonValue;
 use shell_words::quote;
 use thiserror::Error;
 
@@ -74,6 +75,28 @@ impl CommandTemplate {
     pub fn read_from<P: AsRef<Path>>(path: P) -> Result<Self, TemplateError> {
         let template = std::fs::read_to_string(path)?;
         Ok(Self { template })
+    }
+
+    /// Escape a JSON value for safe embedding inside a `CommandTemplate` string.
+    ///
+    /// This will:
+    /// - escape double quotes as `\"` so the JSON can be placed inside a TOML/"" string,
+    /// - double any `{`/`}` so the template parser treats them as literals.
+    pub fn embed_json(value: &JsonValue) -> String {
+        // Default: produce a JSON string suitable for embedding directly into a
+        // `CommandTemplate` (e.g. when constructing a template in Rust code).
+        // We do NOT escape quotes here so the resulting template contains
+        // valid JSON; we only escape braces for the template parser.
+        let s = value.to_string();
+        s.replace('{', "{{").replace('}', "}}")
+    }
+
+    /// Like `embed_json` but also escapes double quotes so the JSON may be
+    /// safely embedded inside a TOML `"..."` string literal.
+    pub fn embed_json_for_toml(value: &JsonValue) -> String {
+        let s = value.to_string();
+        let s = s.replace('"', "\\\"");
+        s.replace('{', "{{").replace('}', "}}")
     }
 }
 

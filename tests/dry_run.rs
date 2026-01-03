@@ -6,18 +6,14 @@ fn dry_run_avoids_project_store() {
     let project_root = dir.path().join("probe-project");
     std::fs::create_dir_all(&project_root).expect("project dir");
 
-    let event = serde_json::json!({
+    let event = argtuner::CommandTemplate::embed_json_for_toml(&serde_json::json!({
         "type": "event",
         "name": "model.epoch_end",
         "fields": {
             "metric": "1.0",
             "epoch": "1"
         }
-    })
-    .to_string()
-    .replace("\"", "\\\"")
-    .replace("{", "{{")
-    .replace("}", "}}");
+    }));
 
     let toml = format!(
         r#"
