@@ -8,6 +8,7 @@ use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use ratatui::backend::CrosstermBackend;
 use ratatui::prelude::{Constraint, Direction, Layout, Rect};
+use ratatui::symbols::Marker;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -482,6 +483,7 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
         frame.render_widget(Paragraph::new("No numeric metric curves."), inner);
         return;
     }
+    let x_axis = select_x_axis_spec(epochs);
 
     let item_height = 7u16;
     let visible_items = (inner.height / item_height).max(1) as usize;
@@ -501,8 +503,16 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
             width: inner.width,
             height: item_height,
         };
-        let series = metric_series_for_key(epochs, key);
+        let series = metric_series_for_key(epochs, key, &x_axis);
         let (min_x, max_x, min_y, max_y) = series_bounds(&series);
+        let x_labels = axis_labels(min_x, max_x);
+        let y_labels = axis_labels(min_y, max_y);
+        let x_title = if x_axis.label == x_axis.unit {
+            x_axis.label.to_string()
+        } else {
+            format!("{} ({})", x_axis.label, x_axis.unit)
+        };
+        let y_title = metric_axis_title(key);
         let title = if let Some(last) = series.last().map(|point| point.1) {
             format!("{key}  last={last:.4}")
         } else {
@@ -511,12 +521,23 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
         let dataset = Dataset::default()
             .name(key.clone())
             .graph_type(GraphType::Line)
+            .marker(Marker::Braille)
             .style(Style::default().fg(Color::Cyan))
             .data(&series);
         let chart = Chart::new(vec![dataset])
             .block(Block::default().borders(Borders::ALL).title(title))
-            .x_axis(Axis::default().bounds([min_x, max_x]))
-            .y_axis(Axis::default().bounds([min_y, max_y]));
+            .x_axis(
+                Axis::default()
+                    .title(x_title)
+                    .bounds([min_x, max_x])
+                    .labels(x_labels),
+            )
+            .y_axis(
+                Axis::default()
+                    .title(y_title)
+                    .bounds([min_y, max_y])
+                    .labels(y_labels),
+            );
         frame.render_widget(chart, rect);
     }
 
@@ -572,7 +593,11 @@ fn collect_metric_keys_for_epochs(epochs: &[TrialRow]) -> Vec<String> {
     keys.keys().cloned().collect()
 }
 
-fn metric_series_for_key(epochs: &[TrialRow], key: &str) -> Vec<(f64, f64)> {
+fn metric_series_for_key(
+    epochs: &[TrialRow],
+    key: &str,
+    x_axis: &XAxisSpec,
+) -> Vec<(f64, f64)> {
     let mut series = Vec::with_capacity(epochs.len());
     for (idx, epoch) in epochs.iter().enumerate() {
         let value = epoch
@@ -582,15 +607,14 @@ fn metric_series_for_key(epochs: &[TrialRow], key: &str) -> Vec<(f64, f64)> {
         let Some(value) = value else {
             continue;
         };
-        let x = epoch_index(&epoch.fields, idx);
+        let x = epoch_index(&epoch.fields, idx, x_axis);
         series.push((x, value));
     }
     series
 }
 
-fn epoch_index(fields: &BTreeMap<String, String>, fallback: usize) -> f64 {
-    let keys = ["metric.epoch", "metric.step", "metric.step_idx", "metric.last_epoch"];
-    for key in keys {
+fn epoch_index(fields: &BTreeMap<String, String>, fallback: usize, x_axis: &XAxisSpec) -> f64 {
+    if let Some(key) = x_axis.key {
         if let Some(value) = fields.get(key)
             && let Ok(parsed) = value.parse::<f64>()
         {
@@ -621,6 +645,126 @@ fn series_bounds(series: &[(f64, f64)]) -> (f64, f64, f64, f64) {
         max_y = min_y + 1.0;
     }
     (min_x, max_x, min_y, max_y)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct XAxisSpec {
+    key: Option<&'static str>,
+    label: &'static str,
+    unit: &'static str,
+}
+
+fn select_x_axis_spec(epochs: &[TrialRow]) -> XAxisSpec {
+    let candidates = [
+        XAxisSpec {
+            key: Some("metric.time_s"),
+            label: "time",
+            unit: "s",
+        },
+        XAxisSpec {
+            key: Some("metric.time_sec"),
+            label: "time",
+            unit: "s",
+        },
+        XAxisSpec {
+            key: Some("metric.elapsed_s"),
+            label: "time",
+            unit: "s",
+        },
+        XAxisSpec {
+            key: Some("metric.time_ms"),
+            label: "time",
+            unit: "ms",
+        },
+        XAxisSpec {
+            key: Some("metric.elapsed_ms"),
+            label: "time",
+            unit: "ms",
+        },
+        XAxisSpec {
+            key: Some("metric.epoch"),
+            label: "epoch",
+            unit: "epoch",
+        },
+        XAxisSpec {
+            key: Some("metric.last_epoch"),
+            label: "epoch",
+            unit: "epoch",
+        },
+        XAxisSpec {
+            key: Some("metric.step"),
+            label: "step",
+            unit: "step",
+        },
+        XAxisSpec {
+            key: Some("metric.step_idx"),
+            label: "step",
+            unit: "step",
+        },
+    ];
+
+    for candidate in candidates {
+        if let Some(key) = candidate.key {
+            if epochs.iter().any(|epoch| {
+                epoch
+                    .fields
+                    .get(key)
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .is_some()
+            }) {
+                return candidate;
+            }
+        }
+    }
+
+    XAxisSpec {
+        key: None,
+        label: "index",
+        unit: "idx",
+    }
+}
+
+fn axis_labels(min: f64, max: f64) -> Vec<Line<'static>> {
+    let mid = (min + max) / 2.0;
+    vec![
+        Line::from(format_axis_value(min)),
+        Line::from(format_axis_value(mid)),
+        Line::from(format_axis_value(max)),
+    ]
+}
+
+fn format_axis_value(value: f64) -> String {
+    let abs = value.abs();
+    if abs >= 1000.0 {
+        format!("{value:.0}")
+    } else if abs >= 100.0 {
+        format!("{value:.1}")
+    } else if abs >= 1.0 {
+        format!("{value:.2}")
+    } else {
+        format!("{value:.3}")
+    }
+}
+
+fn metric_axis_title(key: &str) -> String {
+    if let Some(unit) = metric_unit_from_key(key) {
+        format!("{key} ({unit})")
+    } else {
+        key.to_string()
+    }
+}
+
+fn metric_unit_from_key(key: &str) -> Option<&'static str> {
+    if key.ends_with("_ms") || key.ends_with(".ms") || key.contains("time_ms") {
+        return Some("ms");
+    }
+    if key.ends_with("_s") || key.ends_with(".s") || key.contains("time_s") {
+        return Some("s");
+    }
+    if key.ends_with("_pct") || key.ends_with(".pct") || key.contains("percent") {
+        return Some("%");
+    }
+    None
 }
 
 fn trial_detail_lines(trial: &TrialRow, epochs: &[TrialRow]) -> Vec<Line<'static>> {
