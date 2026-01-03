@@ -10,7 +10,10 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::prelude::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Sparkline};
+use ratatui::widgets::{
+    Axis, Block, Borders, Chart, Dataset, GraphType, List, ListItem, ListState, Paragraph,
+    Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use ratatui::{Frame, Terminal};
 use rusqlite::{Connection, OpenFlags};
 
@@ -22,8 +25,13 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
             .checked_sub(Duration::from_secs(60))
             .unwrap_or_else(Instant::now),
         trials: Vec::new(),
+        epoch_rows: BTreeMap::new(),
         selected: 0,
         last_error: None,
+        trials_scroll: ScrollPane::default(),
+        metrics_scroll: ScrollPane::default(),
+        details_scroll: ScrollPane::default(),
+        right_focus: RightPaneFocus::Charts,
     };
 
     terminal::enable_raw_mode()?;
@@ -55,8 +63,52 @@ struct AppState {
     poll: Duration,
     last_refresh: Instant,
     trials: Vec<TrialRow>,
+    epoch_rows: BTreeMap<i64, Vec<TrialRow>>,
     selected: usize,
     last_error: Option<String>,
+    trials_scroll: ScrollPane,
+    metrics_scroll: ScrollPane,
+    details_scroll: ScrollPane,
+    right_focus: RightPaneFocus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RightPaneFocus {
+    Charts,
+    Details,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ScrollPane {
+    offset: usize,
+    pending: isize,
+}
+
+impl ScrollPane {
+    fn reset(&mut self) {
+        self.offset = 0;
+        self.pending = 0;
+    }
+
+    fn bump(&mut self, delta: isize) {
+        self.pending = self.pending.saturating_add(delta);
+    }
+
+    fn apply(&mut self, total: usize, view: usize) {
+        let max_offset = total.saturating_sub(view);
+        if self.pending != 0 {
+            let delta = self.pending;
+            self.pending = 0;
+            let next = if delta.is_negative() {
+                self.offset.saturating_sub(delta.unsigned_abs())
+            } else {
+                self.offset.saturating_add(delta as usize)
+            };
+            self.offset = next.min(max_offset);
+        } else if self.offset > max_offset {
+            self.offset = max_offset;
+        }
+    }
 }
 
 fn run_app(
@@ -78,14 +130,46 @@ fn run_app(
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 KeyCode::Up | KeyCode::Char('k') => {
                     if !app.trials.is_empty() {
-                        app.selected = app.selected.saturating_sub(1);
+                        let next = app.selected.saturating_sub(1);
+                        if next != app.selected {
+                            app.selected = next;
+                            app.metrics_scroll.reset();
+                            app.details_scroll.reset();
+                        }
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if !app.trials.is_empty() {
-                        app.selected = (app.selected + 1).min(app.trials.len() - 1);
+                        let next = (app.selected + 1).min(app.trials.len() - 1);
+                        if next != app.selected {
+                            app.selected = next;
+                            app.metrics_scroll.reset();
+                            app.details_scroll.reset();
+                        }
                     }
                 }
+                KeyCode::Tab => {
+                    app.right_focus = match app.right_focus {
+                        RightPaneFocus::Charts => RightPaneFocus::Details,
+                        RightPaneFocus::Details => RightPaneFocus::Charts,
+                    };
+                }
+                KeyCode::PageDown | KeyCode::Char(']') => match app.right_focus {
+                    RightPaneFocus::Charts => {
+                        app.metrics_scroll.bump(1);
+                    }
+                    RightPaneFocus::Details => {
+                        app.details_scroll.bump(1);
+                    }
+                },
+                KeyCode::PageUp | KeyCode::Char('[') => match app.right_focus {
+                    RightPaneFocus::Charts => {
+                        app.metrics_scroll.bump(-1);
+                    }
+                    RightPaneFocus::Details => {
+                        app.details_scroll.bump(-1);
+                    }
+                },
                 _ => {}
             }
         }
@@ -94,8 +178,9 @@ fn run_app(
 
 fn refresh_trials(app: &mut AppState) {
     match load_trials(&app.db_path) {
-        Ok(trials) => {
+        Ok((trials, epoch_rows)) => {
             app.trials = trials;
+            app.epoch_rows = epoch_rows;
             if app.selected >= app.trials.len() && !app.trials.is_empty() {
                 app.selected = app.trials.len() - 1;
             }
@@ -107,16 +192,22 @@ fn refresh_trials(app: &mut AppState) {
     }
 }
 
-fn load_trials(path: &Path) -> Result<Vec<TrialRow>, String> {
+fn load_trials(path: &Path) -> Result<(Vec<TrialRow>, BTreeMap<i64, Vec<TrialRow>>), String> {
     let conn = open_connection(path)?;
+    let trials = load_trial_rows(&conn, "trial_records")?;
+    let epoch_rows = load_epoch_rows(&conn)?;
+    Ok((trials, epoch_rows))
+}
+
+fn load_trial_rows(conn: &Connection, table: &str) -> Result<Vec<TrialRow>, String> {
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             r#"
             SELECT trial_id, status, elapsed_ms, error, fields_json
-            FROM trial_records
+            FROM {table}
             ORDER BY trial_id ASC
             "#,
-        )
+        ))
         .map_err(|err| err.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -146,6 +237,54 @@ fn load_trials(path: &Path) -> Result<Vec<TrialRow>, String> {
     Ok(trials)
 }
 
+fn load_epoch_rows(conn: &Connection) -> Result<BTreeMap<i64, Vec<TrialRow>>, String> {
+    let mut stmt = match conn.prepare(
+        r#"
+        SELECT trial_id, status, elapsed_ms, error, fields_json
+        FROM trial_epoch_records
+        ORDER BY trial_id ASC, row_id ASC
+        "#,
+    ) {
+        Ok(stmt) => stmt,
+        Err(err) => {
+            if err
+                .to_string()
+                .contains("no such table: trial_epoch_records")
+            {
+                return Ok(BTreeMap::new());
+            }
+            return Err(err.to_string());
+        }
+    };
+    let rows = stmt
+        .query_map([], |row| {
+            let fields_json: String = row.get(4)?;
+            let fields: BTreeMap<String, String> =
+                serde_json::from_str(&fields_json).map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(err),
+                    )
+                })?;
+            Ok(TrialRow {
+                trial_id: row.get(0)?,
+                status: row.get(1)?,
+                elapsed_ms: row.get(2)?,
+                error: row.get(3)?,
+                fields,
+            })
+        })
+        .map_err(|err| err.to_string())?;
+
+    let mut by_trial: BTreeMap<i64, Vec<TrialRow>> = BTreeMap::new();
+    for row in rows {
+        let row = row.map_err(|err| err.to_string())?;
+        by_trial.entry(row.trial_id).or_default().push(row);
+    }
+    Ok(by_trial)
+}
+
 fn open_connection(path: &Path) -> Result<Connection, String> {
     if !path.exists() {
         return Err(format!("missing db: {}", path.display()));
@@ -167,41 +306,37 @@ fn open_connection(path: &Path) -> Result<Connection, String> {
 
 fn draw_ui(frame: &mut Frame, app: &mut AppState) {
     let area = frame.area();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(0)])
-        .split(area);
-
-    draw_sparkline(frame, app, chunks[0]);
-    draw_detail(frame, app, chunks[1]);
-}
-
-fn draw_sparkline(frame: &mut Frame, app: &AppState, area: Rect) {
-    let (metric_label, values) = metric_series(app);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!("Metric Sparkline ({metric_label})"));
-    let sparkline = Sparkline::default()
-        .block(block)
-        .data(&values)
-        .style(Style::default().fg(Color::Green));
-    frame.render_widget(sparkline, area);
-}
-
-fn draw_detail(frame: &mut Frame, app: &mut AppState, area: Rect) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(area);
 
     draw_trial_list(frame, app, columns[0]);
-    draw_trial_detail(frame, app, columns[1]);
+    draw_metrics_overview(frame, app, columns[1]);
 }
 
 fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title("Trials");
+    let inner = block.inner(area);
+    let visible_rows = inner.height as usize;
+    let total_items = app.trials.len();
+    if total_items > 0 && visible_rows > 0 {
+        let offset = &mut app.trials_scroll.offset;
+        if app.selected < *offset {
+            *offset = app.selected;
+        } else if app.selected >= *offset + visible_rows {
+            *offset = app.selected + 1 - visible_rows;
+        }
+        app.trials_scroll.apply(total_items, visible_rows);
+    } else {
+        app.trials_scroll.reset();
+    }
+
     let items = app
         .trials
         .iter()
+        .skip(app.trials_scroll.offset)
+        .take(visible_rows.max(1))
         .map(|trial| {
             let metric_text = metric_value_text(trial).unwrap_or_else(|| "-".to_string());
             let line = format!(
@@ -214,58 +349,15 @@ fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
 
     let mut state = ListState::default();
     if !app.trials.is_empty() {
-        state.select(Some(app.selected));
+        let selected = app.selected.saturating_sub(app.trials_scroll.offset);
+        state.select(Some(selected));
     }
-
-    let block = Block::default().borders(Borders::ALL).title("Trials");
     let list = List::new(items)
         .block(block)
         .highlight_style(Style::default().fg(Color::Yellow));
     frame.render_stateful_widget(list, area, &mut state);
-}
 
-fn draw_trial_detail(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title("Details");
-    let text = if let Some(err) = app.last_error.as_ref() {
-        vec![Line::from(Span::styled(
-            err.clone(),
-            Style::default().fg(Color::Red),
-        ))]
-    } else if let Some(trial) = app.trials.get(app.selected) {
-        let mut lines = Vec::new();
-        lines.push(Line::from(format!("trial_id: {}", trial.trial_id)));
-        lines.push(Line::from(format!("status: {}", trial.status)));
-        lines.push(Line::from(format!("elapsed_ms: {}", trial.elapsed_ms)));
-        if let Some(error) = &trial.error {
-            lines.push(Line::from(format!("error: {}", error)));
-        }
-        if let Some((label, value)) = metric_for_trial(trial) {
-            lines.push(Line::from(format!("metric: {label} = {value}")));
-        }
-        if let Some(score) = trial.fields.get("score") {
-            lines.push(Line::from(format!("score: {}", score)));
-        }
-        let mut metric_fields = trial
-            .fields
-            .iter()
-            .filter(|(k, _)| k.starts_with("metric.") && k.as_str() != "metric")
-            .map(|(k, v)| format!("{k} = {v}"))
-            .collect::<Vec<_>>();
-        metric_fields.sort();
-        if !metric_fields.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::from("metrics:"));
-            for item in metric_fields {
-                lines.push(Line::from(format!("  {item}")));
-            }
-        }
-        lines
-    } else {
-        vec![Line::from("No trials loaded.")]
-    };
-
-    let paragraph = Paragraph::new(text).block(block);
-    frame.render_widget(paragraph, area);
+    render_scrollbar(frame, inner, total_items, visible_rows, app.trials_scroll.offset);
 }
 
 fn metric_for_trial(trial: &TrialRow) -> Option<(String, f64)> {
@@ -285,38 +377,273 @@ fn metric_value_text(trial: &TrialRow) -> Option<String> {
     metric_for_trial(trial).map(|(label, value)| format!("{label}={value:.4}"))
 }
 
-fn metric_series(app: &AppState) -> (String, Vec<u64>) {
-    let Some(trial) = app.trials.get(app.selected) else {
-        return ("none".to_string(), Vec::new());
-    };
-    let metric_key = metric_for_trial(trial)
-        .map(|(label, _)| label)
-        .or_else(|| {
-            app.trials
-                .iter()
-                .find_map(|t| metric_for_trial(t).map(|(label, _)| label))
-        })
-        .unwrap_or_else(|| "metric".to_string());
+fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
+    let title = "Trial Metrics (Tab + PgUp/PgDn)";
+    let block = Block::default().borders(Borders::ALL).title(title);
+    frame.render_widget(&block, area);
+    let inner = block.inner(area);
+    if inner.height == 0 {
+        return;
+    }
 
-    let mut values = Vec::new();
-    let mut min = f64::INFINITY;
-    let mut max = f64::NEG_INFINITY;
-    let mut parsed = Vec::new();
-    for trial in &app.trials {
-        let value = trial
-            .fields
-            .get(&metric_key)
-            .and_then(|v| v.parse::<f64>().ok());
-        parsed.push(value);
-        if let Some(v) = value {
-            min = min.min(v);
-            max = max.max(v);
+    if let Some(err) = app.last_error.as_ref() {
+        let text = vec![Line::from(Span::styled(
+            err.clone(),
+            Style::default().fg(Color::Red),
+        ))];
+        frame.render_widget(Paragraph::new(text), inner);
+        return;
+    }
+
+    let Some(trial) = app.trials.get(app.selected) else {
+        frame.render_widget(Paragraph::new("No trials loaded."), inner);
+        return;
+    };
+    let trial = trial.clone();
+    let epochs = app
+        .epoch_rows
+        .get(&trial.trial_id)
+        .cloned()
+        .unwrap_or_default();
+    if epochs.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No epoch metrics for selected trial."),
+            inner,
+        );
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+        .split(inner);
+    draw_metric_charts(frame, app, &epochs, chunks[0]);
+    draw_trial_details(frame, app, &trial, &epochs, chunks[1]);
+}
+
+fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow], area: Rect) {
+    let title = match app.right_focus {
+        RightPaneFocus::Charts => "Metric Curves (focus)",
+        RightPaneFocus::Details => "Metric Curves",
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
+    frame.render_widget(&block, area);
+    let inner = block.inner(area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let metric_keys = collect_metric_keys_for_epochs(epochs);
+    if metric_keys.is_empty() {
+        frame.render_widget(Paragraph::new("No numeric metric curves."), inner);
+        return;
+    }
+
+    let item_height = 7u16;
+    let visible_items = (inner.height / item_height).max(1) as usize;
+    let total_items = metric_keys.len();
+    app.metrics_scroll.apply(total_items, visible_items);
+
+    for (row, key) in metric_keys
+        .iter()
+        .skip(app.metrics_scroll.offset)
+        .take(visible_items)
+        .enumerate()
+    {
+        let y = inner.y + (row as u16 * item_height);
+        let rect = Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: item_height,
+        };
+        let series = metric_series_for_key(epochs, key);
+        let (min_x, max_x, min_y, max_y) = series_bounds(&series);
+        let title = if let Some(last) = series.last().map(|point| point.1) {
+            format!("{key}  last={last:.4}")
+        } else {
+            key.clone()
+        };
+        let dataset = Dataset::default()
+            .name(key.clone())
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::Cyan))
+            .data(&series);
+        let chart = Chart::new(vec![dataset])
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .x_axis(Axis::default().bounds([min_x, max_x]))
+            .y_axis(Axis::default().bounds([min_y, max_y]));
+        frame.render_widget(chart, rect);
+    }
+
+    render_scrollbar(
+        frame,
+        inner,
+        total_items,
+        visible_items,
+        app.metrics_scroll.offset,
+    );
+}
+
+fn draw_trial_details(
+    frame: &mut Frame,
+    app: &mut AppState,
+    trial: &TrialRow,
+    epochs: &[TrialRow],
+    area: Rect,
+) {
+    let title = match app.right_focus {
+        RightPaneFocus::Charts => "Trial Details",
+        RightPaneFocus::Details => "Trial Details (focus)",
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
+    frame.render_widget(&block, area);
+    let inner = block.inner(area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let text = trial_detail_lines(trial, epochs);
+    let total_lines = text.len();
+    let visible_lines = inner.height as usize;
+    app.details_scroll.apply(total_lines, visible_lines);
+    let paragraph = Paragraph::new(text).scroll((app.details_scroll.offset as u16, 0));
+    frame.render_widget(paragraph, inner);
+
+    render_scrollbar(frame, inner, total_lines, visible_lines, app.details_scroll.offset);
+}
+
+fn collect_metric_keys_for_epochs(epochs: &[TrialRow]) -> Vec<String> {
+    let mut keys = BTreeMap::new();
+    for epoch in epochs {
+        for (key, value) in &epoch.fields {
+            if !key.starts_with("metric.") || key.as_str() == "metric" {
+                continue;
+            }
+            if value.parse::<f64>().is_ok() {
+                keys.entry(key.clone()).or_insert(());
+            }
         }
     }
-    let range = if max > min { max - min } else { 1.0 };
-    for value in parsed {
-        let scaled = value.map(|v| ((v - min) / range * 100.0).round() as u64);
-        values.push(scaled.unwrap_or(0));
+    keys.keys().cloned().collect()
+}
+
+fn metric_series_for_key(epochs: &[TrialRow], key: &str) -> Vec<(f64, f64)> {
+    let mut series = Vec::with_capacity(epochs.len());
+    for (idx, epoch) in epochs.iter().enumerate() {
+        let value = epoch
+            .fields
+            .get(key)
+            .and_then(|v| v.parse::<f64>().ok());
+        let Some(value) = value else {
+            continue;
+        };
+        let x = epoch_index(&epoch.fields, idx);
+        series.push((x, value));
     }
-    (metric_key, values)
+    series
+}
+
+fn epoch_index(fields: &BTreeMap<String, String>, fallback: usize) -> f64 {
+    let keys = ["metric.epoch", "metric.step", "metric.step_idx", "metric.last_epoch"];
+    for key in keys {
+        if let Some(value) = fields.get(key)
+            && let Ok(parsed) = value.parse::<f64>()
+        {
+            return parsed;
+        }
+    }
+    (fallback + 1) as f64
+}
+
+fn series_bounds(series: &[(f64, f64)]) -> (f64, f64, f64, f64) {
+    if series.is_empty() {
+        return (0.0, 1.0, 0.0, 1.0);
+    }
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for (x, y) in series {
+        min_x = min_x.min(*x);
+        max_x = max_x.max(*x);
+        min_y = min_y.min(*y);
+        max_y = max_y.max(*y);
+    }
+    if min_x == max_x {
+        max_x = min_x + 1.0;
+    }
+    if min_y == max_y {
+        max_y = min_y + 1.0;
+    }
+    (min_x, max_x, min_y, max_y)
+}
+
+fn trial_detail_lines(trial: &TrialRow, epochs: &[TrialRow]) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    lines.push(Line::from(format!("trial_id: {}", trial.trial_id)));
+    lines.push(Line::from(format!("status: {}", trial.status)));
+    lines.push(Line::from(format!("elapsed_ms: {}", trial.elapsed_ms)));
+    lines.push(Line::from(format!("epochs_logged: {}", epochs.len())));
+    if let Some(error) = &trial.error {
+        lines.push(Line::from(format!("error: {}", error)));
+    }
+    if let Some(score) = trial.fields.get("score") {
+        lines.push(Line::from(format!("score: {}", score)));
+    }
+    if let Some(metric_name) = trial.fields.get("metric") {
+        lines.push(Line::from(format!("metric_key: {}", metric_name)));
+    }
+
+    let mut metric_fields: BTreeMap<String, String> = BTreeMap::new();
+    let mut other_fields = Vec::new();
+    for (key, value) in &trial.fields {
+        if key.starts_with("metric.") && key.as_str() != "metric" {
+            metric_fields.insert(key.clone(), value.clone());
+        } else if !key.starts_with("metric") {
+            other_fields.push(format!("{key} = {value}"));
+        }
+    }
+    if let Some(last_epoch) = epochs.last() {
+        for (key, value) in &last_epoch.fields {
+            if key.starts_with("metric.") && key.as_str() != "metric" {
+                metric_fields.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+    }
+    other_fields.sort();
+
+    if !metric_fields.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from("metrics:"));
+        for (key, value) in metric_fields {
+            lines.push(Line::from(format!("  {key} = {value}")));
+        }
+    }
+    if !other_fields.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from("fields:"));
+        for item in other_fields {
+            lines.push(Line::from(format!("  {item}")));
+        }
+    }
+    lines
+}
+
+fn render_scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    total: usize,
+    view: usize,
+    offset: usize,
+) {
+    if total <= view || view == 0 || area.height == 0 {
+        return;
+    }
+    let content_len = total.saturating_sub(view).saturating_add(1).max(1);
+    let mut state = ScrollbarState::new(content_len)
+        .position(offset.min(content_len.saturating_sub(1)))
+        .viewport_content_length(view.max(1));
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+    frame.render_stateful_widget(scrollbar, area, &mut state);
 }
