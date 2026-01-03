@@ -1,4 +1,4 @@
-template = "cargo run -q -p argtuner-loss-generator -- --metric-key loss --checkpoint-dir {trial_dir} --pattern {pattern} --noise {noise} --spike-prob {spike_prob}"
+template = "cargo run -q -p argtuner-loss-generator -- --metric-key loss --checkpoint-dir {trial_dir} --pattern {pattern} --noise {noise} --spike-prob {spike_prob} --epoch-time {epoch_time}"
 
 [project]
 metric_key = "loss"
@@ -26,3 +26,9 @@ max = 0.5
 name = "spike_prob"
 min = 0.0
 max = 0.2
+
+[[space.params]]
+name = "epoch_time"
+min = 50.0
+max = 100.0
+

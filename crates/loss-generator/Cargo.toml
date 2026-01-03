@@ -12,3 +12,5 @@ clap = { workspace = true, features = ["derive"] }
 rand.workspace = true
 argtuner-talkback = { workspace = true, features = ["clap"] }
 argtuner-talkback-derive = { workspace = true }
+indicatif = "0.17"
+

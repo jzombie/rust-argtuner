@@ -1,8 +1,11 @@
 mod patterns;
 
 use clap::{Parser, ValueEnum};
+use indicatif::{ProgressBar, ProgressStyle};
 use patterns::{LossPattern, SmoothDecay, Overfitting, Underfitting, Spikes, Noisy};
 use argtuner_talkback_derive::talkback_args;
+use std::time::Duration;
+use std::thread;
 
 #[talkback_args]
 #[derive(Parser, Debug)]
@@ -31,6 +34,10 @@ struct Args {
     /// Checkpoint directory
     #[arg(long)]
     checkpoint_dir: Option<String>,
+
+    /// Simulated epoch time in milliseconds
+    #[arg(long, default_value_t = 0.0)]
+    epoch_time: f64,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -62,11 +69,31 @@ fn main() {
 
     eprintln!("Generating pattern: {}", pattern.name());
     println!("step,loss");
+
+    let pb = if args.epoch_time > 0.0 {
+        let pb = ProgressBar::new(args.steps as u64);
+        pb.set_style(ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+            .unwrap()
+            .progress_chars("#>-"));
+        Some(pb)
+    } else {
+        None
+    };
+
     let mut final_loss = 0.0;
     for step in 0..args.steps {
+        if let Some(pb) = &pb {
+            pb.set_position(step as u64);
+            thread::sleep(Duration::from_millis(args.epoch_time as u64));
+        }
         let loss = pattern.generate(step, args.steps);
         println!("{},{:.6}", step, loss);
         final_loss = loss;
+    }
+
+    if let Some(pb) = &pb {
+        pb.finish_with_message("done");
     }
 
     let mut result = std::collections::BTreeMap::new();
