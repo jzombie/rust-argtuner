@@ -3,7 +3,9 @@ use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind,
+};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use ratatui::backend::CrosstermBackend;
@@ -33,18 +35,19 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         metrics_scroll: ScrollPane::default(),
         details_scroll: ScrollPane::default(),
         focus: PaneFocus::Trials,
+        pane_rects: PaneRects::default(),
     };
 
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let result = run_app(&mut terminal, &mut app);
 
     terminal::disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     result
@@ -71,6 +74,7 @@ struct AppState {
     metrics_scroll: ScrollPane,
     details_scroll: ScrollPane,
     focus: PaneFocus,
+    pane_rects: PaneRects,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +82,23 @@ enum PaneFocus {
     Trials,
     Charts,
     Details,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PaneRects {
+    trials: Rect,
+    charts: Rect,
+    details: Rect,
+}
+
+impl Default for PaneRects {
+    fn default() -> Self {
+        Self {
+            trials: Rect::default(),
+            charts: Rect::default(),
+            details: Rect::default(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -125,95 +146,89 @@ fn run_app(
 
         terminal.draw(|frame| draw_ui(frame, app))?;
 
-        if event::poll(Duration::from_millis(50))?
-            && let Event::Key(key) = event::read()?
-        {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                KeyCode::Up | KeyCode::Char('k') => match app.focus {
-                    PaneFocus::Trials => {
-                        if !app.trials.is_empty() {
-                            let next = app.selected.saturating_sub(1);
-                            if next != app.selected {
-                                app.selected = next;
-                                app.metrics_scroll.reset();
-                                app.details_scroll.reset();
-                            }
-                        }
+        if event::poll(Duration::from_millis(50))? {
+            match event::read()? {
+                Event::Key(key) => match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Up | KeyCode::Char('k') => apply_focus_delta(app, -1),
+                    KeyCode::Down | KeyCode::Char('j') => apply_focus_delta(app, 1),
+                    KeyCode::Tab => {
+                        app.focus = match app.focus {
+                            PaneFocus::Trials => PaneFocus::Charts,
+                            PaneFocus::Charts => PaneFocus::Details,
+                            PaneFocus::Details => PaneFocus::Trials,
+                        };
                     }
-                    PaneFocus::Charts => {
-                        app.metrics_scroll.bump(-1);
-                    }
-                    PaneFocus::Details => {
-                        app.details_scroll.bump(-1);
-                    }
+                    KeyCode::PageDown | KeyCode::Char(']') => apply_focus_delta(app, 5),
+                    KeyCode::PageUp | KeyCode::Char('[') => apply_focus_delta(app, -5),
+                    _ => {}
                 },
-                KeyCode::Down | KeyCode::Char('j') => match app.focus {
-                    PaneFocus::Trials => {
-                        if !app.trials.is_empty() {
-                            let next = (app.selected + 1).min(app.trials.len() - 1);
-                            if next != app.selected {
-                                app.selected = next;
-                                app.metrics_scroll.reset();
-                                app.details_scroll.reset();
-                            }
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        let delta = -1;
+                        if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
+                            apply_delta_for_pane(app, pane, delta);
+                        } else {
+                            apply_focus_delta(app, delta);
                         }
                     }
-                    PaneFocus::Charts => {
-                        app.metrics_scroll.bump(1);
-                    }
-                    PaneFocus::Details => {
-                        app.details_scroll.bump(1);
-                    }
-                },
-                KeyCode::Tab => {
-                    app.focus = match app.focus {
-                        PaneFocus::Trials => PaneFocus::Charts,
-                        PaneFocus::Charts => PaneFocus::Details,
-                        PaneFocus::Details => PaneFocus::Trials,
-                    };
-                }
-                KeyCode::PageDown | KeyCode::Char(']') => match app.focus {
-                    PaneFocus::Trials => {
-                        if !app.trials.is_empty() {
-                            let step = 5usize;
-                            let next = (app.selected + step).min(app.trials.len() - 1);
-                            if next != app.selected {
-                                app.selected = next;
-                                app.metrics_scroll.reset();
-                                app.details_scroll.reset();
-                            }
+                    MouseEventKind::ScrollDown => {
+                        let delta = 1;
+                        if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
+                            apply_delta_for_pane(app, pane, delta);
+                        } else {
+                            apply_focus_delta(app, delta);
                         }
                     }
-                    PaneFocus::Charts => {
-                        app.metrics_scroll.bump(5);
-                    }
-                    PaneFocus::Details => {
-                        app.details_scroll.bump(5);
-                    }
-                },
-                KeyCode::PageUp | KeyCode::Char('[') => match app.focus {
-                    PaneFocus::Trials => {
-                        if !app.trials.is_empty() {
-                            let step = 5usize;
-                            let next = app.selected.saturating_sub(step);
-                            if next != app.selected {
-                                app.selected = next;
-                                app.metrics_scroll.reset();
-                                app.details_scroll.reset();
-                            }
-                        }
-                    }
-                    PaneFocus::Charts => {
-                        app.metrics_scroll.bump(-5);
-                    }
-                    PaneFocus::Details => {
-                        app.details_scroll.bump(-5);
-                    }
+                    _ => {}
                 },
                 _ => {}
             }
         }
+    }
+}
+
+fn apply_focus_delta(app: &mut AppState, delta: isize) {
+    apply_delta_for_pane(app, app.focus, delta);
+}
+
+fn apply_delta_for_pane(app: &mut AppState, pane: PaneFocus, delta: isize) {
+    match pane {
+        PaneFocus::Trials => move_trial_selection(app, delta),
+        PaneFocus::Charts => app.metrics_scroll.bump(delta),
+        PaneFocus::Details => app.details_scroll.bump(delta),
+    }
+}
+
+fn pane_for_mouse(app: &AppState, column: u16, row: u16) -> Option<PaneFocus> {
+    if rect_contains(app.pane_rects.trials, column, row) {
+        Some(PaneFocus::Trials)
+    } else if rect_contains(app.pane_rects.charts, column, row) {
+        Some(PaneFocus::Charts)
+    } else if rect_contains(app.pane_rects.details, column, row) {
+        Some(PaneFocus::Details)
+    } else {
+        None
+    }
+}
+
+fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
+    let max_x = rect.x.saturating_add(rect.width);
+    let max_y = rect.y.saturating_add(rect.height);
+    column >= rect.x && column < max_x && row >= rect.y && row < max_y
+}
+
+fn move_trial_selection(app: &mut AppState, delta: isize) {
+    if app.trials.is_empty() {
+        return;
+    }
+    let max = (app.trials.len() - 1) as isize;
+    let current = app.selected as isize;
+    let next = (current + delta).clamp(0, max) as usize;
+    if next != app.selected {
+        app.selected = next;
+        app.metrics_scroll.reset();
+        app.details_scroll.reset();
     }
 }
 
@@ -352,6 +367,7 @@ fn draw_ui(frame: &mut Frame, app: &mut AppState) {
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(area);
 
+    app.pane_rects.trials = columns[0];
     draw_trial_list(frame, app, columns[0]);
     draw_metrics_overview(frame, app, columns[1]);
 }
@@ -431,6 +447,13 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
         return;
     }
 
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+        .split(inner);
+    app.pane_rects.charts = chunks[0];
+    app.pane_rects.details = chunks[1];
+
     if let Some(err) = app.last_error.as_ref() {
         let text = vec![Line::from(Span::styled(
             err.clone(),
@@ -457,11 +480,6 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
         );
         return;
     }
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-        .split(inner);
     draw_metric_charts(frame, app, &epochs, chunks[0]);
     draw_trial_details(frame, app, &trial, &epochs, chunks[1]);
 }
