@@ -7,7 +7,14 @@ use std::path::PathBuf;
 mod watch_ui;
 
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(
+    author,
+    version,
+    about,
+    long_about = None,
+    arg_required_else_help = true,
+    help_template = "{name} {version}\n{about}\n{usage-heading} {usage}\n\n{all-args}\n"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
