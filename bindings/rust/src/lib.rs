@@ -47,10 +47,7 @@ impl Talkback {
     }
 }
 
-pub fn emit_event<T: Serialize>(
-    event: argtuner_common::EventKind,
-    value: &T,
-) -> io::Result<()> {
+pub fn emit_event<T: Serialize>(event: argtuner_common::EventKind, value: &T) -> io::Result<()> {
     let fields = fields_from_value(value)?;
     let payload = serde_json::json!({
         "type": "event",

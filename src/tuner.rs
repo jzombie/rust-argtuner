@@ -8,8 +8,9 @@ use argmin::solver::particleswarm::ParticleSwarm;
 use crate::analysis::{print_hparam_impact, print_top_trials};
 use crate::command::CommandObjective;
 use crate::constants::{
-    FIELD_SCORE, FIELD_TRIAL_BRACKET, FIELD_TRIAL_CONFIG_ID, FIELD_TRIAL_ID, FIELD_TRIAL_RUNG,
-    FIELD_TRIAL_STATUS,
+    DUPLICATE_CONFIG_PREFIX, FIELD_SCORE, FIELD_TRIAL_BRACKET, FIELD_TRIAL_CONFIG_ID,
+    FIELD_TRIAL_ID, FIELD_TRIAL_RUNG, FIELD_TRIAL_STATUS, INVALID_CONFIG_PREFIX,
+    MAX_DUPLICATE_RETRIES,
 };
 use crate::project::{Project, Sampler};
 use crate::scheduler::Scheduler;
@@ -150,6 +151,7 @@ fn run_scheduled(
     mut completed: CompletedTrialMap,
 ) -> Result<(), Box<dyn Error>> {
     let mut retry_trial_ids: HashMap<TrialKey, usize> = HashMap::new();
+    let mut duplicate_retries = 0usize;
     while let Some(trial) = scheduler.next_trial() {
         let token_key = (trial.token.config_id, trial.token.rung, trial.token.bracket);
         if let Some(existing) = completed.get(&token_key) {
@@ -176,6 +178,7 @@ fn run_scheduled(
             Ok((score, finished_trial_id)) => {
                 scheduler.record_result(trial.token, Some(score));
                 retry_trial_ids.remove(&token_key);
+                duplicate_retries = 0;
                 completed.insert(
                     token_key,
                     CompletedTrial {
@@ -186,7 +189,18 @@ fn run_scheduled(
                 );
             }
             Err((err, _id)) => {
-                if err.starts_with("invalid_config:") && scheduler.retry_trial(trial.token) {
+                let is_duplicate = err.starts_with(DUPLICATE_CONFIG_PREFIX);
+                if is_duplicate {
+                    duplicate_retries += 1;
+                    if duplicate_retries >= MAX_DUPLICATE_RETRIES {
+                        return Err(format!(
+                            "unable to find a unique config after {} retries; search space may be exhausted or too small for n_trials",
+                            MAX_DUPLICATE_RETRIES
+                        )
+                        .into());
+                    }
+                }
+                if err.starts_with(INVALID_CONFIG_PREFIX) && scheduler.retry_trial(trial.token) {
                     eprintln!("trial invalid: {err}; retrying");
                     retry_trial_ids.remove(&token_key);
                     completed.remove(&token_key);

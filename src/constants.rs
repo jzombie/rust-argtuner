@@ -1,3 +1,9 @@
+// Configuration
+pub const MAX_DUPLICATE_RETRIES: usize = 50;
+pub const INVALID_CONFIG_PREFIX: &str = "invalid_config:";
+pub const DUPLICATE_CONFIG_REASON: &str = "duplicate_config";
+pub const DUPLICATE_CONFIG_PREFIX: &str = "invalid_config: duplicate_config";
+
 // Command stdout parser (for communication from trial back to tuner)
 pub use argtuner_common::RESULT_PREFIX;
 pub use argtuner_common::{METRIC_NAMESPACE, MODEL_NAMESPACE, TUNER_NAMESPACE};

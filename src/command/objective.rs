@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use crate::{
     CommandTemplate, Goal, SearchSpace, TrialOverrides, TrialRecord, TrialStatus, TrialStore,
     constants::{
-        FIELD_METRIC, FIELD_SCORE, FIELD_TRIAL_BUDGET_STEP, FIELD_TRIAL_BUDGET_TOTAL,
-        FIELD_TRIAL_CONFIG_ID, FIELD_TRIAL_ELAPSED_MS, FIELD_TRIAL_ERROR, FIELD_TRIAL_ID,
-        FIELD_TRIAL_PARENT_ID, FIELD_TRIAL_STATUS,
+        DUPLICATE_CONFIG_PREFIX, FIELD_METRIC, FIELD_SCORE, FIELD_TRIAL_BUDGET_STEP,
+        FIELD_TRIAL_BUDGET_TOTAL, FIELD_TRIAL_CONFIG_ID, FIELD_TRIAL_ELAPSED_MS, FIELD_TRIAL_ERROR,
+        FIELD_TRIAL_ID, FIELD_TRIAL_PARENT_ID, FIELD_TRIAL_STATUS, INVALID_CONFIG_PREFIX,
     },
     render_trial_command_with_overrides,
 };
@@ -169,6 +169,21 @@ impl CommandObjective {
             &effective_overrides,
         )
         .map_err(|err| err.to_string())?;
+        let config_id = effective_overrides
+            .fields
+            .get(FIELD_TRIAL_CONFIG_ID)
+            .and_then(|value| value.parse::<usize>().ok());
+        if existing_fields.is_none() {
+            let duplicate_trial = self
+                .store
+                .find_duplicate_config(config_id, &rendered.fields)
+                .map_err(|err| format!("duplicate check failed: {err}"))?;
+            if let Some(existing_trial) = duplicate_trial {
+                return Err(format!(
+                    "{DUPLICATE_CONFIG_PREFIX} (trial {existing_trial})"
+                ));
+            }
+        }
         if let Some(trial_dir) = rendered.trial_dir.as_ref() {
             if let Err(err) = std::fs::create_dir_all(trial_dir) {
                 return Err(format!("trial artifacts dir failed: {err}"));
@@ -282,7 +297,7 @@ impl CommandObjective {
                     .unwrap_or("invalid_config")
                     .to_string();
                 return Err(EvalError::InvalidConfig {
-                    message: format!("invalid_config: {reason}"),
+                    message: format!("{INVALID_CONFIG_PREFIX} {reason}"),
                     fields: extra_fields,
                 });
             }
@@ -432,6 +447,7 @@ fn metric_from_map(map: &BTreeMap<String, String>, metric_key: &str) -> Result<f
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TRIALS_CSV_FILENAME;
 
     fn emit_result_command() -> String {
         if let Ok(path) = std::env::var("CARGO_BIN_EXE_emit_result") {
@@ -537,7 +553,7 @@ mod tests {
             0,
         );
         let err = objective.eval(&[]).expect_err("invalid config");
-        assert!(err.starts_with("invalid_config:"));
+        assert!(err.starts_with(INVALID_CONFIG_PREFIX));
         let fields = objective
             .store()
             .load_fields(0)
@@ -616,7 +632,7 @@ mod tests {
             false,
             1,
         );
-        let _err = bad_objective.eval(&[0.5]).expect_err("eval should fail");
+        let _err = bad_objective.eval(&[0.6]).expect_err("eval should fail");
         let failed = bad_objective
             .store()
             .load_fields(1)
@@ -842,5 +858,62 @@ mod tests {
             }
             Ok(_) => panic!("Should have failed due to invalid value"),
         }
+    }
+
+    #[test]
+    fn duplicate_config_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(TRIALS_CSV_FILENAME);
+        let template = crate::CommandTemplate::new(
+            "echo '::ARGTUNER::{{\"type\":\"event\",\"name\":\"model.epoch_end\",\"fields\":{{\"metric\":\"1.0\"}}}}'"
+                .to_string(),
+        );
+        let space = crate::SearchSpace {
+            params: vec![crate::ParamSpec::Float {
+                name: "lr".to_string(),
+                min: 0.0,
+                max: 1.0,
+                log_scale: false,
+                step: None,
+                format: None,
+            }],
+        };
+        let store = crate::TrialStore::new(&path, template.clone());
+        let mut fields = BTreeMap::new();
+        fields.insert(format!("{}lr", crate::HP_PREFIX), "0.5".to_string());
+        fields.insert(FIELD_TRIAL_CONFIG_ID.to_string(), "0".to_string());
+        store
+            .append(&TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Ok,
+                elapsed_ms: 0,
+                error: None,
+                fields,
+            })
+            .expect("append");
+
+        let objective = CommandObjective::new(
+            store,
+            template,
+            space,
+            dir.path().join("artifacts"),
+            "metric".to_string(),
+            Goal::Min,
+            true,
+            1,
+        );
+        let mut overrides = TrialOverrides::default();
+        overrides.values.insert("lr".to_string(), "0.5".to_string());
+        overrides
+            .fields
+            .insert(format!("{}lr", crate::HP_PREFIX), "0.5".to_string());
+        overrides
+            .fields
+            .insert(FIELD_TRIAL_CONFIG_ID.to_string(), "1".to_string());
+        let result = objective.eval_with_overrides_retryable(&[0.0], &overrides, Some(1));
+        assert!(
+            matches!(result, Err((ref err, _)) if err.starts_with(DUPLICATE_CONFIG_PREFIX)),
+            "expected duplicate config error, got: {result:?}"
+        );
     }
 }
