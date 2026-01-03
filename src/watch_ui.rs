@@ -31,7 +31,7 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         trials_scroll: ScrollPane::default(),
         metrics_scroll: ScrollPane::default(),
         details_scroll: ScrollPane::default(),
-        right_focus: RightPaneFocus::Charts,
+        focus: PaneFocus::Trials,
     };
 
     terminal::enable_raw_mode()?;
@@ -69,11 +69,12 @@ struct AppState {
     trials_scroll: ScrollPane,
     metrics_scroll: ScrollPane,
     details_scroll: ScrollPane,
-    right_focus: RightPaneFocus,
+    focus: PaneFocus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RightPaneFocus {
+enum PaneFocus {
+    Trials,
     Charts,
     Details,
 }
@@ -128,46 +129,85 @@ fn run_app(
         {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if !app.trials.is_empty() {
-                        let next = app.selected.saturating_sub(1);
-                        if next != app.selected {
-                            app.selected = next;
-                            app.metrics_scroll.reset();
-                            app.details_scroll.reset();
+                KeyCode::Up | KeyCode::Char('k') => match app.focus {
+                    PaneFocus::Trials => {
+                        if !app.trials.is_empty() {
+                            let next = app.selected.saturating_sub(1);
+                            if next != app.selected {
+                                app.selected = next;
+                                app.metrics_scroll.reset();
+                                app.details_scroll.reset();
+                            }
                         }
                     }
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if !app.trials.is_empty() {
-                        let next = (app.selected + 1).min(app.trials.len() - 1);
-                        if next != app.selected {
-                            app.selected = next;
-                            app.metrics_scroll.reset();
-                            app.details_scroll.reset();
+                    PaneFocus::Charts => {
+                        app.metrics_scroll.bump(-1);
+                    }
+                    PaneFocus::Details => {
+                        app.details_scroll.bump(-1);
+                    }
+                },
+                KeyCode::Down | KeyCode::Char('j') => match app.focus {
+                    PaneFocus::Trials => {
+                        if !app.trials.is_empty() {
+                            let next = (app.selected + 1).min(app.trials.len() - 1);
+                            if next != app.selected {
+                                app.selected = next;
+                                app.metrics_scroll.reset();
+                                app.details_scroll.reset();
+                            }
                         }
                     }
-                }
-                KeyCode::Tab => {
-                    app.right_focus = match app.right_focus {
-                        RightPaneFocus::Charts => RightPaneFocus::Details,
-                        RightPaneFocus::Details => RightPaneFocus::Charts,
-                    };
-                }
-                KeyCode::PageDown | KeyCode::Char(']') => match app.right_focus {
-                    RightPaneFocus::Charts => {
+                    PaneFocus::Charts => {
                         app.metrics_scroll.bump(1);
                     }
-                    RightPaneFocus::Details => {
+                    PaneFocus::Details => {
                         app.details_scroll.bump(1);
                     }
                 },
-                KeyCode::PageUp | KeyCode::Char('[') => match app.right_focus {
-                    RightPaneFocus::Charts => {
-                        app.metrics_scroll.bump(-1);
+                KeyCode::Tab => {
+                    app.focus = match app.focus {
+                        PaneFocus::Trials => PaneFocus::Charts,
+                        PaneFocus::Charts => PaneFocus::Details,
+                        PaneFocus::Details => PaneFocus::Trials,
+                    };
+                }
+                KeyCode::PageDown | KeyCode::Char(']') => match app.focus {
+                    PaneFocus::Trials => {
+                        if !app.trials.is_empty() {
+                            let step = 5usize;
+                            let next = (app.selected + step).min(app.trials.len() - 1);
+                            if next != app.selected {
+                                app.selected = next;
+                                app.metrics_scroll.reset();
+                                app.details_scroll.reset();
+                            }
+                        }
                     }
-                    RightPaneFocus::Details => {
-                        app.details_scroll.bump(-1);
+                    PaneFocus::Charts => {
+                        app.metrics_scroll.bump(5);
+                    }
+                    PaneFocus::Details => {
+                        app.details_scroll.bump(5);
+                    }
+                },
+                KeyCode::PageUp | KeyCode::Char('[') => match app.focus {
+                    PaneFocus::Trials => {
+                        if !app.trials.is_empty() {
+                            let step = 5usize;
+                            let next = app.selected.saturating_sub(step);
+                            if next != app.selected {
+                                app.selected = next;
+                                app.metrics_scroll.reset();
+                                app.details_scroll.reset();
+                            }
+                        }
+                    }
+                    PaneFocus::Charts => {
+                        app.metrics_scroll.bump(-5);
+                    }
+                    PaneFocus::Details => {
+                        app.details_scroll.bump(-5);
                     }
                 },
                 _ => {}
@@ -316,7 +356,11 @@ fn draw_ui(frame: &mut Frame, app: &mut AppState) {
 }
 
 fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title("Trials");
+    let title = match app.focus {
+        PaneFocus::Trials => "Trials (focus)",
+        _ => "Trials",
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
     let visible_rows = inner.height as usize;
     let total_items = app.trials.len();
@@ -378,7 +422,7 @@ fn metric_value_text(trial: &TrialRow) -> Option<String> {
 }
 
 fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    let title = "Trial Metrics (Tab + PgUp/PgDn)";
+    let title = "Trial Metrics (Tab to switch focus)";
     let block = Block::default().borders(Borders::ALL).title(title);
     frame.render_widget(&block, area);
     let inner = block.inner(area);
@@ -422,9 +466,9 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
 }
 
 fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow], area: Rect) {
-    let title = match app.right_focus {
-        RightPaneFocus::Charts => "Metric Curves (focus)",
-        RightPaneFocus::Details => "Metric Curves",
+    let title = match app.focus {
+        PaneFocus::Charts => "Metric Curves (focus)",
+        _ => "Metric Curves",
     };
     let block = Block::default().borders(Borders::ALL).title(title);
     frame.render_widget(&block, area);
@@ -492,9 +536,9 @@ fn draw_trial_details(
     epochs: &[TrialRow],
     area: Rect,
 ) {
-    let title = match app.right_focus {
-        RightPaneFocus::Charts => "Trial Details",
-        RightPaneFocus::Details => "Trial Details (focus)",
+    let title = match app.focus {
+        PaneFocus::Details => "Trial Details (focus)",
+        _ => "Trial Details",
     };
     let block = Block::default().borders(Borders::ALL).title(title);
     frame.render_widget(&block, area);
