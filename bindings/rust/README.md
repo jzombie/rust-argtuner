@@ -6,10 +6,10 @@ other language bindings can mirror it easily.
 
 Core API:
 
-- `emit_event(EventKind::EarlyStopped, &fields)` (or `&my_struct`)
-- `emit_epoch_end(&my_struct)`
-- `emit_result(&fields)` (or `&my_struct`)
-- `emit_version_event()` (emits a JSON event with name `tuner.binding_version`)
+- `emit_event(kind, &payload)` - The unified emitter.
+  - `EventKind::Result`: Emits a result payload.
+  - `EventKind::EpochEnd`: Emits an epoch end event.
+  - `EventKind::EarlyStopped`: Emits an early stop event.
 - `args_map()` (parsed map of CLI flags to values)
 - `parse_args::<T>()` (deserialize args into your struct)
 - `maybe_print_template_and_exit::<T>()` (prints a template when `--print-template` or TOML for `--print-template-toml`)
@@ -21,7 +21,7 @@ Convenience wrapper:
 - `let tb = Talkback::init();` emits the version event and captures
   `tb.args_map()` from the raw CLI argv.
   `tb.parse_args::<MyArgs>()` deserializes into your own struct.
-  `tb.emit_result(&my_struct)` emits a result payload.
+  `tb.emit_event(EventKind::Result, &my_struct)` emits a result payload.
 
 Derive helper:
 

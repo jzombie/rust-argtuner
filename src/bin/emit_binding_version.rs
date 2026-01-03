@@ -30,7 +30,7 @@ fn main() {
     }
     let mut fields = BTreeMap::new();
     fields.insert(argtuner_common::BINDING_VERSION_FIELD.to_string(), version);
-    let _ = argtuner_talkback::emit_event(argtuner_common::EventKind::BindingVersion, &fields);
+    let _ = argtuner_talkback::emit_event(argtuner_common::EventKind::TunerApiVersion, &fields);
     let _ = argtuner_talkback::emit_epoch_end(&EvaluationResult {
         value: result_value,
         epoch: 1,

@@ -4,6 +4,8 @@ use std::io;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+pub use argtuner_common::EventKind;
+
 pub const PREFIX: &str = argtuner_common::RESULT_PREFIX;
 pub const BINDING_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PRINT_TEMPLATE_FLAG: &str = "--print-template";
@@ -16,7 +18,13 @@ pub struct Talkback {
 
 impl Talkback {
     pub fn init() -> Self {
-        let _ = emit_version_event();
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            argtuner_common::BINDING_VERSION_FIELD.to_string(),
+            BINDING_VERSION.to_string(),
+        );
+        let _ = emit_event(argtuner_common::EventKind::TunerApiVersion, &fields);
+
         let raw_args = std::env::args().collect::<Vec<_>>();
         let args_map = args_map_from(raw_args);
         Self { args_map }
@@ -48,6 +56,9 @@ impl Talkback {
 }
 
 pub fn emit_event<T: Serialize>(event: argtuner_common::EventKind, value: &T) -> io::Result<()> {
+    if matches!(event, argtuner_common::EventKind::Result) {
+        return emit_result(value);
+    }
     let fields = fields_from_value(value)?;
     let payload = serde_json::json!({
         "type": "event",
@@ -71,15 +82,6 @@ pub fn emit_result<T: Serialize>(value: &T) -> io::Result<()> {
         "fields": fields,
     });
     emit_json(payload)
-}
-
-pub fn emit_version_event() -> io::Result<()> {
-    let mut fields = BTreeMap::new();
-    fields.insert(
-        argtuner_common::BINDING_VERSION_FIELD.to_string(),
-        BINDING_VERSION.to_string(),
-    );
-    emit_event(argtuner_common::EventKind::BindingVersion, &fields)
 }
 
 pub fn args_map() -> BTreeMap<String, Vec<String>> {
