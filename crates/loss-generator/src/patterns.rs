@@ -55,7 +55,7 @@ impl Overfitting {
 impl LossPattern for Overfitting {
     fn generate(&mut self, step: usize, total_steps: usize) -> f64 {
         let base_loss = self.base_pattern.generate(step, total_steps);
-        
+
         if step > self.min_loss_step {
             let overfit_steps = step - self.min_loss_step;
             // Quadratic rise after min point
@@ -103,7 +103,11 @@ pub struct Spikes {
 }
 
 impl Spikes {
-    pub fn new(base_pattern: Box<dyn LossPattern>, spike_probability: f64, spike_magnitude: f64) -> Self {
+    pub fn new(
+        base_pattern: Box<dyn LossPattern>,
+        spike_probability: f64,
+        spike_magnitude: f64,
+    ) -> Self {
         Self {
             base_pattern,
             spike_probability,
@@ -116,7 +120,7 @@ impl LossPattern for Spikes {
     fn generate(&mut self, step: usize, total_steps: usize) -> f64 {
         let base_loss = self.base_pattern.generate(step, total_steps);
         let mut rng = rand::thread_rng();
-        
+
         if rng.gen_bool(self.spike_probability) {
             base_loss + rng.gen_range(0.0..self.spike_magnitude)
         } else {

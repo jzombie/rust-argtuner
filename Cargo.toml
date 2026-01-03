@@ -29,36 +29,52 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+argmin = "0.11"
+argmin-math = { version = "0.5.1", features = ["vec"] }
 argtuner-common = { path = "crates/common" }
 argtuner-talkback = { path = "bindings/rust" }
 argtuner-talkback-derive = { path = "bindings/talkback-derive" }
-clap = "4.5.53"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.148"
-rand = "0.8"
-
-[dependencies]
-argmin = "0.11"
-argmin-math = { version = "0.5.1", features = ["vec"] }
-argtuner-common = { workspace = true }
-argtuner-talkback = { workspace = true, features = ["clap"] }
-argtuner-talkback-derive = { workspace = true }
 chrono = { version = "0.4.42", features = ["serde", "alloc"] }
-clap = { workspace = true, features = ["derive"] }
+clap = "4.5.53"
 crossterm = "0.29.0"
 csv = "1.3"
+indicatif = "0.18.3"
+indoc = "2.0.7"
 libc = "0.2.176"
 portable-pty = "0.9.0"
-rand.workspace = true
+rand = "0.8"
 ratatui = "0.30.0"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.148"
 shell-words = "1.1.1"
 tempfile = "3.10"
-thiserror = "1.0"
+thiserror = "2.0.17"
 toml = "0.9.10"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
+[dependencies]
+argmin.workspace = true
+argmin-math = { workspace = true, features = ["vec"] }
+argtuner-common.workspace = true
+argtuner-talkback = { workspace = true, features = ["clap"] }
+argtuner-talkback-derive.workspace = true
+chrono = { workspace = true, features = ["serde", "alloc"] }
+clap = { workspace = true, features = ["derive"] }
+crossterm.workspace = true
+csv.workspace = true
+libc.workspace = true
+portable-pty.workspace = true
+rand.workspace = true
+ratatui.workspace = true
+rusqlite = { workspace = true, features = ["bundled"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+shell-words.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+
 [dev-dependencies]
-indoc = "2.0.7"
+indoc.workspace = true

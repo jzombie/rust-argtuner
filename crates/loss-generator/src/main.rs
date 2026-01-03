@@ -1,11 +1,11 @@
 mod patterns;
 
+use argtuner_talkback_derive::talkback_args;
 use clap::{Parser, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
-use patterns::{LossPattern, SmoothDecay, Overfitting, Underfitting, Spikes, Noisy};
-use argtuner_talkback_derive::talkback_args;
-use std::time::Duration;
+use patterns::{LossPattern, Noisy, Overfitting, SmoothDecay, Spikes, Underfitting};
 use std::thread;
+use std::time::Duration;
 
 #[talkback_args]
 #[derive(Parser, Debug)]
@@ -72,10 +72,14 @@ fn main() {
 
     let pb = if args.epoch_time > 0.0 {
         let pb = ProgressBar::new(args.steps as u64);
-        pb.set_style(ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
-            .unwrap()
-            .progress_chars("#>-"));
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+                )
+                .unwrap()
+                .progress_chars("#>-"),
+        );
         Some(pb)
     } else {
         None
@@ -98,5 +102,7 @@ fn main() {
 
     let mut result = std::collections::BTreeMap::new();
     result.insert(args.metric_key, final_loss);
-    talkback.emit_result(&result).expect("Failed to emit result");
+    talkback
+        .emit_result(&result)
+        .expect("Failed to emit result");
 }
