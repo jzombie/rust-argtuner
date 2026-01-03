@@ -316,20 +316,24 @@ impl InputGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indoc::indoc;
 
     #[test]
     fn parse_result_payload_uses_last_matching_line() {
-        let output_str = indoc! {r#"
-            info: start
-            ::ARGTUNER::{"type":"event","name":"model.epoch_end","fields":{"metric":"0.5","epoch":"1"}}
-            ::ARGTUNER::{"type":"event","name":"model.epoch_end","fields":{"aux":"123","metric":"0.9","epoch":"2"}}
-            info: still running
-            ::ARGTUNER::{"type":"event","name":"model.epoch_end","fields":{"metric":"0.2","epoch":"3"}}
-            done
-        "#};
+        let event1 = serde_json::json!({"type":"event","name":"model.epoch_end","fields":{"metric":"0.5","epoch":"1"}});
+        let event2 = serde_json::json!({"type":"event","name":"model.epoch_end","fields":{"aux":"123","metric":"0.9","epoch":"2"}});
+        let event3 = serde_json::json!({"type":"event","name":"model.epoch_end","fields":{"metric":"0.2","epoch":"3"}});
+
+        let output_str = format!(
+            "info: start\n{}{}\n{}{}\ninfo: still running\n{}{}\ndone\n",
+            crate::RESULT_PREFIX,
+            event1,
+            crate::RESULT_PREFIX,
+            event2,
+            crate::RESULT_PREFIX,
+            event3
+        );
         let output = CommandOutput {
-            stdout: output_str.to_string(),
+            stdout: output_str,
             _stderr: String::new(),
             exit_code: 0,
         };

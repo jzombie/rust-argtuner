@@ -712,9 +712,17 @@ mod tests {
     fn csv_parameter_conflict_is_resolved_by_using_existing_value() {
         let dir = tempfile::tempdir().expect("tempdir");
         // Template uses {x}
-        let json = r#"{{"type":"event","name":"model.epoch_end","fields":{{"metric":"0.0","x_used":"{x}","epoch":"1"}}}}"#;
+        let event = json_event(
+            "model.epoch_end",
+            serde_json::json!({
+                "metric": "0.0",
+                "x_used": "PLACEHOLDER_X",
+                "epoch": "1"
+            }),
+        )
+        .replace("PLACEHOLDER_X", "{x}");
         let template =
-            crate::CommandTemplate::new(format!("echo '{}{}'", crate::RESULT_PREFIX, json));
+            crate::CommandTemplate::new(format!("echo '{}{}'", crate::RESULT_PREFIX, event));
         let store = crate::TrialStore::new(
             dir.path().join(crate::TRIALS_CSV_FILENAME),
             template.clone(),
@@ -860,14 +868,26 @@ mod tests {
         }
     }
 
+    fn json_event(name: &str, fields: serde_json::Value) -> String {
+        let payload = serde_json::json!({
+            "type": "event",
+            "name": name,
+            "fields": fields,
+        });
+        let s = payload.to_string();
+        s.replace("{", "{{").replace("}", "}}")
+    }
+
     #[test]
     fn duplicate_config_is_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(TRIALS_CSV_FILENAME);
-        let template = crate::CommandTemplate::new(
-            "echo '::ARGTUNER::{{\"type\":\"event\",\"name\":\"model.epoch_end\",\"fields\":{{\"metric\":\"1.0\"}}}}'"
-                .to_string(),
-        );
+        let event = json_event("model.epoch_end", serde_json::json!({"metric": "1.0"}));
+        let template = crate::CommandTemplate::new(format!(
+            "echo '{}{}'",
+            argtuner_common::RESULT_PREFIX,
+            event
+        ));
         let space = crate::SearchSpace {
             params: vec![crate::ParamSpec::Float {
                 name: "lr".to_string(),
