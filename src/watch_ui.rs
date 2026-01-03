@@ -38,6 +38,9 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         focus: PaneFocus::Trials,
         pane_rects: PaneRects::default(),
         chart_zoom: 1.0,
+        chart_view: ChartView::Summary,
+        chart_selected: 0,
+        metrics_len: 0,
     };
 
     terminal::enable_raw_mode()?;
@@ -78,6 +81,9 @@ struct AppState {
     focus: PaneFocus,
     pane_rects: PaneRects,
     chart_zoom: f64,
+    chart_view: ChartView,
+    chart_selected: usize,
+    metrics_len: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,11 +93,20 @@ enum PaneFocus {
     Details,
 }
 
+const CHART_ITEM_HEIGHT: u16 = 7;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChartView {
+    Summary,
+    Focused,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PaneRects {
     trials: Rect,
     trials_inner: Rect,
     charts: Rect,
+    charts_inner: Rect,
     details: Rect,
 }
 
@@ -101,6 +116,7 @@ impl Default for PaneRects {
             trials: Rect::default(),
             trials_inner: Rect::default(),
             charts: Rect::default(),
+            charts_inner: Rect::default(),
             details: Rect::default(),
         }
     }
@@ -164,6 +180,11 @@ fn run_app(
                             PaneFocus::Details => PaneFocus::Trials,
                         };
                     }
+                    KeyCode::Char('f') | KeyCode::Enter => {
+                        if app.focus == PaneFocus::Charts {
+                            toggle_chart_view(app);
+                        }
+                    }
                     KeyCode::Char('+') | KeyCode::Char('=') => {
                         if app.focus == PaneFocus::Charts {
                             zoom_charts(app, 0.8);
@@ -217,6 +238,8 @@ fn run_app(
                             app.focus = pane;
                             if pane == PaneFocus::Trials {
                                 handle_trial_click(app, mouse.column, mouse.row);
+                            } else if pane == PaneFocus::Charts {
+                                handle_chart_click(app, mouse.column, mouse.row);
                             }
                         }
                     }
@@ -235,7 +258,13 @@ fn apply_focus_delta(app: &mut AppState, delta: isize) {
 fn apply_delta_for_pane(app: &mut AppState, pane: PaneFocus, delta: isize) {
     match pane {
         PaneFocus::Trials => move_trial_selection(app, delta),
-        PaneFocus::Charts => app.metrics_scroll.bump(delta),
+        PaneFocus::Charts => {
+            if app.chart_view == ChartView::Focused {
+                move_chart_selection(app, delta);
+            } else {
+                app.metrics_scroll.bump(delta);
+            }
+        }
         PaneFocus::Details => app.details_scroll.bump(delta),
     }
 }
@@ -247,6 +276,35 @@ fn zoom_charts(app: &mut AppState, factor: f64) {
 
 fn reset_chart_zoom(app: &mut AppState) {
     app.chart_zoom = 1.0;
+}
+
+fn toggle_chart_view(app: &mut AppState) {
+    app.chart_view = match app.chart_view {
+        ChartView::Summary => {
+            if app.metrics_len == 0 {
+                ChartView::Summary
+            } else {
+                app.chart_selected = app.metrics_scroll.offset.min(app.metrics_len - 1);
+                ChartView::Focused
+            }
+        }
+        ChartView::Focused => {
+            if app.metrics_len > 0 {
+                app.metrics_scroll.offset = app.chart_selected.min(app.metrics_len - 1);
+            }
+            ChartView::Summary
+        }
+    };
+}
+
+fn move_chart_selection(app: &mut AppState, delta: isize) {
+    if app.metrics_len == 0 {
+        return;
+    }
+    let max = (app.metrics_len - 1) as isize;
+    let current = app.chart_selected as isize;
+    let next = (current + delta).clamp(0, max) as usize;
+    app.chart_selected = next;
 }
 
 fn pane_for_mouse(app: &AppState, column: u16, row: u16) -> Option<PaneFocus> {
@@ -282,6 +340,24 @@ fn handle_trial_click(app: &mut AppState, column: u16, row: u16) {
         app.metrics_scroll.reset();
         app.details_scroll.reset();
     }
+}
+
+fn handle_chart_click(app: &mut AppState, column: u16, row: u16) {
+    if app.chart_view == ChartView::Focused {
+        return;
+    }
+    let inner = app.pane_rects.charts_inner;
+    if inner.height == 0 || !rect_contains(inner, column, row) {
+        return;
+    }
+    let offset_row = row.saturating_sub(inner.y) as usize;
+    let index_in_view = offset_row / CHART_ITEM_HEIGHT as usize;
+    let index = app.metrics_scroll.offset.saturating_add(index_in_view);
+    if index >= app.metrics_len {
+        return;
+    }
+    app.chart_selected = index;
+    app.chart_view = ChartView::Focused;
 }
 
 fn move_trial_selection(app: &mut AppState, delta: isize) {
@@ -506,7 +582,7 @@ fn metric_value_text(trial: &TrialRow) -> Option<String> {
 }
 
 fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    let title = "Trial Metrics (Tab to switch focus, +/- to zoom)";
+    let title = "Trial Metrics (Tab to switch focus, +/- to zoom, f to focus)";
     let block = Block::default().borders(Borders::ALL).title(title);
     frame.render_widget(&block, area);
     let inner = block.inner(area);
@@ -520,6 +596,8 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
         .split(inner);
     app.pane_rects.charts = chunks[0];
     app.pane_rects.details = chunks[1];
+    app.pane_rects.charts_inner = Rect::default();
+    app.metrics_len = 0;
 
     if let Some(err) = app.last_error.as_ref() {
         let text = vec![Line::from(Span::styled(
@@ -552,87 +630,120 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
 }
 
 fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow], area: Rect) {
-    let title = match app.focus {
-        PaneFocus::Charts => "Metric Curves (focus)",
-        _ => "Metric Curves",
+    let metric_keys = collect_metric_keys_for_epochs(epochs);
+    app.metrics_len = metric_keys.len();
+
+    let title = match (app.focus, app.chart_view, app.metrics_len) {
+        (PaneFocus::Charts, ChartView::Focused, total) if total > 0 => {
+            let current = app.chart_selected.saturating_add(1);
+            format!("Metric Curve {current}/{total} (focus view)")
+        }
+        (PaneFocus::Charts, ChartView::Focused, _) => "Metric Curve (focus view)".to_string(),
+        (PaneFocus::Charts, ChartView::Summary, _) => "Metric Curves (focus)".to_string(),
+        (_, ChartView::Focused, total) if total > 0 => {
+            let current = app.chart_selected.saturating_add(1);
+            format!("Metric Curve {current}/{total} (focus view)")
+        }
+        (_, ChartView::Focused, _) => "Metric Curve (focus view)".to_string(),
+        _ => "Metric Curves".to_string(),
     };
     let block = Block::default().borders(Borders::ALL).title(title);
     frame.render_widget(&block, area);
     let inner = block.inner(area);
+    app.pane_rects.charts_inner = inner;
     if inner.height == 0 {
         return;
     }
-
-    let metric_keys = collect_metric_keys_for_epochs(epochs);
     if metric_keys.is_empty() {
         frame.render_widget(Paragraph::new("No numeric metric curves."), inner);
         return;
     }
+    if app.chart_selected >= metric_keys.len() {
+        app.chart_selected = metric_keys.len().saturating_sub(1);
+    }
     let x_axis = select_x_axis_spec(epochs);
 
-    let item_height = 7u16;
-    let visible_items = (inner.height / item_height).max(1) as usize;
-    let total_items = metric_keys.len();
-    app.metrics_scroll.apply(total_items, visible_items);
+    match app.chart_view {
+        ChartView::Summary => {
+            let visible_items = (inner.height / CHART_ITEM_HEIGHT).max(1) as usize;
+            let total_items = metric_keys.len();
+            app.metrics_scroll.apply(total_items, visible_items);
 
-    for (row, key) in metric_keys
-        .iter()
-        .skip(app.metrics_scroll.offset)
-        .take(visible_items)
-        .enumerate()
-    {
-        let y = inner.y + (row as u16 * item_height);
-        let rect = Rect {
-            x: inner.x,
-            y,
-            width: inner.width,
-            height: item_height,
-        };
-        let series = metric_series_for_key(epochs, key, &x_axis);
-        let (min_x, max_x, min_y, max_y) = zoomed_series_bounds(&series, app.chart_zoom);
-        let x_labels = axis_labels(min_x, max_x);
-        let y_labels = axis_labels(min_y, max_y);
-        let x_title = if x_axis.label == x_axis.unit {
-            x_axis.label.to_string()
-        } else {
-            format!("{} ({})", x_axis.label, x_axis.unit)
-        };
-        let y_title = metric_axis_title(key);
-        let title = if let Some(last) = series.last().map(|point| point.1) {
-            format!("{key}  last={last:.4}")
-        } else {
-            key.clone()
-        };
-        let dataset = Dataset::default()
-            .name(key.clone())
-            .graph_type(GraphType::Line)
-            .marker(Marker::Braille)
-            .style(Style::default().fg(Color::Cyan))
-            .data(&series);
-        let chart = Chart::new(vec![dataset])
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .x_axis(
-                Axis::default()
-                    .title(x_title)
-                    .bounds([min_x, max_x])
-                    .labels(x_labels),
-            )
-            .y_axis(
-                Axis::default()
-                    .title(y_title)
-                    .bounds([min_y, max_y])
-                    .labels(y_labels),
+            for (row, key) in metric_keys
+                .iter()
+                .skip(app.metrics_scroll.offset)
+                .take(visible_items)
+                .enumerate()
+            {
+                let y = inner.y + (row as u16 * CHART_ITEM_HEIGHT);
+                let rect = Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: CHART_ITEM_HEIGHT,
+                };
+                render_metric_chart(frame, epochs, key, rect, &x_axis, app.chart_zoom);
+            }
+
+            render_scrollbar(
+                frame,
+                inner,
+                total_items,
+                visible_items,
+                app.metrics_scroll.offset,
             );
-        frame.render_widget(chart, rect);
+        }
+        ChartView::Focused => {
+            let key = &metric_keys[app.chart_selected];
+            render_metric_chart(frame, epochs, key, inner, &x_axis, app.chart_zoom);
+        }
     }
+}
 
-    render_scrollbar(
-        frame,
-        inner,
-        total_items,
-        visible_items,
-        app.metrics_scroll.offset,
-    );
+fn render_metric_chart(
+    frame: &mut Frame,
+    epochs: &[TrialRow],
+    key: &str,
+    area: Rect,
+    x_axis: &XAxisSpec,
+    zoom: f64,
+) {
+    let series = metric_series_for_key(epochs, key, x_axis);
+    let (min_x, max_x, min_y, max_y) = zoomed_series_bounds(&series, zoom);
+    let x_labels = axis_labels(min_x, max_x);
+    let y_labels = axis_labels(min_y, max_y);
+    let x_title = if x_axis.label == x_axis.unit {
+        x_axis.label.to_string()
+    } else {
+        format!("{} ({})", x_axis.label, x_axis.unit)
+    };
+    let y_title = metric_axis_title(key);
+    let title = if let Some(last) = series.last().map(|point| point.1) {
+        format!("{key}  last={last:.4}")
+    } else {
+        key.to_string()
+    };
+    let dataset = Dataset::default()
+        .name(key.to_string())
+        .graph_type(GraphType::Line)
+        .marker(Marker::Braille)
+        .style(Style::default().fg(Color::Cyan))
+        .data(&series);
+    let chart = Chart::new(vec![dataset])
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .x_axis(
+            Axis::default()
+                .title(x_title)
+                .bounds([min_x, max_x])
+                .labels(x_labels),
+        )
+        .y_axis(
+            Axis::default()
+                .title(y_title)
+                .bounds([min_y, max_y])
+                .labels(y_labels),
+        );
+    frame.render_widget(chart, area);
 }
 
 fn draw_trial_details(
