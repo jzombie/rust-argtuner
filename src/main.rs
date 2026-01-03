@@ -10,10 +10,10 @@ mod watch_ui;
 #[command(
     author,
     version,
-    about,
+    about = concat!("Repository: ", env!("CARGO_PKG_REPOSITORY")),
     long_about = None,
     arg_required_else_help = true,
-    help_template = "{name} {version}\n{about}\n{usage-heading} {usage}\n\n{all-args}\n"
+    help_template = "{name} {version}\n{about}\n\n{usage-heading} {usage}\n\n{all-args}\n"
 )]
 struct Cli {
     #[command(subcommand)]
