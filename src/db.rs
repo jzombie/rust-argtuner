@@ -154,6 +154,50 @@ impl TrialDb {
         })
     }
 
+    pub fn load_project_config(&self) -> std::io::Result<Option<String>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT value FROM project_metadata WHERE key = ?1",
+                params![PROJECT_CONFIG_KEY],
+                |row| row.get(0),
+            )
+            .optional()
+        })
+    }
+
+    pub fn save_project_config(&self, config: &str) -> std::io::Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO project_metadata (key, value)
+                VALUES (?1, ?2)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                "#,
+                params![PROJECT_CONFIG_KEY, config],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn has_any_trials(&self) -> std::io::Result<bool> {
+        self.with_conn(|conn| {
+            let has_records: Option<i64> = conn
+                .query_row("SELECT 1 FROM trial_records LIMIT 1", [], |row| row.get(0))
+                .optional()?;
+            if has_records.is_some() {
+                return Ok(true);
+            }
+            let has_epochs: Option<i64> = conn
+                .query_row(
+                    "SELECT 1 FROM trial_epoch_records LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(has_epochs.is_some())
+        })
+    }
+
     pub fn next_trial_id(&self) -> std::io::Result<usize> {
         self.with_conn(|conn| {
             let max_id: Option<i64> =
@@ -188,12 +232,18 @@ impl TrialDb {
                 error TEXT,
                 fields_json TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS project_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             "#,
         )
         .map_err(to_io_error)?;
         op(&conn).map_err(to_io_error)
     }
 }
+
+const PROJECT_CONFIG_KEY: &str = "project_config_toml";
 
 fn to_io_error(err: rusqlite::Error) -> std::io::Error {
     std::io::Error::other(err)

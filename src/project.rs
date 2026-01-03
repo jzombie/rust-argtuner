@@ -344,6 +344,10 @@ impl Project {
         ))
     }
 
+    pub fn read_unified_config_text(&self) -> std::io::Result<String> {
+        std::fs::read_to_string(self.unified_config_path())
+    }
+
     pub fn save_unified_config(&self, config: &UnifiedConfig) -> std::io::Result<()> {
         let data = toml::to_string_pretty(config)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;

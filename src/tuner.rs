@@ -38,6 +38,7 @@ impl Tuner {
 
     pub fn run_with_options(&self, options: RunOptions) -> Result<(), Box<dyn Error>> {
         let config = self.project.load_config()?;
+        let config_text = self.project.read_unified_config_text()?;
         let mut temp_root = None;
         if options.dry_run {
             let temp = tempfile::tempdir().map_err(|err| -> Box<dyn Error> {
@@ -66,6 +67,9 @@ impl Tuner {
         } else {
             self.project.store()?
         };
+        if temp_root.is_none() {
+            store.ensure_project_config(&config_text)?;
+        }
         let store_for_summary = store.clone();
         let next_id = store.next_trial_id()?;
         let objective = CommandObjective::new(

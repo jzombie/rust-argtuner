@@ -95,3 +95,70 @@ fn tuner_skips_completed_trials() {
         .count();
     assert_eq!(ok_rows, 2);
 }
+
+#[test]
+fn resume_aborts_on_config_change() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("argtuner").join("resume-change");
+    let project = Project::new(&root);
+    project.ensure_dirs().expect("dirs");
+
+    let template = CommandTemplate::new(format!(
+        "{} --checkpoint-dir {{trial_dir}}",
+        emit_result_command()
+    ));
+    let space = SearchSpace {
+        params: vec![argtuner::ParamSpec::Float {
+            name: "lr".to_string(),
+            min: 0.0,
+            max: 1.0,
+            log_scale: false,
+            step: None,
+            format: None,
+        }],
+    };
+
+    let project_settings = ProjectSettings {
+        metric_key: "metric".to_string(),
+        goal: argtuner::Goal::Min,
+        pruner: argtuner::Pruner::None,
+        inject_trial_placeholders: true,
+        checkpoint_arg: None,
+    };
+    let sampler = SamplerConfig {
+        kind: Sampler::Random,
+        ..SamplerConfig::default()
+    };
+    let mut scheduler = SchedulerConfig {
+        kind: Scheduler::Fixed,
+        n_trials: 1,
+        seed: 42,
+        ..SchedulerConfig::default()
+    };
+    let mut unified_config = argtuner::UnifiedConfig {
+        project: project_settings,
+        sampler,
+        scheduler: scheduler.clone(),
+        space,
+        template: template.as_str().to_string(),
+    };
+    project
+        .save_unified_config(&unified_config)
+        .expect("save config");
+
+    let tuner = Tuner::new(project.clone());
+    tuner.run().expect("run");
+
+    // Modify the config
+    scheduler.n_trials = 2;
+    unified_config.scheduler = scheduler;
+    project
+        .save_unified_config(&unified_config)
+        .expect("save updated config");
+
+    let err = tuner.run().expect_err("resume should fail");
+    let message = err.to_string();
+    assert!(message.contains("argtuner.toml changed"));
+    assert!(message.contains("-n_trials = 1"));
+    assert!(message.contains("+n_trials = 2"));
+}

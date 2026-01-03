@@ -3,6 +3,7 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use similar::TextDiff;
 
 use crate::command::CommandTemplate;
 use crate::constants::{
@@ -102,6 +103,26 @@ impl TrialStore {
 
     pub fn rebuild_csv(&self) -> std::io::Result<()> {
         self.sync_csv()
+    }
+
+    pub fn ensure_project_config(&self, config_text: &str) -> std::io::Result<()> {
+        let stored = self.db.load_project_config()?;
+        match stored {
+            None => self.db.save_project_config(config_text),
+            Some(existing) => {
+                if existing == config_text {
+                    return Ok(());
+                }
+                if !self.db.has_any_trials()? {
+                    return self.db.save_project_config(config_text);
+                }
+                let diff = diff_lines(&existing, config_text);
+                let message = format!(
+                    "argtuner.toml changed since the last run; refusing to resume.\n{diff}"
+                );
+                Err(std::io::Error::new(std::io::ErrorKind::InvalidData, message))
+            }
+        }
     }
 
     pub fn command_for_trial(&self, trial_id: usize) -> std::io::Result<Option<String>> {
@@ -217,6 +238,13 @@ impl TrialStore {
         let (headers, rows) = rows_with_headers(&records);
         write_csv_snapshot(&self.csv_path, &headers, &rows)
     }
+}
+
+fn diff_lines(old: &str, new: &str) -> String {
+    let diff = TextDiff::from_lines(old, new);
+    diff.unified_diff()
+        .header("stored/argtuner.toml", "current/argtuner.toml")
+        .to_string()
 }
 
 fn record_with_time(record: &TrialRecord) -> TrialRecord {
