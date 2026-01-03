@@ -1,4 +1,5 @@
 // Configuration
+pub const CONFIG_FILENAME: &str = "argtuner.toml";
 pub const MAX_DUPLICATE_RETRIES: usize = 50;
 pub const INVALID_CONFIG_PREFIX: &str = "invalid_config:";
 pub const DUPLICATE_CONFIG_REASON: &str = "duplicate_config";

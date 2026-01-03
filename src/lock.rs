@@ -100,12 +100,13 @@ pub fn lock_path_for_config(config_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{ProjectLock, lock_path_for_config};
+    use crate::constants::CONFIG_FILENAME;
     use std::path::Path;
 
     #[test]
     fn lock_prevents_second_acquire() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let config_path = temp.path().join("argtuner.toml");
+        let config_path = temp.path().join(CONFIG_FILENAME);
         std::fs::write(&config_path, "dummy").expect("write");
         let lock_path = lock_path_for_config(&config_path);
         let _first = ProjectLock::acquire(lock_path.clone(), &config_path).expect("lock");

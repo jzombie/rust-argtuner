@@ -1,6 +1,7 @@
 use argtuner::{
-    CommandTemplate, FIELD_SCORE, Project, ProjectSettings, Sampler, SamplerConfig, Scheduler,
-    SchedulerConfig, SearchSpace, TRIAL_PREFIX, TrialRecord, TrialStatus, Tuner,
+    CONFIG_FILENAME, CommandTemplate, FIELD_SCORE, Project, ProjectSettings, Sampler,
+    SamplerConfig, Scheduler, SchedulerConfig, SearchSpace, TRIAL_PREFIX, TrialRecord, TrialStatus,
+    Tuner,
 };
 use std::collections::BTreeMap;
 
@@ -158,7 +159,7 @@ fn resume_aborts_on_config_change() {
 
     let err = tuner.run().expect_err("resume should fail");
     let message = err.to_string();
-    assert!(message.contains("argtuner.toml changed"));
+    assert!(message.contains(&format!("{CONFIG_FILENAME} changed")));
     assert!(message.contains("-n_trials = 1"));
     assert!(message.contains("+n_trials = 2"));
 }

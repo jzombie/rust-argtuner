@@ -1,6 +1,6 @@
 use argtuner::{
-    FIELD_METRIC, FIELD_SCORE, FIELD_TRIAL_STATUS, METRIC_NAMESPACE, TRIALS_CSV_FILENAME,
-    TrialStatus,
+    CONFIG_FILENAME, FIELD_METRIC, FIELD_SCORE, FIELD_TRIAL_STATUS, METRIC_NAMESPACE,
+    TRIALS_CSV_FILENAME, TrialStatus,
 };
 use indoc::indoc;
 use std::collections::HashSet;
@@ -17,7 +17,7 @@ fn argtuner_runs_linear_regression_example() {
     fs::create_dir_all(project_path.join("artifacts")).expect("artifacts");
 
     fs::write(
-        project_path.join("argtuner.toml"),
+        project_path.join(CONFIG_FILENAME),
         indoc! {r#"
             template = "cargo run -p argtuner --example linear_regression -- --lr {lr} --steps {steps} --checkpoint-dir {trial_dir}"
 

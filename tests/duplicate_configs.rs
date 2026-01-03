@@ -1,4 +1,4 @@
-use argtuner::{Project, RunOptions, Tuner};
+use argtuner::{CONFIG_FILENAME, Project, RunOptions, Tuner};
 use indoc::indoc;
 
 fn emit_result_command() -> String {
@@ -44,7 +44,7 @@ fn duplicate_configs_stop_tuning_after_retries() {
     "#},
         emit = emit
     );
-    std::fs::write(project_root.join("argtuner.toml"), toml).expect("write config");
+    std::fs::write(project_root.join(CONFIG_FILENAME), toml).expect("write config");
 
     let project = Project::new(&project_root);
     let tuner = Tuner::new(project);

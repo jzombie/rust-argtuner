@@ -7,10 +7,10 @@ use similar::TextDiff;
 
 use crate::command::CommandTemplate;
 use crate::constants::{
-    FIELD_METRIC, FIELD_SCORE, FIELD_TRIAL_BUDGET_STEP, FIELD_TRIAL_BUDGET_TOTAL,
-    FIELD_TRIAL_CONFIG_ID, FIELD_TRIAL_ELAPSED_MS, FIELD_TRIAL_ERROR, FIELD_TRIAL_ID,
-    FIELD_TRIAL_STATUS, FIELD_TRIAL_TIME, HP_PREFIX, METRIC_NAMESPACE, MODEL_NAMESPACE,
-    TRIAL_PREFIX,
+    CONFIG_FILENAME, FIELD_METRIC, FIELD_SCORE, FIELD_TRIAL_BUDGET_STEP,
+    FIELD_TRIAL_BUDGET_TOTAL, FIELD_TRIAL_CONFIG_ID, FIELD_TRIAL_ELAPSED_MS,
+    FIELD_TRIAL_ERROR, FIELD_TRIAL_ID, FIELD_TRIAL_STATUS, FIELD_TRIAL_TIME, HP_PREFIX,
+    METRIC_NAMESPACE, MODEL_NAMESPACE, TRIAL_PREFIX,
 };
 use crate::db::TrialDb;
 use chrono::Utc;
@@ -118,7 +118,7 @@ impl TrialStore {
                 }
                 let diff = diff_lines(&existing, config_text);
                 let message = format!(
-                    "argtuner.toml changed since the last run; refusing to resume.\n{diff}"
+                    "{CONFIG_FILENAME} changed since the last run; refusing to resume.\n{diff}"
                 );
                 Err(std::io::Error::new(std::io::ErrorKind::InvalidData, message))
             }
@@ -242,8 +242,10 @@ impl TrialStore {
 
 fn diff_lines(old: &str, new: &str) -> String {
     let diff = TextDiff::from_lines(old, new);
+    let stored_label = format!("stored/{CONFIG_FILENAME}");
+    let current_label = format!("current/{CONFIG_FILENAME}");
     diff.unified_diff()
-        .header("stored/argtuner.toml", "current/argtuner.toml")
+        .header(&stored_label, &current_label)
         .to_string()
 }
 
