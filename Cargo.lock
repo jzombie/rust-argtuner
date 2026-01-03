@@ -159,6 +159,8 @@ dependencies = [
 name = "argtuner-loss-generator"
 version = "0.1.0-alpha"
 dependencies = [
+ "argtuner-talkback",
+ "argtuner-talkback-derive",
  "clap",
  "rand 0.8.5",
 ]
