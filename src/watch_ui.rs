@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
+    MouseEventKind,
 };
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
@@ -36,6 +37,7 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         details_scroll: ScrollPane::default(),
         focus: PaneFocus::Trials,
         pane_rects: PaneRects::default(),
+        chart_zoom: 1.0,
     };
 
     terminal::enable_raw_mode()?;
@@ -75,6 +77,7 @@ struct AppState {
     details_scroll: ScrollPane,
     focus: PaneFocus,
     pane_rects: PaneRects,
+    chart_zoom: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +90,7 @@ enum PaneFocus {
 #[derive(Debug, Clone, Copy)]
 struct PaneRects {
     trials: Rect,
+    trials_inner: Rect,
     charts: Rect,
     details: Rect,
 }
@@ -95,6 +99,7 @@ impl Default for PaneRects {
     fn default() -> Self {
         Self {
             trials: Rect::default(),
+            trials_inner: Rect::default(),
             charts: Rect::default(),
             details: Rect::default(),
         }
@@ -159,6 +164,21 @@ fn run_app(
                             PaneFocus::Details => PaneFocus::Trials,
                         };
                     }
+                    KeyCode::Char('+') | KeyCode::Char('=') => {
+                        if app.focus == PaneFocus::Charts {
+                            zoom_charts(app, 0.8);
+                        }
+                    }
+                    KeyCode::Char('-') => {
+                        if app.focus == PaneFocus::Charts {
+                            zoom_charts(app, 1.25);
+                        }
+                    }
+                    KeyCode::Char('0') => {
+                        if app.focus == PaneFocus::Charts {
+                            reset_chart_zoom(app);
+                        }
+                    }
                     KeyCode::PageDown | KeyCode::Char(']') => apply_focus_delta(app, 5),
                     KeyCode::PageUp | KeyCode::Char('[') => apply_focus_delta(app, -5),
                     _ => {}
@@ -167,7 +187,13 @@ fn run_app(
                     MouseEventKind::ScrollUp => {
                         let delta = -1;
                         if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
-                            apply_delta_for_pane(app, pane, delta);
+                            if mouse.modifiers.contains(KeyModifiers::CONTROL)
+                                && pane == PaneFocus::Charts
+                            {
+                                zoom_charts(app, 0.8);
+                            } else {
+                                apply_delta_for_pane(app, pane, delta);
+                            }
                         } else {
                             apply_focus_delta(app, delta);
                         }
@@ -175,9 +201,23 @@ fn run_app(
                     MouseEventKind::ScrollDown => {
                         let delta = 1;
                         if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
-                            apply_delta_for_pane(app, pane, delta);
+                            if mouse.modifiers.contains(KeyModifiers::CONTROL)
+                                && pane == PaneFocus::Charts
+                            {
+                                zoom_charts(app, 1.25);
+                            } else {
+                                apply_delta_for_pane(app, pane, delta);
+                            }
                         } else {
                             apply_focus_delta(app, delta);
+                        }
+                    }
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
+                            app.focus = pane;
+                            if pane == PaneFocus::Trials {
+                                handle_trial_click(app, mouse.column, mouse.row);
+                            }
                         }
                     }
                     _ => {}
@@ -200,6 +240,15 @@ fn apply_delta_for_pane(app: &mut AppState, pane: PaneFocus, delta: isize) {
     }
 }
 
+fn zoom_charts(app: &mut AppState, factor: f64) {
+    let next = (app.chart_zoom * factor).clamp(0.1, 1.0);
+    app.chart_zoom = next;
+}
+
+fn reset_chart_zoom(app: &mut AppState) {
+    app.chart_zoom = 1.0;
+}
+
 fn pane_for_mouse(app: &AppState, column: u16, row: u16) -> Option<PaneFocus> {
     if rect_contains(app.pane_rects.trials, column, row) {
         Some(PaneFocus::Trials)
@@ -216,6 +265,23 @@ fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
     let max_x = rect.x.saturating_add(rect.width);
     let max_y = rect.y.saturating_add(rect.height);
     column >= rect.x && column < max_x && row >= rect.y && row < max_y
+}
+
+fn handle_trial_click(app: &mut AppState, column: u16, row: u16) {
+    let inner = app.pane_rects.trials_inner;
+    if inner.height == 0 || !rect_contains(inner, column, row) {
+        return;
+    }
+    let offset_row = row.saturating_sub(inner.y) as usize;
+    let index = app.trials_scroll.offset.saturating_add(offset_row);
+    if index >= app.trials.len() {
+        return;
+    }
+    if index != app.selected {
+        app.selected = index;
+        app.metrics_scroll.reset();
+        app.details_scroll.reset();
+    }
 }
 
 fn move_trial_selection(app: &mut AppState, delta: isize) {
@@ -379,6 +445,7 @@ fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
     };
     let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
+    app.pane_rects.trials_inner = inner;
     let visible_rows = inner.height as usize;
     let total_items = app.trials.len();
     if total_items > 0 && visible_rows > 0 {
@@ -439,7 +506,7 @@ fn metric_value_text(trial: &TrialRow) -> Option<String> {
 }
 
 fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    let title = "Trial Metrics (Tab to switch focus)";
+    let title = "Trial Metrics (Tab to switch focus, +/- to zoom)";
     let block = Block::default().borders(Borders::ALL).title(title);
     frame.render_widget(&block, area);
     let inner = block.inner(area);
@@ -522,7 +589,7 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
             height: item_height,
         };
         let series = metric_series_for_key(epochs, key, &x_axis);
-        let (min_x, max_x, min_y, max_y) = series_bounds(&series);
+        let (min_x, max_x, min_y, max_y) = zoomed_series_bounds(&series, app.chart_zoom);
         let x_labels = axis_labels(min_x, max_x);
         let y_labels = axis_labels(min_y, max_y);
         let x_title = if x_axis.label == x_axis.unit {
@@ -663,6 +730,51 @@ fn series_bounds(series: &[(f64, f64)]) -> (f64, f64, f64, f64) {
         max_y = min_y + 1.0;
     }
     (min_x, max_x, min_y, max_y)
+}
+
+fn zoomed_series_bounds(series: &[(f64, f64)], zoom: f64) -> (f64, f64, f64, f64) {
+    let (full_min_x, full_max_x, full_min_y, full_max_y) = series_bounds(series);
+    if series.is_empty() || zoom >= 1.0 {
+        return (full_min_x, full_max_x, full_min_y, full_max_y);
+    }
+    let full_range = full_max_x - full_min_x;
+    if full_range <= 0.0 {
+        return (full_min_x, full_max_x, full_min_y, full_max_y);
+    }
+    let window = (full_range * zoom).max(1e-6);
+    let mut max_x = full_max_x;
+    let mut min_x = max_x - window;
+    if min_x < full_min_x {
+        min_x = full_min_x;
+        max_x = (min_x + window).min(full_max_x);
+    }
+
+    if let Some((min_y, max_y)) = series_y_bounds_in_range(series, min_x, max_x) {
+        (min_x, max_x, min_y, max_y)
+    } else {
+        (full_min_x, full_max_x, full_min_y, full_max_y)
+    }
+}
+
+fn series_y_bounds_in_range(series: &[(f64, f64)], min_x: f64, max_x: f64) -> Option<(f64, f64)> {
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for (x, y) in series {
+        if *x < min_x || *x > max_x {
+            continue;
+        }
+        min_y = min_y.min(*y);
+        max_y = max_y.max(*y);
+    }
+    if min_y.is_finite() && max_y.is_finite() {
+        if min_y == max_y {
+            Some((min_y, max_y + 1.0))
+        } else {
+            Some((min_y, max_y))
+        }
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
