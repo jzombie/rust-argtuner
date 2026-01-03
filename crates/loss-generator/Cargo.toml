@@ -13,3 +13,5 @@ argtuner-talkback-derive.workspace = true
 clap = { workspace = true, features = ["derive"] }
 indicatif.workspace = true
 rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true

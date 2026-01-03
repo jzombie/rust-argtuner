@@ -30,4 +30,4 @@ The `argtuner.toml` configuration defines a search space that explores different
 - **spike_prob**: Probability of a spike occurring at any step.
 - **epoch_time**: Simulated duration of each step in milliseconds (to test UI responsiveness).
 
-The tuner will run multiple trials (defined by `n_trials` in `argtuner.toml`), and for each trial, the generator will emit a final loss value. The tuner's goal is to minimize this `loss`.
+The tuner will run multiple trials (defined by `n_trials` in `argtuner.toml`), and for each trial, the generator will emit both training loss (`loss`) and validation loss (`val_loss`) values. The tuner's goal is to minimize `val_loss` so you can see patterns like overfitting when the two curves diverge.
