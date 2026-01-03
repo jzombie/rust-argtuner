@@ -30,6 +30,9 @@ enum Commands {
         /// Run without writing to the project store (uses a temp dir)
         #[arg(long)]
         dry_run: bool,
+        /// Allow resuming even if the config changed (not recommended; use at your own risk)
+        #[arg(long)]
+        allow_config_change: bool,
     },
     /// Rebuild trials.csv from trials.sqlite
     RebuildCsv {
@@ -64,11 +67,18 @@ fn main() {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Run { path, dry_run } => {
+        Commands::Run {
+            path,
+            dry_run,
+            allow_config_change,
+        } => {
             let project = Project::new(path);
             let tuner = Tuner::new(project);
 
-            let options = argtuner::tuner::RunOptions { dry_run: *dry_run };
+            let options = argtuner::tuner::RunOptions {
+                dry_run: *dry_run,
+                allow_config_change: *allow_config_change,
+            };
             if let Err(e) = tuner.run_with_options(options) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);

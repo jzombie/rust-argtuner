@@ -105,13 +105,20 @@ impl TrialStore {
         self.sync_csv()
     }
 
-    pub fn ensure_project_config(&self, config_text: &str) -> std::io::Result<()> {
+    pub fn ensure_project_config(
+        &self,
+        config_text: &str,
+        allow_override: bool,
+    ) -> std::io::Result<()> {
         let stored = self.db.load_project_config()?;
         match stored {
             None => self.db.save_project_config(config_text),
             Some(existing) => {
                 if existing == config_text {
                     return Ok(());
+                }
+                if allow_override {
+                    return self.db.save_project_config(config_text);
                 }
                 if !self.db.has_any_trials()? {
                     return self.db.save_project_config(config_text);

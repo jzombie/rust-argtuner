@@ -49,7 +49,10 @@ fn dry_run_avoids_project_store() {
     let project = Project::new(&project_root);
     let tuner = Tuner::new(project);
     tuner
-        .run_with_options(RunOptions { dry_run: true })
+        .run_with_options(RunOptions {
+            dry_run: true,
+            allow_config_change: false,
+        })
         .expect("dry run");
 
     let trials_csv = project_root.join(TRIALS_CSV_FILENAME);

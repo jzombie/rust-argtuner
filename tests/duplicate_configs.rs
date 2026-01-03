@@ -49,7 +49,10 @@ fn duplicate_configs_stop_tuning_after_retries() {
     let project = Project::new(&project_root);
     let tuner = Tuner::new(project);
     let err = tuner
-        .run_with_options(RunOptions { dry_run: false })
+        .run_with_options(RunOptions {
+            dry_run: false,
+            allow_config_change: false,
+        })
         .expect_err("expected duplicate-config stop");
     assert!(
         err.to_string().contains("unable to find a unique config"),

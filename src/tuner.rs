@@ -25,6 +25,7 @@ pub struct Tuner {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RunOptions {
     pub dry_run: bool,
+    pub allow_config_change: bool,
 }
 
 impl Tuner {
@@ -68,7 +69,7 @@ impl Tuner {
             self.project.store()?
         };
         if temp_root.is_none() {
-            store.ensure_project_config(&config_text)?;
+            store.ensure_project_config(&config_text, options.allow_config_change)?;
         }
         let store_for_summary = store.clone();
         let next_id = store.next_trial_id()?;
