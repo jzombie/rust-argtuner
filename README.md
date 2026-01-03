@@ -277,6 +277,11 @@ The execution flow is:
 If the app exits non‑zero or emits an invalid config payload, the trial is
 marked `error` and the tuner may retry based on scheduler policy.
 
+Duplicate configs are treated as invalid. If a newly sampled config matches an
+existing trial’s `hp.*` values, the tuner retries with a new sample. If it
+cannot find a unique config after a fixed number of retries, the run stops
+with an error indicating the search space may be exhausted.
+
 ## Hyperparameter impact report
 
 When trials complete, argtuner prints a heuristic Hyperparameter Impact report.
