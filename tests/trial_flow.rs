@@ -48,13 +48,11 @@ fn successive_halving_creates_new_row_per_rung() {
         "{} --epochs {{epochs}} --checkpoint-dir {{trial_dir}}",
         emit_result_command()
     ));
-    let space: argtuner::SearchSpace = serde_json::from_str(indoc::indoc! {r#"
-        {
-          "params": [
-            {"type": "Float", "name": "lr", "min": 0.001, "max": 0.01}
-          ]
-        }
-    "#})
+    let space: argtuner::SearchSpace = serde_json::from_value(serde_json::json!({
+            "params": [
+                    {"type": "Float", "name": "lr", "min": 0.001, "max": 0.01}
+            ]
+    }))
     .expect("space json");
 
     let unified_config = argtuner::UnifiedConfig {

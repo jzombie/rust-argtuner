@@ -1,5 +1,4 @@
 use argtuner::{Project, RunOptions, TRIALS_CSV_FILENAME, Tuner};
-use indoc::indoc;
 
 #[test]
 fn dry_run_avoids_project_store() {
@@ -7,8 +6,18 @@ fn dry_run_avoids_project_store() {
     let project_root = dir.path().join("probe-project");
     std::fs::create_dir_all(&project_root).expect("project dir");
 
-    let toml = indoc! {r#"
-        template = "bash -c 'echo ::ARGTUNER::{{\"type\":\"event\",\"name\":\"model.epoch_end\",\"fields\":{{\"metric\":\"1.0\",\"epoch\":\"1\"}}}}' --checkpoint-dir {trial_dir} --lr {lr}"
+    let event = argtuner::CommandTemplate::embed_json_for_toml(&serde_json::json!({
+        "type": "event",
+        "name": "model.epoch_end",
+        "fields": {
+            "metric": "1.0",
+            "epoch": "1"
+        }
+    }));
+
+    let toml = format!(
+        r#"
+        template = "bash -c 'echo {}{}' --checkpoint-dir {{trial_dir}} --lr {{lr}}"
 
         [project]
         metric_key = "metric"
@@ -31,7 +40,10 @@ fn dry_run_avoids_project_store() {
         min = 0.0
         max = 1.0
         log = false
-    "#};
+    "#,
+        argtuner_common::RESULT_PREFIX,
+        event
+    );
     std::fs::write(project_root.join("argtuner.toml"), toml).expect("write config");
 
     let project = Project::new(&project_root);

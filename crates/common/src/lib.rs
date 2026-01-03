@@ -21,19 +21,21 @@ pub const TUNER_BINDING_VERSION_EVENT: &str = "tuner.binding_version";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventKind {
+    Result,
     EarlyStopped,
     InvalidConfig,
     EpochEnd,
-    BindingVersion,
+    TunerApiVersion,
 }
 
 impl EventKind {
     pub fn as_str(&self) -> &'static str {
         match self {
+            EventKind::Result => "result",
             EventKind::EarlyStopped => MODEL_EARLY_STOPPED_EVENT,
             EventKind::InvalidConfig => MODEL_INVALID_CONFIG_EVENT,
             EventKind::EpochEnd => MODEL_EPOCH_END_EVENT,
-            EventKind::BindingVersion => TUNER_BINDING_VERSION_EVENT,
+            EventKind::TunerApiVersion => TUNER_BINDING_VERSION_EVENT,
         }
     }
 
@@ -42,7 +44,7 @@ impl EventKind {
             MODEL_EARLY_STOPPED_EVENT | EARLY_STOPPED_EVENT => Some(EventKind::EarlyStopped),
             MODEL_INVALID_CONFIG_EVENT | INVALID_CONFIG_EVENT => Some(EventKind::InvalidConfig),
             MODEL_EPOCH_END_EVENT | EPOCH_END_EVENT => Some(EventKind::EpochEnd),
-            TUNER_BINDING_VERSION_EVENT | BINDING_VERSION_EVENT => Some(EventKind::BindingVersion),
+            TUNER_BINDING_VERSION_EVENT | BINDING_VERSION_EVENT => Some(EventKind::TunerApiVersion),
             _ => None,
         }
     }

@@ -277,6 +277,11 @@ The execution flow is:
 If the app exits non‑zero or emits an invalid config payload, the trial is
 marked `error` and the tuner may retry based on scheduler policy.
 
+Duplicate configs are treated as invalid. If a newly sampled config matches an
+existing trial’s `hp.*` values, the tuner retries with a new sample. If it
+cannot find a unique config after a fixed number of retries, the run stops
+with an error indicating the search space may be exhausted.
+
 ## Hyperparameter impact report
 
 When trials complete, argtuner prints a heuristic Hyperparameter Impact report.
@@ -330,9 +335,9 @@ Notes:
 
 ## CSV behavior
 
-- The CSV is the source of truth for each trial’s hyperparameters after a trial
-  is created. Trial resumes and command reconstruction use the recorded `hp.*`
-  values, which are treated as immutable for that trial.
+- The SQLite database is the source of truth; the CSV is a mirrored snapshot.
+  Trial resumes and command reconstruction use the recorded `hp.*` values from
+  the database, which are treated as immutable for that trial.
 - Columns are grouped as core trial fields, then `metric.*`, then `trial.*`,
   then `hp.*`.
 - Core fields are unprefixed for readability/stability:

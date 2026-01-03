@@ -4,6 +4,8 @@ use std::io;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+pub use argtuner_common::EventKind;
+
 pub const PREFIX: &str = argtuner_common::RESULT_PREFIX;
 pub const BINDING_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PRINT_TEMPLATE_FLAG: &str = "--print-template";
@@ -16,7 +18,13 @@ pub struct Talkback {
 
 impl Talkback {
     pub fn init() -> Self {
-        let _ = emit_version_event();
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            argtuner_common::BINDING_VERSION_FIELD.to_string(),
+            BINDING_VERSION.to_string(),
+        );
+        let _ = emit_event(argtuner_common::EventKind::TunerApiVersion, &fields);
+
         let raw_args = std::env::args().collect::<Vec<_>>();
         let args_map = args_map_from(raw_args);
         Self { args_map }
@@ -30,43 +38,28 @@ impl Talkback {
         parse_args_from_map(self.args_map())
     }
 
-    pub fn emit_event(
-        &self,
-        event: argtuner_common::EventKind,
-        fields: &BTreeMap<String, String>,
-    ) -> io::Result<()> {
-        emit_event(event, fields)
-    }
-
-    pub fn emit_result(&self, fields: &BTreeMap<String, String>) -> io::Result<()> {
-        emit_result(fields)
-    }
-
-    pub fn emit_result_struct<T: Serialize>(&self, value: &T) -> io::Result<()> {
-        emit_result_struct(value)
-    }
-
-    pub fn emit_event_struct<T: Serialize>(
+    pub fn emit_event<T: Serialize>(
         &self,
         event: argtuner_common::EventKind,
         value: &T,
     ) -> io::Result<()> {
-        emit_event_struct(event, value)
+        emit_event(event, value)
+    }
+
+    pub fn emit_result<T: Serialize>(&self, value: &T) -> io::Result<()> {
+        emit_result(value)
     }
 
     pub fn emit_epoch_end<T: Serialize>(&self, value: &T) -> io::Result<()> {
         emit_epoch_end(value)
     }
-
-    pub fn emit_metric_struct<T: Serialize>(&self, value: &T) -> io::Result<()> {
-        emit_result_struct(value)
-    }
 }
 
-pub fn emit_event(
-    event: argtuner_common::EventKind,
-    fields: &BTreeMap<String, String>,
-) -> io::Result<()> {
+pub fn emit_event<T: Serialize>(event: argtuner_common::EventKind, value: &T) -> io::Result<()> {
+    if matches!(event, argtuner_common::EventKind::Result) {
+        return emit_result(value);
+    }
+    let fields = fields_from_value(value)?;
     let payload = serde_json::json!({
         "type": "event",
         "name": event.as_str(),
@@ -75,19 +68,12 @@ pub fn emit_event(
     emit_json(payload)
 }
 
-pub fn emit_event_struct<T: Serialize>(
-    event: argtuner_common::EventKind,
-    value: &T,
-) -> io::Result<()> {
-    let fields = fields_from_value(value)?;
-    emit_event(event, &fields)
-}
-
 pub fn emit_epoch_end<T: Serialize>(value: &T) -> io::Result<()> {
-    emit_event_struct(argtuner_common::EventKind::EpochEnd, value)
+    emit_event(argtuner_common::EventKind::EpochEnd, value)
 }
 
-pub fn emit_result(fields: &BTreeMap<String, String>) -> io::Result<()> {
+pub fn emit_result<T: Serialize>(value: &T) -> io::Result<()> {
+    let fields = fields_from_value(value)?;
     if fields.is_empty() {
         return Ok(());
     }
@@ -96,20 +82,6 @@ pub fn emit_result(fields: &BTreeMap<String, String>) -> io::Result<()> {
         "fields": fields,
     });
     emit_json(payload)
-}
-
-pub fn emit_result_struct<T: Serialize>(value: &T) -> io::Result<()> {
-    let fields = fields_from_value(value)?;
-    emit_result(&fields)
-}
-
-pub fn emit_version_event() -> io::Result<()> {
-    let mut fields = BTreeMap::new();
-    fields.insert(
-        argtuner_common::BINDING_VERSION_FIELD.to_string(),
-        BINDING_VERSION.to_string(),
-    );
-    emit_event(argtuner_common::EventKind::BindingVersion, &fields)
 }
 
 pub fn args_map() -> BTreeMap<String, Vec<String>> {

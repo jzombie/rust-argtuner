@@ -167,6 +167,30 @@ impl TrialStore {
         Ok(rows)
     }
 
+    pub fn find_duplicate_config(
+        &self,
+        config_id: Option<usize>,
+        fields: &BTreeMap<String, String>,
+    ) -> std::io::Result<Option<usize>> {
+        let candidate = hp_fields(fields);
+        let rows = self.load_rows()?;
+        for row in rows {
+            let row_config_id = row
+                .get(FIELD_TRIAL_CONFIG_ID)
+                .and_then(|value| value.parse::<usize>().ok());
+            if config_id.is_some() && config_id == row_config_id {
+                continue;
+            }
+            if hp_fields(&row) == candidate {
+                let trial_id = row
+                    .get(FIELD_TRIAL_ID)
+                    .and_then(|value| value.parse::<usize>().ok());
+                return Ok(trial_id);
+            }
+        }
+        Ok(None)
+    }
+
     pub fn next_trial_id(&self) -> std::io::Result<usize> {
         self.db.next_trial_id()
     }
@@ -248,6 +272,14 @@ fn fill_row(mut row: BTreeMap<String, String>, headers: &[String]) -> BTreeMap<S
         row.entry(header.clone()).or_default();
     }
     row
+}
+
+fn hp_fields(fields: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    fields
+        .iter()
+        .filter(|(key, _)| key.starts_with(HP_PREFIX))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 fn write_csv_snapshot(

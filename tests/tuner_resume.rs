@@ -24,7 +24,16 @@ fn tuner_skips_completed_trials() {
         "{} --checkpoint-dir {{trial_dir}}",
         emit_result_command()
     ));
-    let space = SearchSpace { params: vec![] };
+    let space = SearchSpace {
+        params: vec![argtuner::ParamSpec::Float {
+            name: "lr".to_string(),
+            min: 0.0,
+            max: 1.0,
+            log_scale: false,
+            step: None,
+            format: None,
+        }],
+    };
 
     let project_settings = ProjectSettings {
         metric_key: "metric".to_string(),
@@ -60,6 +69,7 @@ fn tuner_skips_completed_trials() {
     fields.insert(format!("{TRIAL_PREFIX}rung"), "0".to_string());
     fields.insert(format!("{TRIAL_PREFIX}bracket"), "0".to_string());
     fields.insert(FIELD_SCORE.to_string(), "0.5".to_string());
+    fields.insert("hp.lr".to_string(), "0.123".to_string());
     project
         .store()
         .expect("store")
