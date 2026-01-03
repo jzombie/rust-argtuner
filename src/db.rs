@@ -188,11 +188,9 @@ impl TrialDb {
                 return Ok(true);
             }
             let has_epochs: Option<i64> = conn
-                .query_row(
-                    "SELECT 1 FROM trial_epoch_records LIMIT 1",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT 1 FROM trial_epoch_records LIMIT 1", [], |row| {
+                    row.get(0)
+                })
                 .optional()?;
             Ok(has_epochs.is_some())
         })

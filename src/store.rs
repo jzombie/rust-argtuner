@@ -7,10 +7,10 @@ use similar::TextDiff;
 
 use crate::command::CommandTemplate;
 use crate::constants::{
-    CONFIG_FILENAME, FIELD_METRIC, FIELD_SCORE, FIELD_TRIAL_BUDGET_STEP,
-    FIELD_TRIAL_BUDGET_TOTAL, FIELD_TRIAL_CONFIG_ID, FIELD_TRIAL_ELAPSED_MS,
-    FIELD_TRIAL_ERROR, FIELD_TRIAL_ID, FIELD_TRIAL_STATUS, FIELD_TRIAL_TIME, HP_PREFIX,
-    METRIC_NAMESPACE, MODEL_NAMESPACE, TRIAL_PREFIX,
+    CONFIG_FILENAME, FIELD_METRIC, FIELD_SCORE, FIELD_TRIAL_BUDGET_STEP, FIELD_TRIAL_BUDGET_TOTAL,
+    FIELD_TRIAL_CONFIG_ID, FIELD_TRIAL_ELAPSED_MS, FIELD_TRIAL_ERROR, FIELD_TRIAL_ID,
+    FIELD_TRIAL_STATUS, FIELD_TRIAL_TIME, HP_PREFIX, METRIC_NAMESPACE, MODEL_NAMESPACE,
+    TRIAL_PREFIX,
 };
 use crate::db::TrialDb;
 use chrono::Utc;
@@ -120,7 +120,10 @@ impl TrialStore {
                 let message = format!(
                     "{CONFIG_FILENAME} changed since the last run; refusing to resume.\n{diff}"
                 );
-                Err(std::io::Error::new(std::io::ErrorKind::InvalidData, message))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    message,
+                ))
             }
         }
     }
