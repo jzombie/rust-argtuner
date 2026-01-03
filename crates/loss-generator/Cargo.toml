@@ -1,0 +1,12 @@
+[package]
+name = "argtuner-loss-generator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# This crate is not intended for publishing
+publish = false
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+rand.workspace = true

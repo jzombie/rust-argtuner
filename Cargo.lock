@@ -156,6 +156,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "argtuner-loss-generator"
+version = "0.1.0-alpha"
+dependencies = [
+ "clap",
+ "rand 0.8.5",
+]
+
+[[package]]
 name = "argtuner-talkback"
 version = "0.1.0-alpha"
 dependencies = [
