@@ -46,12 +46,13 @@ fn main() -> io::Result<()> {
             }
         },
         |event, _app| {
-            matches!(
-                event,
-                Some(Event::Key(key))
-                    if key.code == KeyCode::Char('q')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-            )
+            matches!(event, Some(Event::Key(key)) if key.code == KeyCode::Esc)
+                || matches!(
+                    event,
+                    Some(Event::Key(key))
+                        if key.code == KeyCode::Char('q')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                )
         },
     );
 
