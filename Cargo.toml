@@ -47,6 +47,7 @@ libc = "0.2.176"
 portable-pty = "0.9.0"
 rand = "0.8"
 ratatui = "0.30.0"
+resvg = "0.45.1"
 term-wm = { path = "crates/term-wm" }
 vt100 = "0.16.2"
 rusqlite = { version = "0.37.0", features = ["bundled"] }

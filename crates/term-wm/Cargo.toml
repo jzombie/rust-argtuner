@@ -11,3 +11,4 @@ ratatui.workspace = true
 portable-pty.workspace = true
 vt100.workspace = true
 crossterm.workspace = true
+resvg.workspace = true
