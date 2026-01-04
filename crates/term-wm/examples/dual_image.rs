@@ -34,6 +34,7 @@ fn main() -> io::Result<()> {
         &mut app,
         &[PaneId::Left, PaneId::Right],
         |id| id,
+        |id| Some(id),
         Duration::from_millis(16),
         |frame, app| draw_ui(frame, app),
         |event, app| {

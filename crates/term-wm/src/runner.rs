@@ -11,11 +11,12 @@ pub trait HasWindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     fn windows(&mut self) -> &mut WindowManager<W, R>;
 }
 
-pub fn run_app<B, A, W, R, FDraw, FDispatch, FQuit, FMap, E>(
+pub fn run_app<B, A, W, R, FDraw, FDispatch, FQuit, FMap, FFocus, E>(
     terminal: &mut Terminal<B>,
     app: &mut A,
     focus_regions: &[R],
     map_region: FMap,
+    map_focus: FFocus,
     poll_interval: Duration,
     mut draw: FDraw,
     mut dispatch: FDispatch,
@@ -30,6 +31,7 @@ where
     FDispatch: FnMut(&Event, &mut A) -> bool,
     FQuit: FnMut(Option<&Event>, &mut A) -> bool,
     FMap: Fn(R) -> W,
+    FFocus: Fn(W) -> Option<R>,
     E: From<io::Error> + From<<B as Backend>::Error>,
 {
     let capture_timeout = Duration::from_millis(500);
@@ -73,6 +75,7 @@ where
                         let _ = app
                             .windows()
                             .handle_focus_event(&evt, focus_regions, &map_region);
+                        app.windows().bring_focus_to_front(&map_focus);
                         continue;
                     }
                     if dispatch(&evt, app) {
@@ -81,6 +84,7 @@ where
                     let _ = app
                         .windows()
                         .handle_focus_event(&evt, focus_regions, &map_region);
+                    app.windows().bring_focus_to_front(&map_focus);
                     continue;
                 }
                 Event::Key(key) if key.code == KeyCode::Tab => {
@@ -91,6 +95,7 @@ where
                         let _ = app
                             .windows()
                             .handle_focus_event(&evt, focus_regions, &map_region);
+                        app.windows().bring_focus_to_front(&map_focus);
                         continue;
                     }
                     if dispatch(&evt, app) {
@@ -99,6 +104,7 @@ where
                     let _ = app
                         .windows()
                         .handle_focus_event(&evt, focus_regions, &map_region);
+                    app.windows().bring_focus_to_front(&map_focus);
                 }
                 Event::Key(_) if app.windows().capture_active() => {
                     app.windows().clear_capture();

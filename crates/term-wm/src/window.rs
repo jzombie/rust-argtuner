@@ -272,6 +272,18 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         self.focus.advance(forward);
     }
 
+    pub fn bring_focus_to_front<F>(&mut self, map_focus: F)
+    where
+        F: Fn(W) -> Option<R>,
+    {
+        if self.layout_contract != LayoutContract::WindowManaged {
+            return;
+        }
+        if let Some(region) = map_focus(self.focus.current()) {
+            self.bring_floating_to_front(region);
+        }
+    }
+
     pub fn scroll(&self, id: W) -> ScrollState {
         self.scroll.get(&id).copied().unwrap_or_default()
     }

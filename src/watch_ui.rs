@@ -105,6 +105,7 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
             RegionId::Details,
         ],
         map_focus_from_region,
+        |_focus| None,
         Duration::from_millis(50),
         |frame, app| {
             if app.last_refresh.elapsed() >= app.poll {
