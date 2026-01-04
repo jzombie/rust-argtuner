@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, MouseEventKind};
-use ratatui::prelude::Rect;
+use ratatui::prelude::{Alignment, Rect};
+use ratatui::style::{Color, Style};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::components::{CaptureBadge, Component};
 use crate::layout::{render_handles, LayoutNode, LayoutPlan, SplitHandle, TilingLayout};
@@ -15,6 +17,10 @@ pub enum CaptureStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Describes who owns layout placement and how WM-level input is handled.
+///
+/// - AppManaged: the app owns regions; `Esc` passes through.
+/// - WindowManaged: the WM owns layout; `Esc` enters WM mode/overlay.
 pub enum LayoutContract {
     AppManaged,
     WindowManaged,
@@ -115,6 +121,9 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     pending_deadline: Option<Instant>,
     capture_badge: CaptureBadge,
     layout_contract: LayoutContract,
+    wm_overlay_visible: bool,
+    wm_overlay_opened_at: Option<Instant>,
+    esc_passthrough_window: Duration,
 }
 
 impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
@@ -129,6 +138,9 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
             pending_deadline: None,
             capture_badge: CaptureBadge::new(),
             layout_contract: LayoutContract::AppManaged,
+            wm_overlay_visible: false,
+            wm_overlay_opened_at: None,
+            esc_passthrough_window: Duration::from_millis(600),
         }
     }
 
@@ -170,9 +182,14 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
     pub fn clear_capture(&mut self) {
         self.capture_deadline = None;
         self.pending_deadline = None;
+        self.wm_overlay_visible = false;
+        self.wm_overlay_opened_at = None;
     }
 
     pub fn capture_active(&mut self) -> bool {
+        if self.layout_contract == LayoutContract::WindowManaged && self.wm_overlay_visible {
+            return true;
+        }
         self.refresh_capture();
         self.capture_deadline.is_some()
     }
@@ -184,6 +201,9 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
 
     pub fn capture_status(&mut self) -> CaptureStatus {
         self.refresh_capture();
+        if self.layout_contract == LayoutContract::WindowManaged && self.wm_overlay_visible {
+            return CaptureStatus::Active;
+        }
         if self.capture_deadline.is_some() {
             CaptureStatus::Active
         } else if self.pending_deadline.is_some() {
@@ -204,6 +224,36 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                 self.pending_deadline = None;
             }
         }
+    }
+
+    pub fn open_wm_overlay(&mut self) {
+        self.wm_overlay_visible = true;
+        self.wm_overlay_opened_at = Some(Instant::now());
+    }
+
+    pub fn close_wm_overlay(&mut self) {
+        self.wm_overlay_visible = false;
+        self.wm_overlay_opened_at = None;
+    }
+
+    pub fn wm_overlay_visible(&self) -> bool {
+        self.wm_overlay_visible
+    }
+
+    pub fn esc_passthrough_active(&self) -> bool {
+        self.esc_passthrough_remaining().is_some()
+    }
+
+    pub fn esc_passthrough_remaining(&self) -> Option<Duration> {
+        if !self.wm_overlay_visible {
+            return None;
+        }
+        let opened_at = self.wm_overlay_opened_at?;
+        let elapsed = opened_at.elapsed();
+        if elapsed >= self.esc_passthrough_window {
+            return None;
+        }
+        Some(self.esc_passthrough_window.saturating_sub(elapsed))
     }
 
     pub fn focus(&self) -> W {
@@ -283,7 +333,9 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                     .find(|handle| rect_contains(handle.rect, column, row))
             });
         render_handles(frame, &self.handles, hovered);
-        if self.layout_contract == LayoutContract::WindowManaged {
+        if self.layout_contract == LayoutContract::WindowManaged && self.wm_overlay_visible {
+            self.render_wm_overlay(frame);
+        } else if self.layout_contract == LayoutContract::WindowManaged {
             let status = self.capture_status();
             self.capture_badge.set_status(status);
             self.capture_badge.render(frame, frame.area(), false);
@@ -373,4 +425,40 @@ pub fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
     let max_x = rect.x.saturating_add(rect.width);
     let max_y = rect.y.saturating_add(rect.height);
     column >= rect.x && column < max_x && row >= rect.y && row < max_y
+}
+
+impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
+    fn render_wm_overlay(&self, frame: &mut ratatui::Frame) {
+        let area = frame.area();
+        let width = area.width.min(70).max(24);
+        let height = area.height.min(9).max(5);
+        let x = area
+            .x
+            .saturating_add(area.width.saturating_sub(width) / 2);
+        let y = area
+            .y
+            .saturating_add(area.height.saturating_sub(height) / 2);
+        let rect = Rect { x, y, width, height };
+        frame.render_widget(Clear, rect);
+        let block = Block::default().title("Window Manager").borders(Borders::ALL);
+        let (remaining_ms, bar) = if let Some(remaining) = self.esc_passthrough_remaining() {
+            let total = self.esc_passthrough_window.as_millis().max(1);
+            let remaining_ms = remaining.as_millis();
+            let filled = ((remaining_ms * 10) / total) as usize;
+            let filled = filled.min(10);
+            let bar = format!("[{}{}]", "#".repeat(filled), "-".repeat(10 - filled));
+            (format!("{remaining_ms}ms"), bar)
+        } else {
+            ("inactive".to_string(), "[----------]".to_string())
+        };
+        let text = format!(
+            "Window manager mode (placeholder)\n\n- Esc: dismiss overlay\n- Esc (quick double): send to app\n- Esc passthrough: {remaining_ms} {bar}\n- Tab/Shift-Tab: cycle focus\n- More commands coming soon"
+        );
+        let paragraph = Paragraph::new(text)
+            .style(Style::default().bg(Color::Black))
+            .block(block)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, rect);
+    }
 }
