@@ -21,6 +21,7 @@ use ratatui::widgets::{
 };
 use ratatui::{Frame, Terminal};
 use rusqlite::{Connection, OpenFlags};
+use argtuner::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let mut app = AppState {
@@ -47,6 +48,10 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         params_scroll: ScrollPane::default(),
         params_selected: 0,
         params_x_offset: 0,
+        metrics: Vec::new(),
+        metrics_list_scroll: ScrollPane::default(),
+        metrics_selected: 0,
+        details_focus: DetailsFocus::Params,
     };
 
     terminal::enable_raw_mode()?;
@@ -95,6 +100,10 @@ struct AppState {
     params_scroll: ScrollPane,
     params_selected: usize,
     params_x_offset: usize,
+    metrics: Vec<ParamToggle>,
+    metrics_list_scroll: ScrollPane,
+    metrics_selected: usize,
+    details_focus: DetailsFocus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +115,12 @@ enum PaneFocus {
 
 const CHART_ITEM_HEIGHT: u16 = 7;
 const PARAM_AXIS_WIDTH: u16 = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetailsFocus {
+    Params,
+    Metrics,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChartMode {
@@ -133,6 +148,8 @@ struct PaneRects {
     charts_inner: Rect,
     details: Rect,
     details_inner: Rect,
+    params_inner: Rect,
+    metrics_inner: Rect,
 }
 
 impl Default for PaneRects {
@@ -144,6 +161,8 @@ impl Default for PaneRects {
             charts_inner: Rect::default(),
             details: Rect::default(),
             details_inner: Rect::default(),
+            params_inner: Rect::default(),
+            metrics_inner: Rect::default(),
         }
     }
 }
@@ -199,13 +218,8 @@ fn run_app(
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                     KeyCode::Up | KeyCode::Char('k') => apply_focus_delta(app, -1),
                     KeyCode::Down | KeyCode::Char('j') => apply_focus_delta(app, 1),
-                    KeyCode::Tab => {
-                        app.focus = match app.focus {
-                            PaneFocus::Trials => PaneFocus::Charts,
-                            PaneFocus::Charts => PaneFocus::Details,
-                            PaneFocus::Details => PaneFocus::Trials,
-                        };
-                    }
+                    KeyCode::Tab => advance_focus(app, true),
+                    KeyCode::BackTab => advance_focus(app, false),
                     KeyCode::Char('h') => {
                         if app.focus == PaneFocus::Charts {
                             app.chart_mode = match app.chart_mode {
@@ -214,20 +228,31 @@ fn run_app(
                             };
                         }
                     }
-                    KeyCode::Char('f') | KeyCode::Enter => {
+                    KeyCode::Char('f') => {
+                        if app.focus == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
+                            toggle_chart_view(app);
+                        }
+                    }
+                    KeyCode::Enter => {
                         if app.focus == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
                             toggle_chart_view(app);
                         } else if app.focus == PaneFocus::Details
                             && app.chart_mode == ChartMode::HyperParams
                         {
-                            toggle_param_selected(app);
+                            match app.details_focus {
+                                DetailsFocus::Params => toggle_param_selected(app),
+                                DetailsFocus::Metrics => toggle_metric_selected(app),
+                            }
                         }
                     }
                     KeyCode::Char(' ') => {
                         if app.focus == PaneFocus::Details
                             && app.chart_mode == ChartMode::HyperParams
                         {
-                            toggle_param_selected(app);
+                            match app.details_focus {
+                                DetailsFocus::Params => toggle_param_selected(app),
+                                DetailsFocus::Metrics => toggle_metric_selected(app),
+                            }
                         }
                     }
                     KeyCode::Char('+') | KeyCode::Char('=') => {
@@ -248,15 +273,13 @@ fn run_app(
                     KeyCode::PageDown | KeyCode::Char(']') => apply_focus_delta(app, 5),
                     KeyCode::PageUp | KeyCode::Char('[') => apply_focus_delta(app, -5),
                     KeyCode::Right => {
-                        if app.focus == PaneFocus::Charts
-                            && app.chart_mode == ChartMode::HyperParams
+                        if app.chart_mode == ChartMode::HyperParams && app.focus == PaneFocus::Charts
                         {
                             pan_params(app, 1);
                         }
                     }
                     KeyCode::Left => {
-                        if app.focus == PaneFocus::Charts
-                            && app.chart_mode == ChartMode::HyperParams
+                        if app.chart_mode == ChartMode::HyperParams && app.focus == PaneFocus::Charts
                         {
                             pan_params(app, -1);
                         }
@@ -273,6 +296,11 @@ fn run_app(
                             {
                                 zoom_charts(app, 0.8);
                             } else {
+                                if pane == PaneFocus::Details
+                                    && app.chart_mode == ChartMode::HyperParams
+                                {
+                                    update_details_focus_for_mouse(app, mouse.column, mouse.row);
+                                }
                                 apply_delta_for_pane(app, pane, delta);
                             }
                         } else {
@@ -288,6 +316,11 @@ fn run_app(
                             {
                                 zoom_charts(app, 1.25);
                             } else {
+                                if pane == PaneFocus::Details
+                                    && app.chart_mode == ChartMode::HyperParams
+                                {
+                                    update_details_focus_for_mouse(app, mouse.column, mouse.row);
+                                }
                                 apply_delta_for_pane(app, pane, delta);
                             }
                         } else {
@@ -320,7 +353,8 @@ fn run_app(
                             } else if pane == PaneFocus::Details
                                 && app.chart_mode == ChartMode::HyperParams
                             {
-                                handle_param_click(app, mouse.column, mouse.row);
+                                update_details_focus_for_mouse(app, mouse.column, mouse.row);
+                                handle_details_click(app, mouse.column, mouse.row);
                             }
                         }
                     }
@@ -334,6 +368,63 @@ fn run_app(
 
 fn apply_focus_delta(app: &mut AppState, delta: isize) {
     apply_delta_for_pane(app, app.focus, delta);
+}
+
+fn advance_focus(app: &mut AppState, forward: bool) {
+    let step = if forward { 1 } else { -1 };
+    if app.chart_mode == ChartMode::HyperParams {
+        match (app.focus, app.details_focus) {
+            (PaneFocus::Trials, _) => app.focus = PaneFocus::Charts,
+            (PaneFocus::Charts, _) => {
+                app.focus = PaneFocus::Details;
+                if forward {
+                    app.details_focus = DetailsFocus::Params;
+                } else {
+                    app.details_focus = DetailsFocus::Metrics;
+                }
+            }
+            (PaneFocus::Details, DetailsFocus::Params) => {
+                if forward {
+                    app.details_focus = DetailsFocus::Metrics;
+                } else {
+                    app.focus = PaneFocus::Charts;
+                }
+            }
+            (PaneFocus::Details, DetailsFocus::Metrics) => {
+                if forward {
+                    app.focus = PaneFocus::Trials;
+                } else {
+                    app.details_focus = DetailsFocus::Params;
+                }
+            }
+        }
+        return;
+    }
+
+    let next = match app.focus {
+        PaneFocus::Trials => {
+            if step > 0 {
+                PaneFocus::Charts
+            } else {
+                PaneFocus::Details
+            }
+        }
+        PaneFocus::Charts => {
+            if step > 0 {
+                PaneFocus::Details
+            } else {
+                PaneFocus::Trials
+            }
+        }
+        PaneFocus::Details => {
+            if step > 0 {
+                PaneFocus::Trials
+            } else {
+                PaneFocus::Charts
+            }
+        }
+    };
+    app.focus = next;
 }
 
 fn apply_delta_for_pane(app: &mut AppState, pane: PaneFocus, delta: isize) {
@@ -350,7 +441,10 @@ fn apply_delta_for_pane(app: &mut AppState, pane: PaneFocus, delta: isize) {
         }
         PaneFocus::Details => {
             if app.chart_mode == ChartMode::HyperParams {
-                move_param_selection(app, delta);
+                match app.details_focus {
+                    DetailsFocus::Params => move_param_selection(app, delta),
+                    DetailsFocus::Metrics => move_metric_selection(app, delta),
+                }
             } else {
                 app.details_scroll.bump(delta);
             }
@@ -397,7 +491,7 @@ fn move_chart_selection(app: &mut AppState, delta: isize) {
 }
 
 fn pan_params(app: &mut AppState, delta: isize) {
-    let enabled_len = app.params.iter().filter(|param| param.enabled).count();
+    let enabled_len = enabled_axis_count(app);
     if enabled_len == 0 {
         app.params_x_offset = 0;
         return;
@@ -419,9 +513,34 @@ fn move_param_selection(app: &mut AppState, delta: isize) {
     app.params_selected = next;
 }
 
+fn move_metric_selection(app: &mut AppState, delta: isize) {
+    if app.metrics.is_empty() {
+        app.metrics_selected = 0;
+        return;
+    }
+    let max = (app.metrics.len() - 1) as isize;
+    let current = app.metrics_selected as isize;
+    let next = (current + delta).clamp(0, max) as usize;
+    app.metrics_selected = next;
+}
+
 fn toggle_param_selected(app: &mut AppState) {
     if let Some(param) = app.params.get_mut(app.params_selected) {
         param.enabled = !param.enabled;
+    }
+}
+
+fn toggle_metric_selected(app: &mut AppState) {
+    if let Some(metric) = app.metrics.get_mut(app.metrics_selected) {
+        metric.enabled = !metric.enabled;
+    }
+}
+
+fn update_details_focus_for_mouse(app: &mut AppState, column: u16, row: u16) {
+    if rect_contains(app.pane_rects.params_inner, column, row) {
+        app.details_focus = DetailsFocus::Params;
+    } else if rect_contains(app.pane_rects.metrics_inner, column, row) {
+        app.details_focus = DetailsFocus::Metrics;
     }
 }
 
@@ -478,18 +597,32 @@ fn handle_chart_click(app: &mut AppState, column: u16, row: u16) {
     app.chart_view = ChartView::Focused;
 }
 
-fn handle_param_click(app: &mut AppState, column: u16, row: u16) {
-    let inner = app.pane_rects.details_inner;
-    if inner.height == 0 || !rect_contains(inner, column, row) {
-        return;
+fn handle_details_click(app: &mut AppState, column: u16, row: u16) {
+    if app.details_focus == DetailsFocus::Params {
+        let inner = app.pane_rects.params_inner;
+        if inner.height == 0 || !rect_contains(inner, column, row) {
+            return;
+        }
+        let offset_row = row.saturating_sub(inner.y) as usize;
+        let index = app.params_scroll.offset.saturating_add(offset_row);
+        if index >= app.params.len() {
+            return;
+        }
+        app.params_selected = index;
+        toggle_param_selected(app);
+    } else {
+        let inner = app.pane_rects.metrics_inner;
+        if inner.height == 0 || !rect_contains(inner, column, row) {
+            return;
+        }
+        let offset_row = row.saturating_sub(inner.y) as usize;
+        let index = app.metrics_list_scroll.offset.saturating_add(offset_row);
+        if index >= app.metrics.len() {
+            return;
+        }
+        app.metrics_selected = index;
+        toggle_metric_selected(app);
     }
-    let offset_row = row.saturating_sub(inner.y) as usize;
-    let index = app.params_scroll.offset.saturating_add(offset_row);
-    if index >= app.params.len() {
-        return;
-    }
-    app.params_selected = index;
-    toggle_param_selected(app);
 }
 
 fn move_trial_selection(app: &mut AppState, delta: isize) {
@@ -525,26 +658,55 @@ fn refresh_trials(app: &mut AppState) {
 
 fn sync_param_toggles(app: &mut AppState) {
     let mut names = BTreeSet::new();
+    let mut metric_names = BTreeSet::new();
     for trial in &app.trials {
         for key in trial.fields.keys() {
-            if key.starts_with("metric.") || key.as_str() == "metric" || key.as_str() == "score" {
-                continue;
+            if key.starts_with(HP_PREFIX) {
+                names.insert(key.clone());
+            } else if key.starts_with("metric.") && key.as_str() != FIELD_METRIC {
+                metric_names.insert(key.clone());
+            } else if key.as_str() == FIELD_SCORE {
+                metric_names.insert(key.clone());
             }
-            names.insert(key.clone());
         }
     }
     let mut existing = BTreeMap::new();
     for param in &app.params {
         existing.insert(param.name.clone(), param.enabled);
     }
+    let mut existing_metrics = BTreeMap::new();
+    for metric in &app.metrics {
+        existing_metrics.insert(metric.name.clone(), metric.enabled);
+    }
+    let main_metric = app
+        .trials
+        .get(app.selected)
+        .and_then(|trial| trial.fields.get(FIELD_METRIC))
+        .map(|value| format!("metric.{value}"));
     let mut params = Vec::with_capacity(names.len());
     for name in names {
         let enabled = existing.get(&name).copied().unwrap_or(true);
         params.push(ParamToggle { name, enabled });
     }
+    let mut metrics = Vec::with_capacity(metric_names.len());
+    for name in metric_names {
+        let default_enabled = main_metric
+            .as_ref()
+            .map(|metric| metric == &name)
+            .unwrap_or(name == FIELD_SCORE);
+        let enabled = existing_metrics
+            .get(&name)
+            .copied()
+            .unwrap_or(default_enabled);
+        metrics.push(ParamToggle { name, enabled });
+    }
     app.params = params;
+    app.metrics = metrics;
     if app.params_selected >= app.params.len() {
         app.params_selected = app.params.len().saturating_sub(1);
+    }
+    if app.metrics_selected >= app.metrics.len() {
+        app.metrics_selected = app.metrics.len().saturating_sub(1);
     }
     if app.params_x_offset > app.params.len().saturating_sub(1) {
         app.params_x_offset = 0;
@@ -680,7 +842,7 @@ fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
         PaneFocus::Trials => "Trials (focus)",
         _ => "Trials",
     };
-    let block = Block::default().borders(Borders::ALL).title(title);
+    let block = styled_block(title, app.focus == PaneFocus::Trials);
     let inner = block.inner(area);
     app.pane_rects.trials_inner = inner;
     let visible_rows = inner.height as usize;
@@ -744,10 +906,12 @@ fn metric_value_text(trial: &TrialRow) -> Option<String> {
 
 fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
     let title = match app.chart_mode {
-        ChartMode::Metrics => "Trial Metrics (Tab to switch focus, +/- to zoom, f to focus, h for params)",
-        ChartMode::HyperParams => "Hyperparameters (Tab to switch focus, h for metrics)",
+        ChartMode::Metrics => "Trial Metrics (Tab/Shift-Tab to switch focus, +/- to zoom, f to focus, h for params)",
+        ChartMode::HyperParams => {
+            "Hyperparameters (Tab/Shift-Tab to switch focus, h for metrics)"
+        }
     };
-    let block = Block::default().borders(Borders::ALL).title(title);
+    let block = styled_block(title, app.focus == PaneFocus::Charts);
     frame.render_widget(&block, area);
     let inner = block.inner(area);
     if inner.height == 0 {
@@ -761,6 +925,9 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
     app.pane_rects.charts = chunks[0];
     app.pane_rects.details = chunks[1];
     app.pane_rects.charts_inner = Rect::default();
+    app.pane_rects.details_inner = Rect::default();
+    app.pane_rects.params_inner = Rect::default();
+    app.pane_rects.metrics_inner = Rect::default();
     app.metrics_len = 0;
 
     if let Some(err) = app.last_error.as_ref() {
@@ -819,7 +986,7 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
         (_, ChartView::Focused, _) => "Metric Curve (focus view)".to_string(),
         _ => "Metric Curves".to_string(),
     };
-    let block = Block::default().borders(Borders::ALL).title(title);
+    let block = styled_block(title, app.focus == PaneFocus::Charts);
     frame.render_widget(&block, area);
     let inner = block.inner(area);
     app.pane_rects.charts_inner = inner;
@@ -874,10 +1041,10 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
 
 fn draw_hyperparam_space(frame: &mut Frame, app: &mut AppState, area: Rect) {
     let title = match app.focus {
-        PaneFocus::Charts => "Hyperparameter Space (focus)",
-        _ => "Hyperparameter Space",
+        PaneFocus::Charts => "Hyperparameter Space (loss color, focus, L/R pan axes)",
+        _ => "Hyperparameter Space (loss color, L/R pan axes)",
     };
-    let block = Block::default().borders(Borders::ALL).title(title);
+    let block = styled_block(title, app.focus == PaneFocus::Charts);
     frame.render_widget(&block, area);
     let inner = block.inner(area);
     app.pane_rects.charts_inner = inner;
@@ -885,9 +1052,10 @@ fn draw_hyperparam_space(frame: &mut Frame, app: &mut AppState, area: Rect) {
         return;
     }
 
-    let enabled: Vec<&ParamToggle> = app.params.iter().filter(|p| p.enabled).collect();
+    let enabled_axes = enabled_axes(app);
+    let enabled: Vec<&AxisKey> = enabled_axes.iter().collect();
     if enabled.is_empty() {
-        frame.render_widget(Paragraph::new("No parameters enabled."), inner);
+        frame.render_widget(Paragraph::new("No axes enabled."), inner);
         return;
     }
 
@@ -907,7 +1075,7 @@ fn draw_hyperparam_space(frame: &mut Frame, app: &mut AppState, area: Rect) {
 
     let domains = visible
         .iter()
-        .map(|param| param_domain(&app.trials, &param.name))
+        .map(|axis| param_domain(&app.trials, &axis.name))
         .collect::<Vec<_>>();
     let objective_range = objective_range(&app.trials);
     let x_max = if visible_len == 1 {
@@ -921,11 +1089,11 @@ fn draw_hyperparam_space(frame: &mut Frame, app: &mut AppState, area: Rect) {
         .x_bounds([0.0, x_max])
         .y_bounds([0.0, 1.0])
         .paint(|ctx| {
-            for (idx, param) in visible.iter().enumerate() {
+            for (idx, axis) in visible.iter().enumerate() {
                 let x = idx as f64;
                 ctx.draw(&CanvasLine::new(x, 0.0, x, 1.0, Color::DarkGray));
                 if idx % label_stride == 0 {
-                    let label = short_param_label(&param.name, 10);
+                    let label = short_axis_label(&axis.name, 10);
                     ctx.print(
                         x,
                         1.0,
@@ -944,8 +1112,8 @@ fn draw_hyperparam_space(frame: &mut Frame, app: &mut AppState, area: Rect) {
                     color_for_objective(objective_value(trial), objective_range)
                 };
                 let mut last: Option<(f64, f64)> = None;
-                for (idx, (param, domain)) in visible.iter().zip(domains.iter()).enumerate() {
-                    let Some(value) = trial.fields.get(&param.name) else {
+                for (idx, (axis, domain)) in visible.iter().zip(domains.iter()).enumerate() {
+                    let Some(value) = trial.fields.get(&axis.name) else {
                         last = None;
                         continue;
                     };
@@ -1025,7 +1193,7 @@ fn draw_trial_details(
         PaneFocus::Details => "Trial Details (focus)",
         _ => "Trial Details",
     };
-    let block = Block::default().borders(Borders::ALL).title(title);
+    let block = styled_block(title, app.focus == PaneFocus::Details);
     frame.render_widget(&block, area);
     let inner = block.inner(area);
     if inner.height == 0 {
@@ -1043,49 +1211,114 @@ fn draw_trial_details(
 }
 
 fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    let title = match app.focus {
-        PaneFocus::Details => "Parameters (focus, space to toggle)",
-        _ => "Parameters (space to toggle)",
-    };
-    let block = Block::default().borders(Borders::ALL).title(title);
-    let inner = block.inner(area);
-    app.pane_rects.details_inner = inner;
-    let visible_rows = inner.height as usize;
-    let total_items = app.params.len();
-    if total_items > 0 && visible_rows > 0 {
-        let offset = &mut app.params_scroll.offset;
-        if app.params_selected < *offset {
-            *offset = app.params_selected;
-        } else if app.params_selected >= *offset + visible_rows {
-            *offset = app.params_selected + 1 - visible_rows;
-        }
-        app.params_scroll.apply(total_items, visible_rows);
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(area);
+
+    let (params_block, params_inner) = build_param_list_block(
+        chunks[0],
+        "Hyperparameters",
+        app.focus == PaneFocus::Details && app.details_focus == DetailsFocus::Params,
+    );
+    app.pane_rects.details_inner = area;
+    app.pane_rects.params_inner = params_inner;
+    draw_toggle_list(
+        frame,
+        chunks[0],
+        params_block,
+        params_inner,
+        &mut app.params_scroll,
+        &app.params,
+        app.params_selected,
+    );
+
+    let (metrics_block, metrics_inner) = build_param_list_block(
+        chunks[1],
+        "Metrics",
+        app.focus == PaneFocus::Details && app.details_focus == DetailsFocus::Metrics,
+    );
+    app.pane_rects.metrics_inner = metrics_inner;
+    draw_toggle_list(
+        frame,
+        chunks[1],
+        metrics_block,
+        metrics_inner,
+        &mut app.metrics_list_scroll,
+        &app.metrics,
+        app.metrics_selected,
+    );
+}
+
+fn styled_block<T: Into<Line<'static>>>(title: T, focused: bool) -> Block<'static> {
+    let base = Block::default().borders(Borders::ALL).title(title);
+    if focused {
+        base.border_style(Style::default().fg(Color::Green))
     } else {
-        app.params_scroll.reset();
+        base
+    }
+}
+
+fn build_param_list_block(
+    area: Rect,
+    title: &str,
+    focused: bool,
+) -> (Block<'static>, Rect) {
+    let label = if focused {
+        format!("{title} (focus, space to toggle, Tab/Shift-Tab to switch)")
+    } else {
+        format!("{title} (space to toggle, Tab/Shift-Tab to switch)")
+    };
+    let block = styled_block(label, focused);
+    let inner = block.inner(area);
+    (block, inner)
+}
+
+fn draw_toggle_list(
+    frame: &mut Frame,
+    area: Rect,
+    block: Block<'static>,
+    inner: Rect,
+    scroll: &mut ScrollPane,
+    items: &[ParamToggle],
+    selected: usize,
+) {
+    let visible_rows = inner.height as usize;
+    let total_items = items.len();
+    if total_items > 0 && visible_rows > 0 {
+        let offset = &mut scroll.offset;
+        if selected < *offset {
+            *offset = selected;
+        } else if selected >= *offset + visible_rows {
+            *offset = selected + 1 - visible_rows;
+        }
+        scroll.apply(total_items, visible_rows);
+    } else {
+        scroll.reset();
     }
 
-    let items = app
-        .params
+    let list_items = items
         .iter()
-        .skip(app.params_scroll.offset)
+        .skip(scroll.offset)
         .take(visible_rows.max(1))
         .map(|param| {
             let marker = if param.enabled { "[x]" } else { "[ ]" };
-            ListItem::new(format!("{marker} {}", param.name))
+            let label = display_axis_name(&param.name);
+            ListItem::new(format!("{marker} {label}"))
         })
         .collect::<Vec<_>>();
 
     let mut state = ListState::default();
-    if !app.params.is_empty() {
-        let selected = app.params_selected.saturating_sub(app.params_scroll.offset);
+    if !items.is_empty() {
+        let selected = selected.saturating_sub(scroll.offset);
         state.select(Some(selected));
     }
-    let list = List::new(items)
+    let list = List::new(list_items)
         .block(block)
         .highlight_style(Style::default().fg(Color::Yellow));
     frame.render_stateful_widget(list, area, &mut state);
 
-    render_scrollbar(frame, inner, total_items, visible_rows, app.params_scroll.offset);
+    render_scrollbar(frame, inner, total_items, visible_rows, scroll.offset);
 }
 
 fn collect_metric_keys_for_epochs(epochs: &[TrialRow]) -> Vec<String> {
@@ -1215,6 +1448,11 @@ enum ParamDomain {
     Categorical { categories: Vec<String> },
 }
 
+#[derive(Debug, Clone)]
+struct AxisKey {
+    name: String,
+}
+
 fn select_x_axis_spec(epochs: &[TrialRow]) -> XAxisSpec {
     let candidates = [
         XAxisSpec {
@@ -1329,10 +1567,13 @@ fn metric_unit_from_key(key: &str) -> Option<&'static str> {
 }
 
 fn objective_value(trial: &TrialRow) -> Option<f64> {
-    if let Some(value) = trial.fields.get("score").and_then(|v| v.parse::<f64>().ok()) {
+    if let Some((_, value)) = metric_for_trial(trial) {
         return Some(value);
     }
-    metric_for_trial(trial).map(|(_, value)| value)
+    trial
+        .fields
+        .get(FIELD_SCORE)
+        .and_then(|v| v.parse::<f64>().ok())
 }
 
 fn objective_range(trials: &[TrialRow]) -> Option<(f64, f64)> {
@@ -1456,9 +1697,54 @@ fn truncate_label(value: &str, max_len: usize) -> String {
 }
 
 fn short_param_label(value: &str, max_len: usize) -> String {
-    let tail = value.rsplit('.').next().unwrap_or(value);
-    let label = if tail.len() >= 3 { tail } else { value };
+    let trimmed = value.strip_prefix(HP_PREFIX).unwrap_or(value);
+    let tail = trimmed.rsplit('.').next().unwrap_or(trimmed);
+    let label = if tail.len() >= 3 { tail } else { trimmed };
     truncate_label(label, max_len)
+}
+
+fn short_axis_label(value: &str, max_len: usize) -> String {
+    if value.starts_with(HP_PREFIX) {
+        return short_param_label(value, max_len);
+    }
+    if let Some(stripped) = value.strip_prefix("metric.") {
+        return truncate_label(stripped, max_len);
+    }
+    truncate_label(value, max_len)
+}
+
+fn display_axis_name(value: &str) -> String {
+    if value.starts_with(HP_PREFIX) {
+        return value.trim_start_matches(HP_PREFIX).to_string();
+    }
+    if let Some(stripped) = value.strip_prefix("metric.") {
+        return stripped.to_string();
+    }
+    value.to_string()
+}
+
+fn enabled_axes(app: &AppState) -> Vec<AxisKey> {
+    let mut axes = Vec::new();
+    for param in &app.params {
+        if param.enabled {
+            axes.push(AxisKey {
+                name: param.name.clone(),
+            });
+        }
+    }
+    for metric in &app.metrics {
+        if metric.enabled {
+            axes.push(AxisKey {
+                name: metric.name.clone(),
+            });
+        }
+    }
+    axes
+}
+
+fn enabled_axis_count(app: &AppState) -> usize {
+    app.params.iter().filter(|p| p.enabled).count()
+        + app.metrics.iter().filter(|m| m.enabled).count()
 }
 
 fn trial_detail_lines(trial: &TrialRow, epochs: &[TrialRow]) -> Vec<Line<'static>> {
