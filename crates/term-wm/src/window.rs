@@ -471,8 +471,21 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                     .iter()
                     .find(|handle| rect_contains(handle.rect, column, row))
             });
+        let hovered_tab = self
+            .hover
+            .and_then(|(column, row)| {
+                self.tab_handles
+                    .iter()
+                    .find(|tab| rect_contains(tab.rect, column, row))
+            })
+            .map(|tab| tab.id);
         render_handles(frame, &self.handles, hovered);
-        render_tab_handles(frame, &self.tab_handles, self.drag_tab.as_ref());
+        render_tab_handles(
+            frame,
+            &self.tab_handles,
+            self.drag_tab.as_ref(),
+            hovered_tab,
+        );
         if self.layout_contract == LayoutContract::WindowManaged && self.wm_overlay_visible {
             let (remaining_ms, bar) = if let Some(remaining) = self.esc_passthrough_remaining() {
                 let total = self.esc_passthrough_window.as_millis().max(1);
@@ -606,11 +619,15 @@ fn render_tab_handles<R: Copy + Eq + Ord>(
     frame: &mut ratatui::Frame,
     tabs: &[TabHandle<R>],
     drag: Option<&TabDrag<R>>,
+    hovered: Option<R>,
 ) {
     use ratatui::style::{Color, Style};
     let buffer = frame.buffer_mut();
     for tab in tabs {
         let is_drag = drag.is_some_and(|active| active.id == tab.id);
+        if !is_drag && hovered != Some(tab.id) {
+            continue;
+        }
         let style = if is_drag {
             Style::default()
                 .fg(Color::Black)
