@@ -34,6 +34,7 @@ impl TerminalComponent {
     }
 
     fn render_screen(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+        let show_cursor = self.pane.scrollback() == 0;
         let screen = self.pane.screen();
         let buffer = frame.buffer_mut();
         for row in 0..area.height {
@@ -78,7 +79,7 @@ impl TerminalComponent {
             }
         }
 
-        if focused && !screen.hide_cursor() {
+        if focused && !screen.hide_cursor() && show_cursor {
             let (row, col) = screen.cursor_position();
             if row < area.height && col < area.width {
                 if let Some(cell) = buffer.cell_mut((area.x + col, area.y + row)) {
@@ -160,6 +161,9 @@ impl super::Component for TerminalComponent {
                 let bytes = key_to_bytes(*key);
                 if bytes.is_empty() {
                     return false;
+                }
+                if self.pane.scrollback() > 0 {
+                    self.pane.set_scrollback(0);
                 }
                 let _ = self.pane.write_bytes(&bytes);
                 true
