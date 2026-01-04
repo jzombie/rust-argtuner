@@ -1,5 +1,5 @@
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::backend::Backend;
@@ -32,9 +32,24 @@ where
     FMap: Fn(R) -> W,
     E: From<io::Error> + From<<B as Backend>::Error>,
 {
+    // Esc->(Tab/BackTab) chord window before focus switching; Esc passes through if no chord.
+    let capture_timeout = Duration::from_millis(500);
+    let mut pending_esc: Option<(Event, Instant)> = None;
     loop {
         if should_quit(None, app) {
             return Ok(());
+        }
+        // If Esc timed out without a chord, forward it to the app.
+        if pending_esc
+            .as_ref()
+            .is_some_and(|(_, deadline)| Instant::now() > *deadline)
+        {
+            let (esc_evt, _) = pending_esc.take().expect("pending esc missing");
+            app.windows().clear_capture();
+            if should_quit(Some(&esc_evt), app) {
+                return Ok(());
+            }
+            let _ = dispatch(&esc_evt, app);
         }
         app.windows().begin_frame();
         terminal.draw(|frame| {
@@ -43,17 +58,37 @@ where
         })?;
         if event::poll(poll_interval)? {
             let evt = normalize_event(event::read()?);
+            if let Some((esc_evt, _deadline)) = pending_esc.take() {
+                // Esc + Tab/BackTab enters WM capture; otherwise Esc passes through.
+                if matches!(
+                    evt,
+                    Event::Key(key) if key.code == KeyCode::Tab || key.code == KeyCode::BackTab
+                ) {
+                    app.windows().arm_capture(capture_timeout);
+                    let _ = app
+                        .windows()
+                        .handle_focus_event(&evt, focus_regions, &map_region);
+                    continue;
+                }
+                if should_quit(Some(&esc_evt), app) {
+                    return Ok(());
+                }
+                let _ = dispatch(&esc_evt, app);
+            }
+            if matches!(evt, Event::Key(key) if key.code == KeyCode::Esc) {
+                pending_esc = Some((evt, Instant::now() + capture_timeout));
+                // Show pending indicator while we wait for a chord.
+                app.windows().arm_pending(capture_timeout);
+                continue;
+            }
             if should_quit(Some(&evt), app) {
                 return Ok(());
             }
             match &evt {
-                Event::Key(key) if key.code == KeyCode::Esc => {
-                    app.windows().arm_capture(Duration::from_millis(500));
-                    continue;
-                }
                 Event::Key(key) if key.code == KeyCode::BackTab => {
                     if app.windows().capture_active() {
-                        app.windows().clear_capture();
+                        // Keep capture alive during repeated focus cycling.
+                        app.windows().arm_capture(capture_timeout);
                         let _ = app
                             .windows()
                             .handle_focus_event(&evt, focus_regions, &map_region);
@@ -69,7 +104,8 @@ where
                 }
                 Event::Key(key) if key.code == KeyCode::Tab => {
                     if app.windows().capture_active() {
-                        app.windows().clear_capture();
+                        // Keep capture alive during repeated focus cycling.
+                        app.windows().arm_capture(capture_timeout);
                         let _ = app
                             .windows()
                             .handle_focus_event(&evt, focus_regions, &map_region);

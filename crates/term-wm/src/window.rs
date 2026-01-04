@@ -98,6 +98,7 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     handles: Vec<SplitHandle>,
     hover: Option<(u16, u16)>,
     capture_deadline: Option<Instant>,
+    pending_deadline: Option<Instant>,
 }
 
 impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
@@ -109,21 +110,30 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
             handles: Vec::new(),
             hover: None,
             capture_deadline: None,
+            pending_deadline: None,
         }
     }
 
     pub fn begin_frame(&mut self) {
         self.regions = RegionMap::default();
         self.handles.clear();
+        // Refresh deadlines so overlay badges can expire without events.
         self.refresh_capture();
     }
 
     pub fn arm_capture(&mut self, timeout: Duration) {
         self.capture_deadline = Some(Instant::now() + timeout);
+        self.pending_deadline = None;
+    }
+
+    pub fn arm_pending(&mut self, timeout: Duration) {
+        // Shows an "Esc pending" badge while waiting for the chord.
+        self.pending_deadline = Some(Instant::now() + timeout);
     }
 
     pub fn clear_capture(&mut self) {
         self.capture_deadline = None;
+        self.pending_deadline = None;
     }
 
     pub fn capture_active(&mut self) -> bool {
@@ -131,10 +141,20 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         self.capture_deadline.is_some()
     }
 
+    pub fn pending_active(&mut self) -> bool {
+        self.refresh_capture();
+        self.pending_deadline.is_some()
+    }
+
     fn refresh_capture(&mut self) {
         if let Some(deadline) = self.capture_deadline {
             if Instant::now() > deadline {
                 self.capture_deadline = None;
+            }
+        }
+        if let Some(deadline) = self.pending_deadline {
+            if Instant::now() > deadline {
+                self.pending_deadline = None;
             }
         }
     }
@@ -228,6 +248,20 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                 frame
                     .buffer_mut()
                     .set_string(area.x, area.y, label, style);
+            }
+        }
+        if self.pending_active() {
+            let area = frame.area();
+            if area.width > 0 && area.height > 0 {
+                let label = " ESC ";
+                let style = ratatui::style::Style::default()
+                    .fg(ratatui::style::Color::Black)
+                    .bg(ratatui::style::Color::LightYellow)
+                    .add_modifier(ratatui::style::Modifier::BOLD);
+                let x = area.x.saturating_add(4);
+                frame
+                    .buffer_mut()
+                    .set_string(x, area.y, label, style);
             }
         }
     }
