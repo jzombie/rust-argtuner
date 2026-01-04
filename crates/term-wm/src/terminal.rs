@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 pub type PtyResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -12,11 +12,13 @@ pub struct TerminalPane {
     pending: Arc<Mutex<Vec<u8>>>,
     parser: vt100::Parser,
     size: PtySize,
+    pty_size: PtySize,
     scrollback_len: usize,
     scrollback_used: usize,
     child: Option<Box<dyn Child + Send + Sync>>,
     exited: bool,
     _reader: JoinHandle<()>,
+    pending_resize: Option<PtySize>,
 }
 
 impl TerminalPane {
@@ -55,23 +57,28 @@ impl TerminalPane {
             pending,
             parser,
             size,
+            pty_size: size,
             scrollback_len,
             scrollback_used: 0,
             child: Some(child),
             exited: false,
             _reader: reader_handle,
+            pending_resize: None,
         })
     }
 
     pub fn resize(&mut self, size: PtySize) -> PtyResult<()> {
-        if size == self.size {
+        if size.rows == 0 || size.cols == 0 {
+            return Ok(());
+        }
+        if size == self.pty_size && self.pending_resize.is_none() {
             return Ok(());
         }
         self.master
             .resize(size)
             .map_err(|err| wrap_err("resize", err))?;
-        self.size = size;
-        self.parser.screen_mut().set_size(size.rows, size.cols);
+        self.pty_size = size;
+        self.apply_resize(size);
         Ok(())
     }
 
@@ -84,14 +91,20 @@ impl TerminalPane {
     }
 
     pub fn update(&mut self) {
-        let mut pending = self.pending.lock().unwrap_or_else(|err| err.into_inner());
-        if !pending.is_empty() {
-            let bytes = pending.split_off(0);
-            self.parser.process(&bytes);
-            let added = bytes.iter().filter(|b| **b == b'\n').count();
-            if added > 0 && self.scrollback_len > 0 {
-                self.scrollback_used = (self.scrollback_used + added).min(self.scrollback_len);
+        let bytes = {
+            let mut pending = self.pending.lock().unwrap_or_else(|err| err.into_inner());
+            if pending.is_empty() {
+                return;
             }
+            pending.split_off(0)
+        };
+        if let Some(size) = self.pending_resize.take() {
+            self.apply_resize(size);
+        }
+        self.parser.process(&bytes);
+        let added = bytes.iter().filter(|b| **b == b'\n').count();
+        if added > 0 && self.scrollback_len > 0 {
+            self.scrollback_used = (self.scrollback_used + added).min(self.scrollback_len);
         }
     }
 
@@ -169,6 +182,31 @@ impl TerminalPane {
 
     pub fn alternate_screen(&mut self) -> bool {
         self.screen().alternate_screen()
+    }
+
+    fn apply_resize(&mut self, size: PtySize) {
+        if size.rows < self.size.rows && self.scrollback_len > 0 && !self.alternate_screen_cached()
+        {
+            let delta = self.size.rows.saturating_sub(size.rows);
+            if delta > 0 {
+                let seq = format!("\x1b[{delta}S");
+                self.parser.process(seq.as_bytes());
+            }
+        }
+        self.size = size;
+        self.parser.screen_mut().set_size(size.rows, size.cols);
+        self.pending_resize = None;
+    }
+
+    fn alternate_screen_cached(&self) -> bool {
+        self.parser.screen().alternate_screen()
+    }
+
+    fn has_pending_output(&self) -> bool {
+        self.pending
+            .lock()
+            .map(|pending| !pending.is_empty())
+            .unwrap_or(false)
     }
 }
 

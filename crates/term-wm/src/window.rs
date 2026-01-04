@@ -6,7 +6,7 @@ use ratatui::prelude::Rect;
 
 use crate::components::{Component, DialogOverlay};
 use crate::layout::{
-    render_handles, FloatingPane, LayoutNode, LayoutPlan, RectSpec, SplitHandle, TilingLayout,
+    FloatingPane, LayoutNode, LayoutPlan, RectSpec, SplitHandle, TilingLayout, render_handles,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +60,6 @@ impl ScrollState {
         }
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub struct FocusRing<T: Copy + Eq> {
@@ -308,6 +307,10 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         self.regions.set(id, rect);
     }
 
+    pub fn full_region(&self, id: R) -> Rect {
+        self.regions.get(id).unwrap_or_default()
+    }
+
     pub fn region(&self, id: R) -> Rect {
         let rect = self.regions.get(id).unwrap_or_default();
         if self.layout_contract == LayoutContract::WindowManaged {
@@ -407,7 +410,13 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
             MouseEventKind::Drag(_) => {
                 if let Some(drag) = self.drag_tab {
                     if let Some(index) = self.floating_index(drag.id) {
-                        self.move_floating(index, mouse.column, mouse.row, drag.offset_x, drag.offset_y);
+                        self.move_floating(
+                            index,
+                            mouse.column,
+                            mouse.row,
+                            drag.offset_x,
+                            drag.offset_y,
+                        );
                     }
                     return true;
                 }
@@ -446,11 +455,15 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         let y = rect.y;
         self.managed_floating.push(FloatingPane {
             id,
-            rect: RectSpec::Absolute(Rect { x, y, width, height }),
+            rect: RectSpec::Absolute(Rect {
+                x,
+                y,
+                width,
+                height,
+            }),
         });
         true
     }
-
 
     fn floating_index(&self, id: R) -> Option<usize> {
         self.managed_floating.iter().position(|pane| pane.id == id)
@@ -465,7 +478,12 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         let height = rect.height.max(1);
         let x = column.saturating_sub(offset_x);
         let y = row.saturating_sub(offset_y);
-        pane.rect = RectSpec::Absolute(Rect { x, y, width, height });
+        pane.rect = RectSpec::Absolute(Rect {
+            x,
+            y,
+            width,
+            height,
+        });
     }
 
     fn bring_floating_to_front(&mut self, id: R) {
@@ -476,13 +494,11 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
     }
 
     pub fn render_overlays(&mut self, frame: &mut ratatui::Frame) {
-        let hovered = self
-            .hover
-            .and_then(|(column, row)| {
-                self.handles
-                    .iter()
-                    .find(|handle| rect_contains(handle.rect, column, row))
-            });
+        let hovered = self.hover.and_then(|(column, row)| {
+            self.handles
+                .iter()
+                .find(|handle| rect_contains(handle.rect, column, row))
+        });
         let hovered_tab = self
             .hover
             .and_then(|(column, row)| {
@@ -558,30 +574,31 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
             Event::Mouse(mouse) => {
                 self.hover = Some((mouse.column, mouse.row));
                 match mouse.kind {
-                MouseEventKind::Down(_) => {
-                    let hit = if self.layout_contract == LayoutContract::WindowManaged
-                        && !self.managed_draw_order.is_empty()
-                    {
-                        self.hit_test_region_topmost(
-                            mouse.column,
-                            mouse.row,
-                            &self.managed_draw_order,
-                        )
-                    } else {
-                        self.hit_test_region(mouse.column, mouse.row, hit_targets)
-                    };
-                    if let Some(hit) = hit {
-                        self.set_focus(map(hit));
-                        if self.layout_contract == LayoutContract::WindowManaged {
-                            self.bring_floating_to_front(hit);
+                    MouseEventKind::Down(_) => {
+                        let hit = if self.layout_contract == LayoutContract::WindowManaged
+                            && !self.managed_draw_order.is_empty()
+                        {
+                            self.hit_test_region_topmost(
+                                mouse.column,
+                                mouse.row,
+                                &self.managed_draw_order,
+                            )
+                        } else {
+                            self.hit_test_region(mouse.column, mouse.row, hit_targets)
+                        };
+                        if let Some(hit) = hit {
+                            self.set_focus(map(hit));
+                            if self.layout_contract == LayoutContract::WindowManaged {
+                                self.bring_floating_to_front(hit);
+                            }
+                            true
+                        } else {
+                            false
                         }
-                        true
-                    } else {
-                        false
                     }
+                    _ => false,
                 }
-                _ => false,
-            }}
+            }
             _ => false,
         }
     }
@@ -599,7 +616,6 @@ struct TabDrag<R: Copy + Eq + Ord> {
     offset_x: u16,
     offset_y: u16,
 }
-
 
 #[derive(Debug, Clone)]
 pub struct RegionMap<T: Copy + Eq + Ord> {
@@ -665,13 +681,9 @@ fn render_tab_handles<R: Copy + Eq + Ord>(
             continue;
         }
         let style = if is_drag {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightYellow)
+            Style::default().fg(Color::Black).bg(Color::LightYellow)
         } else {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::DarkGray)
+            Style::default().fg(Color::Black).bg(Color::DarkGray)
         };
         for dx in 0..tab.rect.width {
             if let Some(cell) = buffer.cell_mut((tab.rect.x + dx, tab.rect.y)) {

@@ -126,9 +126,12 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
     }
 
     if panes.is_empty() {
-        frame
-            .buffer_mut()
-            .set_string(area.x, area.y, "all shells exited", ratatui::style::Style::default());
+        frame.buffer_mut().set_string(
+            area.x,
+            area.y,
+            "all shells exited",
+            ratatui::style::Style::default(),
+        );
         return;
     }
     app.windows.register_managed_layout(area);

@@ -3,9 +3,9 @@ use crossterm::event::{
 };
 use portable_pty::{CommandBuilder, PtySize};
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color as TColor, Modifier, Style},
-    Frame,
 };
 use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
@@ -130,6 +130,9 @@ pub fn default_shell_command() -> CommandBuilder {
 
 impl super::Component for TerminalComponent {
     fn resize(&mut self, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
         let size = (area.width, area.height);
         if size != self.last_size {
             let _ = self.pane.resize(PtySize {
@@ -148,12 +151,7 @@ impl super::Component for TerminalComponent {
             return;
         }
         self.last_area = area;
-        if self.pane.has_exited() {
-            frame
-                .buffer_mut()
-                .set_string(area.x, area.y, "shell exited", Style::default());
-            return;
-        }
+        let _exited = self.pane.has_exited();
         self.render_screen(frame, area, focused);
     }
 
@@ -312,12 +310,11 @@ fn mouse_event_to_bytes(mouse: MouseEvent) -> Vec<u8> {
         ),
         MouseEventKind::Up(_) => (3, true),
         MouseEventKind::Drag(button) => (
-            32
-                + match button {
-                    MouseButton::Left => 0,
-                    MouseButton::Middle => 1,
-                    MouseButton::Right => 2,
-                },
+            32 + match button {
+                MouseButton::Left => 0,
+                MouseButton::Middle => 1,
+                MouseButton::Right => 2,
+            },
             false,
         ),
         MouseEventKind::Moved => (35, false),
