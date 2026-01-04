@@ -115,7 +115,11 @@ pub fn default_shell() -> String {
 }
 
 pub fn default_shell_command() -> CommandBuilder {
-    CommandBuilder::new(default_shell())
+    let mut cmd = CommandBuilder::new(default_shell());
+    if let Ok(cwd) = std::env::current_dir() {
+        cmd.cwd(cwd);
+    }
+    cmd
 }
 
 impl super::Component for TerminalComponent {
