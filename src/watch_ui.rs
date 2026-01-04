@@ -3,6 +3,7 @@ use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use argtuner::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
     MouseEventKind,
@@ -11,17 +12,16 @@ use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use ratatui::backend::CrosstermBackend;
 use ratatui::prelude::{Constraint, Direction, Layout, Rect};
-use ratatui::symbols::Marker;
 use ratatui::style::{Color, Style};
+use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    canvas::{Canvas, Line as CanvasLine},
     Axis, Block, Borders, Chart, Dataset, GraphType, List, ListItem, ListState, Paragraph,
     Scrollbar, ScrollbarOrientation, ScrollbarState,
+    canvas::{Canvas, Line as CanvasLine},
 };
 use ratatui::{Frame, Terminal};
 use rusqlite::{Connection, OpenFlags};
-use argtuner::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let mut app = AppState {
@@ -63,7 +63,11 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let result = run_app(&mut terminal, &mut app);
 
     terminal::disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     result
@@ -77,6 +81,9 @@ struct TrialRow {
     error: Option<String>,
     fields: BTreeMap<String, String>,
 }
+
+type TrialEpochRows = BTreeMap<i64, Vec<TrialRow>>;
+type TrialLoadResult = Result<(Vec<TrialRow>, TrialEpochRows), String>;
 
 struct AppState {
     db_path: PathBuf,
@@ -117,6 +124,15 @@ const CHART_ITEM_HEIGHT: u16 = 7;
 const PARAM_AXIS_WIDTH: u16 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusTarget {
+    Trials,
+    Charts,
+    Details,
+    DetailsParams,
+    DetailsMetrics,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetailsFocus {
     Params,
     Metrics,
@@ -140,7 +156,7 @@ struct ParamToggle {
     enabled: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct PaneRects {
     trials: Rect,
     trials_inner: Rect,
@@ -150,21 +166,6 @@ struct PaneRects {
     details_inner: Rect,
     params_inner: Rect,
     metrics_inner: Rect,
-}
-
-impl Default for PaneRects {
-    fn default() -> Self {
-        Self {
-            trials: Rect::default(),
-            trials_inner: Rect::default(),
-            charts: Rect::default(),
-            charts_inner: Rect::default(),
-            details: Rect::default(),
-            details_inner: Rect::default(),
-            params_inner: Rect::default(),
-            metrics_inner: Rect::default(),
-        }
-    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -273,13 +274,15 @@ fn run_app(
                     KeyCode::PageDown | KeyCode::Char(']') => apply_focus_delta(app, 5),
                     KeyCode::PageUp | KeyCode::Char('[') => apply_focus_delta(app, -5),
                     KeyCode::Right => {
-                        if app.chart_mode == ChartMode::HyperParams && app.focus == PaneFocus::Charts
+                        if app.chart_mode == ChartMode::HyperParams
+                            && app.focus == PaneFocus::Charts
                         {
                             pan_params(app, 1);
                         }
                     }
                     KeyCode::Left => {
-                        if app.chart_mode == ChartMode::HyperParams && app.focus == PaneFocus::Charts
+                        if app.chart_mode == ChartMode::HyperParams
+                            && app.focus == PaneFocus::Charts
                         {
                             pan_params(app, -1);
                         }
@@ -329,14 +332,16 @@ fn run_app(
                     }
                     MouseEventKind::ScrollLeft => {
                         if app.chart_mode == ChartMode::HyperParams
-                            && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts)
+                            && pane_for_mouse(app, mouse.column, mouse.row)
+                                == Some(PaneFocus::Charts)
                         {
                             pan_params(app, -1);
                         }
                     }
                     MouseEventKind::ScrollRight => {
                         if app.chart_mode == ChartMode::HyperParams
-                            && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts)
+                            && pane_for_mouse(app, mouse.column, mouse.row)
+                                == Some(PaneFocus::Charts)
                         {
                             pan_params(app, 1);
                         }
@@ -370,61 +375,62 @@ fn apply_focus_delta(app: &mut AppState, delta: isize) {
     apply_delta_for_pane(app, app.focus, delta);
 }
 
-fn advance_focus(app: &mut AppState, forward: bool) {
-    let step = if forward { 1 } else { -1 };
-    if app.chart_mode == ChartMode::HyperParams {
-        match (app.focus, app.details_focus) {
-            (PaneFocus::Trials, _) => app.focus = PaneFocus::Charts,
-            (PaneFocus::Charts, _) => {
-                app.focus = PaneFocus::Details;
-                if forward {
-                    app.details_focus = DetailsFocus::Params;
-                } else {
-                    app.details_focus = DetailsFocus::Metrics;
-                }
-            }
-            (PaneFocus::Details, DetailsFocus::Params) => {
-                if forward {
-                    app.details_focus = DetailsFocus::Metrics;
-                } else {
-                    app.focus = PaneFocus::Charts;
-                }
-            }
-            (PaneFocus::Details, DetailsFocus::Metrics) => {
-                if forward {
-                    app.focus = PaneFocus::Trials;
-                } else {
-                    app.details_focus = DetailsFocus::Params;
-                }
-            }
+fn focus_targets(app: &AppState) -> Vec<FocusTarget> {
+    match app.chart_mode {
+        ChartMode::HyperParams => vec![
+            FocusTarget::Trials,
+            FocusTarget::Charts,
+            FocusTarget::DetailsParams,
+            FocusTarget::DetailsMetrics,
+        ],
+        ChartMode::Metrics => vec![
+            FocusTarget::Trials,
+            FocusTarget::Charts,
+            FocusTarget::Details,
+        ],
+    }
+}
+
+fn focus_target(app: &AppState) -> FocusTarget {
+    match app.focus {
+        PaneFocus::Trials => FocusTarget::Trials,
+        PaneFocus::Charts => FocusTarget::Charts,
+        PaneFocus::Details => match app.details_focus {
+            DetailsFocus::Params => FocusTarget::DetailsParams,
+            DetailsFocus::Metrics => FocusTarget::DetailsMetrics,
+        },
+    }
+}
+
+fn set_focus_target(app: &mut AppState, target: FocusTarget) {
+    match target {
+        FocusTarget::Trials => app.focus = PaneFocus::Trials,
+        FocusTarget::Charts => app.focus = PaneFocus::Charts,
+        FocusTarget::Details => app.focus = PaneFocus::Details,
+        FocusTarget::DetailsParams => {
+            app.focus = PaneFocus::Details;
+            app.details_focus = DetailsFocus::Params;
         }
+        FocusTarget::DetailsMetrics => {
+            app.focus = PaneFocus::Details;
+            app.details_focus = DetailsFocus::Metrics;
+        }
+    }
+}
+
+fn advance_focus(app: &mut AppState, forward: bool) {
+    let targets = focus_targets(app);
+    if targets.is_empty() {
         return;
     }
-
-    let next = match app.focus {
-        PaneFocus::Trials => {
-            if step > 0 {
-                PaneFocus::Charts
-            } else {
-                PaneFocus::Details
-            }
-        }
-        PaneFocus::Charts => {
-            if step > 0 {
-                PaneFocus::Details
-            } else {
-                PaneFocus::Trials
-            }
-        }
-        PaneFocus::Details => {
-            if step > 0 {
-                PaneFocus::Trials
-            } else {
-                PaneFocus::Charts
-            }
-        }
-    };
-    app.focus = next;
+    let current = focus_target(app);
+    let idx = targets
+        .iter()
+        .position(|target| *target == current)
+        .unwrap_or(0);
+    let step = if forward { 1isize } else { -1isize };
+    let next_idx = ((idx as isize + step).rem_euclid(targets.len() as isize)) as usize;
+    set_focus_target(app, targets[next_idx]);
 }
 
 fn apply_delta_for_pane(app: &mut AppState, pane: PaneFocus, delta: isize) {
@@ -663,9 +669,13 @@ fn sync_param_toggles(app: &mut AppState) {
         for key in trial.fields.keys() {
             if key.starts_with(HP_PREFIX) {
                 names.insert(key.clone());
-            } else if key.starts_with("metric.") && key.as_str() != FIELD_METRIC {
+                continue;
+            }
+            if key.starts_with("metric.") && key.as_str() != FIELD_METRIC {
                 metric_names.insert(key.clone());
-            } else if key.as_str() == FIELD_SCORE {
+                continue;
+            }
+            if key.as_str() == FIELD_SCORE {
                 metric_names.insert(key.clone());
             }
         }
@@ -713,7 +723,7 @@ fn sync_param_toggles(app: &mut AppState) {
     }
 }
 
-fn load_trials(path: &Path) -> Result<(Vec<TrialRow>, BTreeMap<i64, Vec<TrialRow>>), String> {
+fn load_trials(path: &Path) -> TrialLoadResult {
     let conn = open_connection(path)?;
     let trials = load_trial_rows(&conn, "trial_records")?;
     let epoch_rows = load_epoch_rows(&conn)?;
@@ -884,7 +894,13 @@ fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
         .highlight_style(Style::default().fg(Color::Yellow));
     frame.render_stateful_widget(list, area, &mut state);
 
-    render_scrollbar(frame, inner, total_items, visible_rows, app.trials_scroll.offset);
+    render_scrollbar(
+        frame,
+        inner,
+        total_items,
+        visible_rows,
+        app.trials_scroll.offset,
+    );
 }
 
 fn metric_for_trial(trial: &TrialRow) -> Option<(String, f64)> {
@@ -906,10 +922,10 @@ fn metric_value_text(trial: &TrialRow) -> Option<String> {
 
 fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
     let title = match app.chart_mode {
-        ChartMode::Metrics => "Trial Metrics (Tab/Shift-Tab to switch focus, +/- to zoom, f to focus, h for params)",
-        ChartMode::HyperParams => {
-            "Hyperparameters (Tab/Shift-Tab to switch focus, h for metrics)"
+        ChartMode::Metrics => {
+            "Trial Metrics (Tab/Shift-Tab to switch focus, +/- to zoom, f to focus, h for params)"
         }
+        ChartMode::HyperParams => "Hyperparameters (Tab/Shift-Tab to switch focus, h for metrics)",
     };
     let block = styled_block(title, app.focus == PaneFocus::Charts);
     frame.render_widget(&block, area);
@@ -1084,7 +1100,7 @@ fn draw_hyperparam_space(frame: &mut Frame, app: &mut AppState, area: Rect) {
         (visible_len - 1) as f64
     };
     let max_labels = (inner.width / (PARAM_AXIS_WIDTH * 2)).max(1) as usize;
-    let label_stride = (visible_len + max_labels - 1) / max_labels;
+    let label_stride = visible_len.div_ceil(max_labels);
     let canvas = Canvas::default()
         .x_bounds([0.0, x_max])
         .y_bounds([0.0, 1.0])
@@ -1097,10 +1113,7 @@ fn draw_hyperparam_space(frame: &mut Frame, app: &mut AppState, area: Rect) {
                     ctx.print(
                         x,
                         1.0,
-                        Line::from(Span::styled(
-                            label,
-                            Style::default().fg(Color::White),
-                        )),
+                        Line::from(Span::styled(label, Style::default().fg(Color::White))),
                     );
                 }
             }
@@ -1207,7 +1220,13 @@ fn draw_trial_details(
     let paragraph = Paragraph::new(text).scroll((app.details_scroll.offset as u16, 0));
     frame.render_widget(paragraph, inner);
 
-    render_scrollbar(frame, inner, total_lines, visible_lines, app.details_scroll.offset);
+    render_scrollbar(
+        frame,
+        inner,
+        total_lines,
+        visible_lines,
+        app.details_scroll.offset,
+    );
 }
 
 fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
@@ -1259,11 +1278,7 @@ fn styled_block<T: Into<Line<'static>>>(title: T, focused: bool) -> Block<'stati
     }
 }
 
-fn build_param_list_block(
-    area: Rect,
-    title: &str,
-    focused: bool,
-) -> (Block<'static>, Rect) {
+fn build_param_list_block(area: Rect, title: &str, focused: bool) -> (Block<'static>, Rect) {
     let label = if focused {
         format!("{title} (focus, space to toggle, Tab/Shift-Tab to switch)")
     } else {
@@ -1336,17 +1351,10 @@ fn collect_metric_keys_for_epochs(epochs: &[TrialRow]) -> Vec<String> {
     keys.keys().cloned().collect()
 }
 
-fn metric_series_for_key(
-    epochs: &[TrialRow],
-    key: &str,
-    x_axis: &XAxisSpec,
-) -> Vec<(f64, f64)> {
+fn metric_series_for_key(epochs: &[TrialRow], key: &str, x_axis: &XAxisSpec) -> Vec<(f64, f64)> {
     let mut series = Vec::with_capacity(epochs.len());
     for (idx, epoch) in epochs.iter().enumerate() {
-        let value = epoch
-            .fields
-            .get(key)
-            .and_then(|v| v.parse::<f64>().ok());
+        let value = epoch.fields.get(key).and_then(|v| v.parse::<f64>().ok());
         let Some(value) = value else {
             continue;
         };
@@ -1357,12 +1365,11 @@ fn metric_series_for_key(
 }
 
 fn epoch_index(fields: &BTreeMap<String, String>, fallback: usize, x_axis: &XAxisSpec) -> f64 {
-    if let Some(key) = x_axis.key {
-        if let Some(value) = fields.get(key)
-            && let Ok(parsed) = value.parse::<f64>()
-        {
-            return parsed;
-        }
+    if let Some(key) = x_axis.key
+        && let Some(value) = fields.get(key)
+        && let Ok(parsed) = value.parse::<f64>()
+    {
+        return parsed;
     }
     (fallback + 1) as f64
 }
@@ -1503,16 +1510,16 @@ fn select_x_axis_spec(epochs: &[TrialRow]) -> XAxisSpec {
     ];
 
     for candidate in candidates {
-        if let Some(key) = candidate.key {
-            if epochs.iter().any(|epoch| {
+        if let Some(key) = candidate.key
+            && epochs.iter().any(|epoch| {
                 epoch
                     .fields
                     .get(key)
                     .and_then(|value| value.parse::<f64>().ok())
                     .is_some()
-            }) {
-                return candidate;
-            }
+            })
+        {
+            return candidate;
         }
     }
 
@@ -1775,7 +1782,9 @@ fn trial_detail_lines(trial: &TrialRow, epochs: &[TrialRow]) -> Vec<Line<'static
     if let Some(last_epoch) = epochs.last() {
         for (key, value) in &last_epoch.fields {
             if key.starts_with("metric.") && key.as_str() != "metric" {
-                metric_fields.entry(key.clone()).or_insert_with(|| value.clone());
+                metric_fields
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
             }
         }
     }
@@ -1798,13 +1807,7 @@ fn trial_detail_lines(trial: &TrialRow, epochs: &[TrialRow]) -> Vec<Line<'static
     lines
 }
 
-fn render_scrollbar(
-    frame: &mut Frame,
-    area: Rect,
-    total: usize,
-    view: usize,
-    offset: usize,
-) {
+fn render_scrollbar(frame: &mut Frame, area: Rect, total: usize, view: usize, offset: usize) {
     if total <= view || view == 0 || area.height == 0 {
         return;
     }
