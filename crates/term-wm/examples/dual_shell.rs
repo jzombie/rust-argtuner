@@ -6,7 +6,7 @@ use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use ratatui::backend::CrosstermBackend;
 use ratatui::prelude::{Constraint, Direction, Rect};
-use ratatui::widgets::{Block, Borders};
+use ratatui::widgets::{Block, Borders, Clear};
 use ratatui::{Frame, Terminal};
 
 use portable_pty::PtySize;
@@ -37,9 +37,7 @@ fn main() -> io::Result<()> {
         Duration::from_millis(16),
         |frame, app| draw_ui(frame, app),
         |event, app| {
-            if matches!(event, Event::Mouse(_))
-                && app.layout.handle_event(event, app.layout_area)
-            {
+            if matches!(event, Event::Mouse(_)) && app.windows.handle_managed_event(event) {
                 return true;
             }
             match app.windows.focus() {
@@ -75,8 +73,6 @@ struct App {
     windows: WindowManager<PaneId, PaneId>,
     left: TerminalComponent,
     right: TerminalComponent,
-    layout: TilingLayout<PaneId>,
-    layout_area: Rect,
     panes: Vec<PaneId>,
 }
 
@@ -95,13 +91,11 @@ impl App {
         let mut windows = WindowManager::new_managed(PaneId::Left);
         windows.set_focus_order(vec![PaneId::Left, PaneId::Right]);
         let panes = vec![PaneId::Left, PaneId::Right];
-        let layout = TilingLayout::new(build_layout(&panes));
+        windows.set_managed_layout(TilingLayout::new(build_layout(&panes)));
         Ok(Self {
             windows,
             left,
             right,
-            layout,
-            layout_area: Rect::default(),
             panes,
         })
     }
@@ -125,10 +119,10 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
     };
     app.windows.set_focus_order(panes.clone());
     if panes != app.panes {
-        app.layout = TilingLayout::new(build_layout(&panes));
+        app.windows
+            .set_managed_layout(TilingLayout::new(build_layout(&panes)));
         app.panes = panes.clone();
     }
-    app.layout_area = area;
 
     if panes.is_empty() {
         frame
@@ -136,16 +130,12 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
             .set_string(area.x, area.y, "all shells exited", ratatui::style::Style::default());
         return;
     }
-    app.windows
-        .register_tiling_layout(&app.layout, area);
+    app.windows.register_managed_layout(area);
 
-    if panes.contains(&PaneId::Left) {
-        let left_rect = app.windows.region(PaneId::Left);
-        render_pane(frame, app, PaneId::Left, left_rect);
-    }
-    if panes.contains(&PaneId::Right) {
-        let right_rect = app.windows.region(PaneId::Right);
-        render_pane(frame, app, PaneId::Right, right_rect);
+    let draw_order = app.windows.managed_draw_order().to_vec();
+    for pane in draw_order {
+        let rect = app.windows.region(pane);
+        render_pane(frame, app, pane, rect);
     }
 }
 
@@ -166,8 +156,12 @@ fn build_layout(panes: &[PaneId]) -> LayoutNode<PaneId> {
 }
 
 fn render_pane(frame: &mut Frame, app: &mut App, id: PaneId, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
     let focused = app.windows.focus() == id;
     let title = if focused { "Shell (focus)" } else { "Shell" };
+    frame.render_widget(Clear, area);
     let block = if focused {
         Block::default()
             .borders(Borders::ALL)

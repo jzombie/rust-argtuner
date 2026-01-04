@@ -5,7 +5,9 @@ use crossterm::event::{Event, KeyCode, MouseEventKind};
 use ratatui::prelude::Rect;
 
 use crate::components::{Component, DialogOverlay};
-use crate::layout::{render_handles, LayoutNode, LayoutPlan, SplitHandle, TilingLayout};
+use crate::layout::{
+    render_handles, FloatingPane, LayoutNode, LayoutPlan, RectSpec, SplitHandle, TilingLayout,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Describes who owns layout placement and how WM-level input is handled.
@@ -101,12 +103,18 @@ impl<T: Copy + Eq> FocusRing<T> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     focus: FocusRing<W>,
     regions: RegionMap<R>,
     scroll: BTreeMap<W, ScrollState>,
     handles: Vec<SplitHandle>,
+    tab_handles: Vec<TabHandle<R>>,
+    managed_draw_order: Vec<R>,
+    managed_layout: Option<TilingLayout<R>>,
+    managed_floating: Vec<FloatingPane<R>>,
+    managed_area: Rect,
+    drag_tab: Option<TabDrag<R>>,
     hover: Option<(u16, u16)>,
     capture_deadline: Option<Instant>,
     pending_deadline: Option<Instant>,
@@ -124,6 +132,12 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
             regions: RegionMap::default(),
             scroll: BTreeMap::new(),
             handles: Vec::new(),
+            tab_handles: Vec::new(),
+            managed_draw_order: Vec::new(),
+            managed_layout: None,
+            managed_floating: Vec::new(),
+            managed_area: Rect::default(),
+            drag_tab: None,
             hover: None,
             capture_deadline: None,
             pending_deadline: None,
@@ -152,6 +166,8 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
     pub fn begin_frame(&mut self) {
         self.regions = RegionMap::default();
         self.handles.clear();
+        self.tab_handles.clear();
+        self.managed_draw_order.clear();
         if self.layout_contract == LayoutContract::AppManaged {
             self.clear_capture();
         } else {
@@ -281,7 +297,12 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
     }
 
     pub fn region(&self, id: R) -> Rect {
-        self.regions.get(id).unwrap_or_default()
+        let rect = self.regions.get(id).unwrap_or_default();
+        if self.layout_contract == LayoutContract::WindowManaged {
+            clamp_rect(rect, self.managed_area)
+        } else {
+            rect
+        }
     }
 
     pub fn set_regions_from_layout(&mut self, layout: &LayoutNode<R>, area: Rect) {
@@ -299,6 +320,149 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         self.handles.extend(handles);
     }
 
+    pub fn set_managed_layout(&mut self, layout: TilingLayout<R>) {
+        self.managed_layout = Some(layout);
+        self.managed_floating.clear();
+    }
+
+    pub fn register_managed_layout(&mut self, area: Rect) {
+        self.managed_area = area;
+        if let Some(layout) = self.managed_layout.as_ref() {
+            let (regions, handles) = layout.root().layout_with_handles(area);
+            for (id, rect) in &regions {
+                self.regions.set(*id, *rect);
+                if let Some(tab) = tab_handle_for_region(*id, *rect) {
+                    self.tab_handles.push(tab);
+                }
+                self.managed_draw_order.push(*id);
+            }
+            self.handles.extend(handles);
+        }
+        for floating in &self.managed_floating {
+            let rect = floating.rect.resolve(area);
+            self.regions.set(floating.id, rect);
+            if let Some(tab) = tab_handle_for_region(floating.id, rect) {
+                self.tab_handles.push(tab);
+            }
+            self.managed_draw_order.push(floating.id);
+        }
+    }
+
+    pub fn managed_draw_order(&self) -> &[R] {
+        &self.managed_draw_order
+    }
+
+    pub fn handle_managed_event(&mut self, event: &Event) -> bool {
+        if self.layout_contract != LayoutContract::WindowManaged {
+            return false;
+        }
+        if self.handle_tab_drag_event(event) {
+            return true;
+        }
+        if let Some(layout) = self.managed_layout.as_mut() {
+            return layout.handle_event(event, self.managed_area);
+        }
+        false
+    }
+
+    fn handle_tab_drag_event(&mut self, event: &Event) -> bool {
+        use crossterm::event::MouseEventKind;
+        let Event::Mouse(mouse) = event else {
+            return false;
+        };
+        match mouse.kind {
+            MouseEventKind::Down(_) => {
+                let hit_id = self
+                    .tab_handles
+                    .iter()
+                    .find(|tab| rect_contains(tab.rect, mouse.column, mouse.row))
+                    .map(|tab| tab.id);
+                if let Some(id) = hit_id {
+                    let rect = self.region(id);
+                    if self.floating_index(id).is_none() {
+                        let _ = self.detach_to_floating(id, rect);
+                    } else {
+                        self.bring_floating_to_front(id);
+                    }
+                    self.drag_tab = Some(TabDrag {
+                        id,
+                        offset_x: mouse.column.saturating_sub(rect.x),
+                        offset_y: mouse.row.saturating_sub(rect.y),
+                    });
+                    return true;
+                }
+            }
+            MouseEventKind::Drag(_) => {
+                if let Some(drag) = self.drag_tab {
+                    if let Some(index) = self.floating_index(drag.id) {
+                        self.move_floating(index, mouse.column, mouse.row, drag.offset_x, drag.offset_y);
+                    }
+                    return true;
+                }
+            }
+            MouseEventKind::Up(_) => {
+                if self.drag_tab.take().is_some() {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn detach_to_floating(&mut self, id: R, rect: Rect) -> bool {
+        if self.floating_index(id).is_some() {
+            return true;
+        }
+        if let Some(layout) = self.managed_layout.as_ref() {
+            if matches!(layout.root(), LayoutNode::Leaf(leaf) if *leaf == id) {
+                self.managed_layout = None;
+            } else {
+                let Some(layout) = self.managed_layout.as_mut() else {
+                    return false;
+                };
+                if !layout.root_mut().remove_leaf(id) {
+                    return false;
+                }
+            }
+        } else {
+            return false;
+        }
+        let width = rect.width.max(1);
+        let height = rect.height.max(1);
+        let x = rect.x;
+        let y = rect.y;
+        self.managed_floating.push(FloatingPane {
+            id,
+            rect: RectSpec::Absolute(Rect { x, y, width, height }),
+        });
+        true
+    }
+
+
+    fn floating_index(&self, id: R) -> Option<usize> {
+        self.managed_floating.iter().position(|pane| pane.id == id)
+    }
+
+    fn move_floating(&mut self, index: usize, column: u16, row: u16, offset_x: u16, offset_y: u16) {
+        let pane = &mut self.managed_floating[index];
+        let RectSpec::Absolute(rect) = pane.rect else {
+            return;
+        };
+        let width = rect.width.max(1);
+        let height = rect.height.max(1);
+        let x = column.saturating_sub(offset_x);
+        let y = row.saturating_sub(offset_y);
+        pane.rect = RectSpec::Absolute(Rect { x, y, width, height });
+    }
+
+    fn bring_floating_to_front(&mut self, id: R) {
+        if let Some(index) = self.floating_index(id) {
+            let pane = self.managed_floating.remove(index);
+            self.managed_floating.push(pane);
+        }
+    }
+
     pub fn render_overlays(&mut self, frame: &mut ratatui::Frame) {
         let hovered = self
             .hover
@@ -308,6 +472,7 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                     .find(|handle| rect_contains(handle.rect, column, row))
             });
         render_handles(frame, &self.handles, hovered);
+        render_tab_handles(frame, &self.tab_handles, self.drag_tab.as_ref());
         if self.layout_contract == LayoutContract::WindowManaged && self.wm_overlay_visible {
             let (remaining_ms, bar) = if let Some(remaining) = self.esc_passthrough_remaining() {
                 let total = self.esc_passthrough_window.as_millis().max(1);
@@ -358,6 +523,9 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                 MouseEventKind::Down(_) => {
                     if let Some(hit) = self.hit_test_region(mouse.column, mouse.row, hit_targets) {
                         self.set_focus(map(hit));
+                        if self.layout_contract == LayoutContract::WindowManaged {
+                            self.bring_floating_to_front(hit);
+                        }
                         true
                     } else {
                         false
@@ -369,6 +537,20 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+struct TabHandle<R: Copy + Eq + Ord> {
+    id: R,
+    rect: Rect,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TabDrag<R: Copy + Eq + Ord> {
+    id: R,
+    offset_x: u16,
+    offset_y: u16,
+}
+
 
 #[derive(Debug, Clone)]
 pub struct RegionMap<T: Copy + Eq + Ord> {
@@ -404,6 +586,60 @@ impl<T: Copy + Eq + Ord> RegionMap<T> {
     }
 }
 
+fn tab_handle_for_region<R: Copy + Eq + Ord>(id: R, rect: Rect) -> Option<TabHandle<R>> {
+    if rect.width < 6 || rect.height == 0 {
+        return None;
+    }
+    let width = rect.width.min(14);
+    Some(TabHandle {
+        id,
+        rect: Rect {
+            x: rect.x.saturating_add(1),
+            y: rect.y,
+            width,
+            height: 1,
+        },
+    })
+}
+
+fn render_tab_handles<R: Copy + Eq + Ord>(
+    frame: &mut ratatui::Frame,
+    tabs: &[TabHandle<R>],
+    drag: Option<&TabDrag<R>>,
+) {
+    use ratatui::style::{Color, Style};
+    let buffer = frame.buffer_mut();
+    for tab in tabs {
+        let is_drag = drag.is_some_and(|active| active.id == tab.id);
+        let style = if is_drag {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightYellow)
+        } else {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::DarkGray)
+        };
+        for dx in 0..tab.rect.width {
+            if let Some(cell) = buffer.cell_mut((tab.rect.x + dx, tab.rect.y)) {
+                cell.set_symbol(" ").set_style(style);
+            }
+        }
+        if tab.rect.width >= 3 {
+            let label = "tab";
+            for (idx, ch) in label.chars().enumerate() {
+                let x = tab.rect.x.saturating_add(1 + idx as u16);
+                if x >= tab.rect.x.saturating_add(tab.rect.width) {
+                    break;
+                }
+                if let Some(cell) = buffer.cell_mut((x, tab.rect.y)) {
+                    cell.set_symbol(&ch.to_string()).set_style(style);
+                }
+            }
+        }
+    }
+}
+
 pub fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
     if rect.width == 0 || rect.height == 0 {
         return false;
@@ -411,4 +647,26 @@ pub fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
     let max_x = rect.x.saturating_add(rect.width);
     let max_y = rect.y.saturating_add(rect.height);
     column >= rect.x && column < max_x && row >= rect.y && row < max_y
+}
+
+fn clamp_rect(area: Rect, bounds: Rect) -> Rect {
+    let x0 = area.x.max(bounds.x);
+    let y0 = area.y.max(bounds.y);
+    let x1 = area
+        .x
+        .saturating_add(area.width)
+        .min(bounds.x.saturating_add(bounds.width));
+    let y1 = area
+        .y
+        .saturating_add(area.height)
+        .min(bounds.y.saturating_add(bounds.height));
+    if x1 <= x0 || y1 <= y0 {
+        return Rect::default();
+    }
+    Rect {
+        x: x0,
+        y: y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    }
 }

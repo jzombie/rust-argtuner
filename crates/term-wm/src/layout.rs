@@ -155,6 +155,89 @@ impl<Id: Copy + Eq + Ord> LayoutNode<Id> {
         true
     }
 
+    pub fn remove_leaf(&mut self, id: Id) -> bool {
+        match self {
+            LayoutNode::Leaf(_) => false,
+            LayoutNode::Split {
+                children,
+                weights,
+                constraints,
+                ..
+            } => {
+                let mut removed = false;
+                let mut index = 0;
+                while index < children.len() {
+                    let child_removed = match &mut children[index] {
+                        LayoutNode::Leaf(child_id) if *child_id == id => true,
+                        child => child.remove_leaf(id),
+                    };
+                    if child_removed {
+                        let prev_len = children.len();
+                        children.remove(index);
+                        if constraints.len() == prev_len {
+                            constraints.remove(index);
+                        }
+                        if weights.len() == prev_len {
+                            weights.remove(index);
+                        }
+                        removed = true;
+                        break;
+                    }
+                    index += 1;
+                }
+                if removed && children.len() == 1 {
+                    let only = children.remove(0);
+                    *self = only;
+                }
+                removed
+            }
+        }
+    }
+
+    pub fn insert_leaf(&mut self, target: Id, insert: Id, position: InsertPosition) -> bool {
+        match self {
+            LayoutNode::Leaf(current) => {
+                if *current != target {
+                    return false;
+                }
+                let (direction, children) = match position {
+                    InsertPosition::Left => (
+                        Direction::Horizontal,
+                        vec![LayoutNode::leaf(insert), LayoutNode::leaf(*current)],
+                    ),
+                    InsertPosition::Right => (
+                        Direction::Horizontal,
+                        vec![LayoutNode::leaf(*current), LayoutNode::leaf(insert)],
+                    ),
+                    InsertPosition::Top => (
+                        Direction::Vertical,
+                        vec![LayoutNode::leaf(insert), LayoutNode::leaf(*current)],
+                    ),
+                    InsertPosition::Bottom => (
+                        Direction::Vertical,
+                        vec![LayoutNode::leaf(*current), LayoutNode::leaf(insert)],
+                    ),
+                };
+                *self = LayoutNode::Split {
+                    direction,
+                    children,
+                    weights: vec![1.0, 1.0],
+                    constraints: Vec::new(),
+                    resizable: true,
+                };
+                true
+            }
+            LayoutNode::Split { children, .. } => {
+                for child in children.iter_mut() {
+                    if child.insert_leaf(target, insert, position) {
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
     fn layout_recursive(
         &self,
         area: Rect,
@@ -351,6 +434,14 @@ pub struct FloatingPane<Id: Copy + Eq + Ord> {
 pub struct LayoutPlan<Id: Copy + Eq + Ord> {
     pub root: LayoutNode<Id>,
     pub floating: Vec<FloatingPane<Id>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum InsertPosition {
+    Left,
+    Right,
+    Top,
+    Bottom,
 }
 
 impl<Id: Copy + Eq + Ord> LayoutPlan<Id> {

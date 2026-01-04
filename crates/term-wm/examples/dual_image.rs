@@ -7,7 +7,7 @@ use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use ratatui::backend::CrosstermBackend;
 use ratatui::prelude::{Constraint, Direction, Rect};
-use ratatui::widgets::{Block, Borders};
+use ratatui::widgets::{Block, Borders, Clear};
 use ratatui::{Frame, Terminal};
 
 use term_wm::components::{AsciiImage, Component};
@@ -37,7 +37,7 @@ fn main() -> io::Result<()> {
         Duration::from_millis(16),
         |frame, app| draw_ui(frame, app),
         |event, app| {
-            if matches!(event, Event::Mouse(_)) && app.layout.handle_event(event, app.layout_area) {
+            if matches!(event, Event::Mouse(_)) && app.windows.handle_managed_event(event) {
                 return true;
             }
             match app.windows.focus() {
@@ -46,13 +46,12 @@ fn main() -> io::Result<()> {
             }
         },
         |event, _app| {
-            matches!(event, Some(Event::Key(key)) if key.code == KeyCode::Esc)
-                || matches!(
-                    event,
-                    Some(Event::Key(key))
-                        if key.code == KeyCode::Char('q')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                )
+            matches!(
+                event,
+                Some(Event::Key(key))
+                    if key.code == KeyCode::Char('q')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+            )
         },
     );
 
@@ -69,8 +68,6 @@ fn main() -> io::Result<()> {
 
 struct App {
     windows: WindowManager<PaneId, PaneId>,
-    layout: TilingLayout<PaneId>,
-    layout_area: Rect,
     left: AsciiImage,
     right: AsciiImage,
 }
@@ -93,15 +90,14 @@ impl App {
         load_into(&mut right, &paths[1])?;
         let mut windows = WindowManager::new_managed(PaneId::Left);
         windows.set_focus_order(vec![PaneId::Left, PaneId::Right]);
-        let layout = TilingLayout::new(LayoutNode::split(
+        let layout = LayoutNode::split(
             Direction::Horizontal,
             vec![Constraint::Percentage(50), Constraint::Percentage(50)],
             vec![LayoutNode::leaf(PaneId::Left), LayoutNode::leaf(PaneId::Right)],
-        ));
+        );
+        windows.set_managed_layout(TilingLayout::new(layout));
         Ok(Self {
             windows,
-            layout,
-            layout_area: Rect::default(),
             left,
             right,
         })
@@ -116,19 +112,20 @@ impl HasWindowManager<PaneId, PaneId> for App {
 
 fn draw_ui(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
-    app.layout_area = area;
-    app.windows
-        .register_tiling_layout(&app.layout, area);
-    let left_rect = app.windows.region(PaneId::Left);
-    let right_rect = app.windows.region(PaneId::Right);
-
-    render_pane(frame, &mut app.left, left_rect);
-    render_pane(frame, &mut app.right, right_rect);
+    app.windows.register_managed_layout(area);
+    for pane in app.windows.managed_draw_order() {
+        let rect = app.windows.region(*pane);
+        match pane {
+            PaneId::Left => render_pane(frame, &mut app.left, rect),
+            PaneId::Right => render_pane(frame, &mut app.right, rect),
+        }
+    }
 }
 
 fn render_pane(frame: &mut Frame, image: &mut AsciiImage, area: Rect) {
     let block = Block::default().borders(Borders::ALL);
     let inner = block.inner(area);
+    frame.render_widget(Clear, area);
     frame.render_widget(block, area);
     image.render(frame, inner, false);
 }
