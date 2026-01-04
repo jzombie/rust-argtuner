@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 use ratatui::Frame;
 
-use crate::window::ScrollState;
+use crate::window::{render_scrollbar, ScrollView};
 
 #[derive(Clone)]
 pub struct ToggleItem {
@@ -16,8 +16,8 @@ pub struct ToggleItem {
 pub struct ToggleListComponent {
     items: Vec<ToggleItem>,
     selected: usize,
-    scroll: ScrollState,
     title: String,
+    scroll_view: ScrollView,
 }
 
 impl ToggleListComponent {
@@ -25,8 +25,8 @@ impl ToggleListComponent {
         Self {
             items: Vec::new(),
             selected: 0,
-            scroll: ScrollState::default(),
             title: title.into(),
+            scroll_view: ScrollView::new(),
         }
     }
 
@@ -54,7 +54,7 @@ impl ToggleListComponent {
     }
 
     pub fn scroll_offset(&self) -> usize {
-        self.scroll.offset
+        self.scroll_view.offset()
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -83,20 +83,40 @@ impl ToggleListComponent {
 
     fn keep_selected_in_view(&mut self, view: usize) {
         if view == 0 {
-            self.scroll.reset();
+            self.scroll_view.set_offset(0);
             return;
         }
         if self.items.is_empty() {
-            self.scroll.reset();
+            self.scroll_view.set_offset(0);
             return;
         }
-        let offset = &mut self.scroll.offset;
-        if self.selected < *offset {
-            *offset = self.selected;
-        } else if self.selected >= *offset + view {
-            *offset = self.selected + 1 - view;
+        let mut offset = self.scroll_view.offset();
+        if self.selected < offset {
+            offset = self.selected;
+        } else if self.selected >= offset + view {
+            offset = self.selected + 1 - view;
         }
-        self.scroll.apply(self.items.len(), view);
+        self.scroll_view.set_offset(offset);
+    }
+
+    fn handle_scrollbar_event(&mut self, event: &Event) -> bool {
+        let response = self.scroll_view.handle_event(event);
+        if let Some(offset) = response.offset {
+            self.scroll_view.set_offset(offset);
+        }
+        if response.handled {
+            self.scroll_view
+                .set_total_view(self.items.len(), self.scroll_view.view());
+            let view = self.scroll_view.view();
+            if view > 0 {
+                if self.selected < self.scroll_view.offset() {
+                    self.selected = self.scroll_view.offset();
+                } else if self.selected >= self.scroll_view.offset() + view {
+                    self.selected = self.scroll_view.offset() + view - 1;
+                }
+            }
+        }
+        response.handled
     }
 }
 
@@ -118,9 +138,10 @@ impl super::Component for ToggleListComponent {
 
         let total = self.items.len();
         let view = inner.height as usize;
+        self.scroll_view.update(inner, total, view);
         self.keep_selected_in_view(view);
 
-        let offset = self.scroll.offset;
+        let offset = self.scroll_view.offset();
         let items = self
             .items
             .iter()
@@ -139,40 +160,42 @@ impl super::Component for ToggleListComponent {
 
         let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
         frame.render_stateful_widget(list, inner, &mut state);
+        render_scrollbar(frame, inner, total, view, self.scroll_view.offset());
     }
 
     fn handle_event(&mut self, event: &Event) -> bool {
-        let Event::Key(key) = event else {
-            return false;
-        };
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.bump_selection(-1);
-                true
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.bump_selection(1);
-                true
-            }
-            KeyCode::PageUp => {
-                self.bump_selection(-5);
-                true
-            }
-            KeyCode::PageDown => {
-                self.bump_selection(5);
-                true
-            }
-            KeyCode::Home => {
-                self.selected = 0;
-                true
-            }
-            KeyCode::End => {
-                if !self.items.is_empty() {
-                    self.selected = self.items.len() - 1;
+        match event {
+            Event::Key(key) => match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.bump_selection(-1);
+                    true
                 }
-                true
-            }
-            KeyCode::Char(' ') => self.toggle_selected(),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.bump_selection(1);
+                    true
+                }
+                KeyCode::PageUp => {
+                    self.bump_selection(-5);
+                    true
+                }
+                KeyCode::PageDown => {
+                    self.bump_selection(5);
+                    true
+                }
+                KeyCode::Home => {
+                    self.selected = 0;
+                    true
+                }
+                KeyCode::End => {
+                    if !self.items.is_empty() {
+                        self.selected = self.items.len() - 1;
+                    }
+                    true
+                }
+                KeyCode::Char(' ') => self.toggle_selected(),
+                _ => false,
+            },
+            Event::Mouse(_) => self.handle_scrollbar_event(event),
             _ => false,
         }
     }

@@ -1,4 +1,4 @@
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use portable_pty::{CommandBuilder, PtySize};
 use ratatui::{
     layout::Rect,
@@ -7,13 +7,14 @@ use ratatui::{
 };
 
 use crate::terminal::TerminalPane;
-use crate::window::render_scrollbar;
+use crate::window::{render_scrollbar, ScrollView};
 
 const DEFAULT_SCROLLBACK_LEN: usize = 2000;
 
 pub struct TerminalComponent {
     pane: TerminalPane,
     last_size: (u16, u16),
+    scroll_view: ScrollView,
 }
 
 impl TerminalComponent {
@@ -22,6 +23,7 @@ impl TerminalComponent {
         Ok(Self {
             pane,
             last_size: (size.cols, size.rows),
+            scroll_view: ScrollView::new(),
         })
     }
 
@@ -35,6 +37,7 @@ impl TerminalComponent {
 
     fn render_screen(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
         let show_cursor = self.pane.scrollback() == 0;
+        let used = self.pane.max_scrollback();
         let screen = self.pane.screen();
         let buffer = frame.buffer_mut();
         for row in 0..area.height {
@@ -88,15 +91,14 @@ impl TerminalComponent {
             }
         }
 
-        if !screen.alternate_screen() && self.pane.scrollback_len() > 0 {
+        if !screen.alternate_screen() && used > 0 {
             let view = area.height as usize;
             if view > 0 {
-                let total = self.pane.scrollback_len().saturating_add(view);
-                let offset = self
-                    .pane
-                    .scrollback_len()
-                    .saturating_sub(self.pane.scrollback());
-                render_scrollbar(frame, area, total, view, offset);
+                let total = used.saturating_add(view);
+                let offset = used.saturating_sub(self.pane.scrollback());
+                self.scroll_view.update(area, total, view);
+                self.scroll_view.set_offset(offset);
+                render_scrollbar(frame, area, total, view, self.scroll_view.offset());
             }
         }
     }
@@ -172,16 +174,20 @@ impl super::Component for TerminalComponent {
                 if self.pane.alternate_screen() {
                     return false;
                 }
-                let delta = match mouse.kind {
-                    crossterm::event::MouseEventKind::ScrollUp => Some(1isize),
-                    crossterm::event::MouseEventKind::ScrollDown => Some(-1isize),
-                    _ => None,
-                };
-                if let Some(delta) = delta {
-                    self.scroll_scrollback(delta);
+                if self.handle_scrollbar_event(event) {
                     return true;
                 }
-                false
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        self.scroll_scrollback(1);
+                        true
+                    }
+                    MouseEventKind::ScrollDown => {
+                        self.scroll_scrollback(-1);
+                        true
+                    }
+                    _ => false,
+                }
             }
             _ => false,
         }
@@ -193,6 +199,19 @@ impl TerminalComponent {
         let current = self.pane.scrollback() as isize;
         let next = (current + delta).clamp(0, self.pane.scrollback_len() as isize) as usize;
         self.pane.set_scrollback(next);
+    }
+
+    fn handle_scrollbar_event(&mut self, event: &Event) -> bool {
+        let used = self.pane.max_scrollback();
+        if used == 0 {
+            return false;
+        }
+        let response = self.scroll_view.handle_event(event);
+        if let Some(offset) = response.offset {
+            let scrollback = used.saturating_sub(offset);
+            self.pane.set_scrollback(scrollback);
+        }
+        response.handled
     }
 }
 

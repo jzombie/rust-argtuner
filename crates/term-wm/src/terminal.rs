@@ -13,6 +13,7 @@ pub struct TerminalPane {
     parser: vt100::Parser,
     size: PtySize,
     scrollback_len: usize,
+    scrollback_used: usize,
     child: Option<Box<dyn Child + Send + Sync>>,
     exited: bool,
     _reader: JoinHandle<()>,
@@ -55,6 +56,7 @@ impl TerminalPane {
             parser,
             size,
             scrollback_len,
+            scrollback_used: 0,
             child: Some(child),
             exited: false,
             _reader: reader_handle,
@@ -86,6 +88,10 @@ impl TerminalPane {
         if !pending.is_empty() {
             let bytes = pending.split_off(0);
             self.parser.process(&bytes);
+            let added = bytes.iter().filter(|b| **b == b'\n').count();
+            if added > 0 && self.scrollback_len > 0 {
+                self.scrollback_used = (self.scrollback_used + added).min(self.scrollback_len);
+            }
         }
     }
 
@@ -136,11 +142,29 @@ impl TerminalPane {
     }
 
     pub fn set_scrollback(&mut self, rows: usize) {
-        self.screen_mut().set_scrollback(rows);
+        let max = self.scrollback_used.min(self.scrollback_len);
+        self.screen_mut().set_scrollback(rows.min(max));
     }
 
     pub fn scrollback_len(&self) -> usize {
         self.scrollback_len
+    }
+
+    pub fn scrollback_used(&self) -> usize {
+        self.scrollback_used
+    }
+
+    pub fn max_scrollback(&mut self) -> usize {
+        if self.scrollback_len == 0 {
+            return 0;
+        }
+        self.update();
+        let screen = self.parser.screen_mut();
+        let current = screen.scrollback();
+        screen.set_scrollback(self.scrollback_len);
+        let max = screen.scrollback();
+        screen.set_scrollback(current);
+        max
     }
 
     pub fn alternate_screen(&mut self) -> bool {

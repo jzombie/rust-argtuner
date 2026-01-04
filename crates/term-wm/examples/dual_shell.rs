@@ -37,7 +37,7 @@ fn main() -> io::Result<()> {
         Duration::from_millis(16),
         |frame, app| draw_ui(frame, app),
         |event, focus_handled, app| {
-            if focus_handled {
+            if focus_handled && matches!(event, Event::Key(_)) {
                 return;
             }
             match app.windows.focus() {

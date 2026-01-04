@@ -282,7 +282,16 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                 _ => {}
             }
         }
-        Event::Mouse(mouse) => match mouse.kind {
+        Event::Mouse(mouse) => {
+            if app.trials_list.handle_event(event) {
+                return;
+            }
+            if app.chart_mode == ChartMode::HyperParams {
+                if app.params_list.handle_event(event) || app.metrics_list.handle_event(event) {
+                    return;
+                }
+            }
+            match mouse.kind {
             MouseEventKind::ScrollUp => {
                 let delta = -1;
                 if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
@@ -349,7 +358,8 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                 }
             }
             _ => {}
-        },
+            }
+        }
         _ => {}
     }
 }
