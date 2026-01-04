@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 use ratatui::Frame;
 
-use crate::window::{render_scrollbar, ScrollView};
+use crate::components::scroll_view::ScrollView;
 
 pub struct ListComponent {
     items: Vec<String>,
@@ -138,7 +138,7 @@ impl super::Component for ListComponent {
 
         let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
         frame.render_stateful_widget(list, inner, &mut state);
-        render_scrollbar(frame, inner, total, view, self.scroll_view.offset());
+        self.scroll_view.render(frame);
     }
 
     fn handle_event(&mut self, event: &Event) -> bool {

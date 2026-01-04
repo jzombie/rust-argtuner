@@ -142,7 +142,7 @@ impl TerminalPane {
     }
 
     pub fn set_scrollback(&mut self, rows: usize) {
-        let max = self.scrollback_used.min(self.scrollback_len);
+        let max = self.scrollback_len;
         self.screen_mut().set_scrollback(rows.min(max));
     }
 

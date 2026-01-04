@@ -21,7 +21,9 @@ use ratatui::widgets::{
 };
 use ratatui::{Frame, Terminal};
 use rusqlite::{Connection, OpenFlags};
-use term_wm::components::{Component, ListComponent, StatusBar, ToggleItem, ToggleListComponent};
+use term_wm::components::{
+    Component, ListComponent, ScrollView, StatusBar, ToggleItem, ToggleListComponent,
+};
 use term_wm::layout::LayoutNode;
 use term_wm::runner::{run_app, HasWindowManager};
 use term_wm::window::{rect_contains, WindowManager};
@@ -38,6 +40,8 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         last_error: None,
         windows: WindowManager::new(FocusTarget::Trials),
         trials_list: ListComponent::new("Trials"),
+        charts_scroll: ScrollView::new(),
+        details_scroll: ScrollView::new(),
         chart_zoom: 1.0,
         chart_view: ChartView::Summary,
         chart_selected: 0,
@@ -117,6 +121,8 @@ struct AppState {
     last_error: Option<String>,
     windows: WindowManager<FocusTarget, RegionId>,
     trials_list: ListComponent,
+    charts_scroll: ScrollView,
+    details_scroll: ScrollView,
     chart_zoom: f64,
     chart_view: ChartView,
     chart_selected: usize,
@@ -291,6 +297,11 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                     return;
                 }
             }
+            if app.details_scroll.handle_event(event).handled
+                || app.charts_scroll.handle_event(event).handled
+            {
+                return;
+            }
             match mouse.kind {
             MouseEventKind::ScrollUp => {
                 let delta = -1;
@@ -403,7 +414,7 @@ fn apply_delta_for_pane(app: &mut AppState, pane: PaneFocus, delta: isize) {
             } else if app.chart_view == ChartView::Focused {
                 move_chart_selection(app, delta);
             } else {
-                app.windows.scroll_mut(FocusTarget::Charts).bump(delta);
+                app.charts_scroll.bump(delta);
             }
         }
         PaneFocus::Details => {
@@ -413,7 +424,7 @@ fn apply_delta_for_pane(app: &mut AppState, pane: PaneFocus, delta: isize) {
                     _ => move_param_selection(app, delta),
                 }
             } else {
-                app.windows.scroll_mut(FocusTarget::Details).bump(delta);
+                app.details_scroll.bump(delta);
             }
         }
     }
@@ -434,16 +445,15 @@ fn toggle_chart_view(app: &mut AppState) {
             if app.metrics_len == 0 {
                 ChartView::Summary
             } else {
-                let offset = app.windows.scroll(FocusTarget::Charts).offset;
+                let offset = app.charts_scroll.offset();
                 app.chart_selected = offset.min(app.metrics_len - 1);
                 ChartView::Focused
             }
         }
         ChartView::Focused => {
             if app.metrics_len > 0 {
-                app.windows
-                    .scroll_mut(FocusTarget::Charts)
-                    .offset = app.chart_selected.min(app.metrics_len - 1);
+                app.charts_scroll
+                    .set_offset(app.chart_selected.min(app.metrics_len - 1));
             }
             ChartView::Summary
         }
@@ -524,8 +534,8 @@ fn handle_trial_click(app: &mut AppState, column: u16, row: u16) {
     }
     if index != app.trials_list.selected() {
         app.trials_list.set_selected(index);
-        app.windows.reset_scroll(FocusTarget::Charts);
-        app.windows.reset_scroll(FocusTarget::Details);
+        app.charts_scroll.reset();
+        app.details_scroll.reset();
     }
 }
 
@@ -540,9 +550,8 @@ fn handle_chart_click(app: &mut AppState, column: u16, row: u16) {
     let offset_row = row.saturating_sub(inner.y) as usize;
     let index_in_view = offset_row / CHART_ITEM_HEIGHT as usize;
     let index = app
-        .windows
-        .scroll(FocusTarget::Charts)
-        .offset
+        .charts_scroll
+        .offset()
         .saturating_add(index_in_view);
     if index >= app.metrics_len {
         return;
@@ -589,8 +598,8 @@ fn move_trial_selection(app: &mut AppState, delta: isize) {
     let before = app.trials_list.selected();
     app.trials_list.move_selection(delta);
     if app.trials_list.selected() != before {
-        app.windows.reset_scroll(FocusTarget::Charts);
-        app.windows.reset_scroll(FocusTarget::Details);
+        app.charts_scroll.reset();
+        app.details_scroll.reset();
     }
 }
 
@@ -605,8 +614,8 @@ fn refresh_trials(app: &mut AppState) {
                 app.trials_list.set_selected(0);
             }
             if app.trials_list.selected() != before {
-                app.windows.reset_scroll(FocusTarget::Charts);
-                app.windows.reset_scroll(FocusTarget::Details);
+                app.charts_scroll.reset();
+                app.details_scroll.reset();
             }
             sync_param_toggles(app);
             app.last_error = None;
@@ -990,12 +999,11 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
         ChartView::Summary => {
             let visible_items = (inner.height / CHART_ITEM_HEIGHT).max(1) as usize;
             let total_items = metric_keys.len();
-            app.windows
-                .apply_scroll(FocusTarget::Charts, total_items, visible_items);
+            app.charts_scroll.update(inner, total_items, visible_items);
 
             for (row, key) in metric_keys
                 .iter()
-                .skip(app.windows.scroll_offset(FocusTarget::Charts))
+                .skip(app.charts_scroll.offset())
                 .take(visible_items)
                 .enumerate()
             {
@@ -1009,8 +1017,7 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
                 render_metric_chart(frame, epochs, key, rect, &x_axis, app.chart_zoom);
             }
 
-            app.windows
-                .draw_scrollbar(FocusTarget::Charts, frame, inner, total_items, visible_items);
+            app.charts_scroll.render(frame);
         }
         ChartView::Focused => {
             let key = &metric_keys[app.chart_selected];
@@ -1182,13 +1189,12 @@ fn draw_trial_details(
     let text = trial_detail_lines(trial, epochs);
     let total_lines = text.len();
     let visible_lines = inner.height as usize;
-    app.windows.apply_scroll(FocusTarget::Details, total_lines, visible_lines);
+    app.details_scroll.update(inner, total_lines, visible_lines);
     let paragraph = Paragraph::new(text)
-        .scroll((app.windows.scroll_offset(FocusTarget::Details) as u16, 0));
+        .scroll((app.details_scroll.offset() as u16, 0));
     frame.render_widget(paragraph, inner);
 
-    app.windows
-        .draw_scrollbar(FocusTarget::Details, frame, inner, total_lines, visible_lines);
+    app.details_scroll.render(frame);
 }
 
 fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {

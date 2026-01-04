@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::terminal::TerminalPane;
-use crate::window::{render_scrollbar, ScrollView};
+use crate::components::scroll_view::ScrollView;
 
 const DEFAULT_SCROLLBACK_LEN: usize = 2000;
 
@@ -98,7 +98,7 @@ impl TerminalComponent {
                 let offset = used.saturating_sub(self.pane.scrollback());
                 self.scroll_view.update(area, total, view);
                 self.scroll_view.set_offset(offset);
-                render_scrollbar(frame, area, total, view, self.scroll_view.offset());
+                self.scroll_view.render(frame);
             }
         }
     }
