@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, MouseEventKind};
 use ratatui::prelude::Rect;
@@ -96,6 +97,7 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     scroll: BTreeMap<W, ScrollState>,
     handles: Vec<SplitHandle>,
     hover: Option<(u16, u16)>,
+    capture_deadline: Option<Instant>,
 }
 
 impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
@@ -106,12 +108,35 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
             scroll: BTreeMap::new(),
             handles: Vec::new(),
             hover: None,
+            capture_deadline: None,
         }
     }
 
     pub fn begin_frame(&mut self) {
         self.regions = RegionMap::default();
         self.handles.clear();
+        self.refresh_capture();
+    }
+
+    pub fn arm_capture(&mut self, timeout: Duration) {
+        self.capture_deadline = Some(Instant::now() + timeout);
+    }
+
+    pub fn clear_capture(&mut self) {
+        self.capture_deadline = None;
+    }
+
+    pub fn capture_active(&mut self) -> bool {
+        self.refresh_capture();
+        self.capture_deadline.is_some()
+    }
+
+    fn refresh_capture(&mut self) {
+        if let Some(deadline) = self.capture_deadline {
+            if Instant::now() > deadline {
+                self.capture_deadline = None;
+            }
+        }
     }
 
     pub fn focus(&self) -> W {
@@ -182,7 +207,7 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         self.handles.extend(handles);
     }
 
-    pub fn render_overlays(&self, frame: &mut ratatui::Frame) {
+    pub fn render_overlays(&mut self, frame: &mut ratatui::Frame) {
         let hovered = self
             .hover
             .and_then(|(column, row)| {
@@ -191,6 +216,20 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                     .find(|handle| rect_contains(handle.rect, column, row))
             });
         render_handles(frame, &self.handles, hovered);
+
+        if self.capture_active() {
+            let area = frame.area();
+            if area.width > 0 && area.height > 0 {
+                let label = " WM ";
+                let style = ratatui::style::Style::default()
+                    .fg(ratatui::style::Color::Black)
+                    .bg(ratatui::style::Color::Yellow)
+                    .add_modifier(ratatui::style::Modifier::BOLD);
+                frame
+                    .buffer_mut()
+                    .set_string(area.x, area.y, label, style);
+            }
+        }
     }
 
     pub fn set_regions_from_plan(&mut self, plan: &LayoutPlan<R>, area: Rect) {

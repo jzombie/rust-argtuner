@@ -113,9 +113,7 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
             }
             draw_ui(frame, app);
         },
-        |event, focus_handled, app| {
-            handle_event(app, event, focus_handled);
-        },
+        |event, app| handle_event(app, event),
         |event, _app| {
             matches!(
                 event,
@@ -238,15 +236,18 @@ fn map_focus_from_region(region: RegionId) -> FocusTarget {
     }
 }
 
-fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
+fn handle_event(app: &mut AppState, event: &Event) -> bool {
     match event {
         Event::Key(key) => {
-            if focus_handled {
-                return;
-            }
             match key.code {
-                KeyCode::Up | KeyCode::Char('k') => apply_focus_delta(app, -1),
-                KeyCode::Down | KeyCode::Char('j') => apply_focus_delta(app, 1),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    apply_focus_delta(app, -1);
+                    true
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    apply_focus_delta(app, 1);
+                    true
+                }
                 KeyCode::Char('h') => {
                     if pane_focus(app) == PaneFocus::Charts {
                         app.chart_mode = match app.chart_mode {
@@ -266,12 +267,16 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                             app.windows.set_focus(FocusTarget::Details);
                         }
                     }
+                    true
                 }
                 KeyCode::Char('f') => {
                     if pane_focus(app) == PaneFocus::Charts
                         && app.chart_mode == ChartMode::Metrics
                     {
                         toggle_chart_view(app);
+                        true
+                    } else {
+                        false
                     }
                 }
                 KeyCode::Enter | KeyCode::Char(' ') => {
@@ -279,6 +284,7 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                         && app.chart_mode == ChartMode::Metrics
                     {
                         toggle_chart_view(app);
+                        true
                     } else if pane_focus(app) == PaneFocus::Details
                         && app.chart_mode == ChartMode::HyperParams
                     {
@@ -287,6 +293,9 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                             FocusTarget::DetailsMetrics => toggle_metric_selected(app),
                             _ => toggle_param_selected(app),
                         }
+                        true
+                    } else {
+                        false
                     }
                 }
                 KeyCode::Char('+') | KeyCode::Char('=') => {
@@ -294,6 +303,9 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                         && app.chart_mode == ChartMode::Metrics
                     {
                         zoom_charts(app, 0.8);
+                        true
+                    } else {
+                        false
                     }
                 }
                 KeyCode::Char('-') => {
@@ -301,6 +313,9 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                         && app.chart_mode == ChartMode::Metrics
                     {
                         zoom_charts(app, 1.25);
+                        true
+                    } else {
+                        false
                     }
                 }
                 KeyCode::Char('0') => {
@@ -308,15 +323,27 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                         && app.chart_mode == ChartMode::Metrics
                     {
                         reset_chart_zoom(app);
+                        true
+                    } else {
+                        false
                     }
                 }
-                KeyCode::PageDown | KeyCode::Char(']') => apply_focus_delta(app, 5),
-                KeyCode::PageUp | KeyCode::Char('[') => apply_focus_delta(app, -5),
+                KeyCode::PageDown | KeyCode::Char(']') => {
+                    apply_focus_delta(app, 5);
+                    true
+                }
+                KeyCode::PageUp | KeyCode::Char('[') => {
+                    apply_focus_delta(app, -5);
+                    true
+                }
                 KeyCode::Right => {
                     if app.chart_mode == ChartMode::HyperParams
                         && pane_focus(app) == PaneFocus::Charts
                     {
                         pan_params(app, 1);
+                        true
+                    } else {
+                        false
                     }
                 }
                 KeyCode::Left => {
@@ -324,9 +351,12 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                         && pane_focus(app) == PaneFocus::Charts
                     {
                         pan_params(app, -1);
+                        true
+                    } else {
+                        false
                     }
                 }
-                _ => {}
+                _ => false,
             }
         }
         Event::Mouse(mouse) => {
@@ -334,20 +364,20 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                 || app.charts_layout.handle_event(event, app.charts_area)
                 || app.main_layout.handle_event(event, app.main_area)
             {
-                return;
+                return true;
             }
             if app.trials_list.handle_event(event) {
-                return;
+                return true;
             }
             if app.chart_mode == ChartMode::HyperParams {
                 if app.params_list.handle_event(event) || app.metrics_list.handle_event(event) {
-                    return;
+                    return true;
                 }
             }
             if app.details_scroll.handle_event(event).handled
                 || app.charts_scroll.handle_event(event).handled
             {
-                return;
+                return true;
             }
             match mouse.kind {
             MouseEventKind::ScrollUp => {
@@ -367,6 +397,7 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                 } else {
                     apply_focus_delta(app, delta);
                 }
+                true
             }
             MouseEventKind::ScrollDown => {
                 let delta = 1;
@@ -385,12 +416,16 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                 } else {
                     apply_focus_delta(app, delta);
                 }
+                true
             }
             MouseEventKind::ScrollLeft => {
                 if app.chart_mode == ChartMode::HyperParams
                     && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts)
                 {
                     pan_params(app, -1);
+                    true
+                } else {
+                    false
                 }
             }
             MouseEventKind::ScrollRight => {
@@ -398,6 +433,9 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                     && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts)
                 {
                     pan_params(app, 1);
+                    true
+                } else {
+                    false
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -413,12 +451,15 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
                         update_details_focus_for_mouse(app, mouse.column, mouse.row);
                         handle_details_click(app, mouse.column, mouse.row);
                     }
+                    true
+                } else {
+                    false
                 }
             }
-            _ => {}
+            _ => false,
             }
         }
-        _ => {}
+        _ => false,
     }
 }
 
