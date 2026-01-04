@@ -10,7 +10,7 @@ use ratatui::{
 use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
 use crate::components::scroll_view::ScrollView;
-use crate::terminal::TerminalPane;
+use crate::terminal_pane::TerminalPane;
 use crate::window::rect_contains;
 
 const DEFAULT_SCROLLBACK_LEN: usize = 2000;
@@ -23,7 +23,7 @@ pub struct TerminalComponent {
 }
 
 impl TerminalComponent {
-    pub fn spawn(command: CommandBuilder, size: PtySize) -> crate::terminal::PtyResult<Self> {
+    pub fn spawn(command: CommandBuilder, size: PtySize) -> crate::terminal_pane::PtyResult<Self> {
         let pane = TerminalPane::spawn_with_scrollback(command, size, DEFAULT_SCROLLBACK_LEN)?;
         Ok(Self {
             pane,

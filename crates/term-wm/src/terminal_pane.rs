@@ -185,14 +185,6 @@ impl TerminalPane {
     }
 
     fn apply_resize(&mut self, size: PtySize) {
-        if size.rows < self.size.rows && self.scrollback_len > 0 && !self.alternate_screen_cached()
-        {
-            let delta = self.size.rows.saturating_sub(size.rows);
-            if delta > 0 {
-                let seq = format!("\x1b[{delta}S");
-                self.parser.process(seq.as_bytes());
-            }
-        }
         self.size = size;
         self.parser.screen_mut().set_size(size.rows, size.cols);
         self.pending_resize = None;
