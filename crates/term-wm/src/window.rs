@@ -70,6 +70,41 @@ pub struct FocusRing<T: Copy + Eq> {
     current: T,
 }
 
+impl<T: Copy + Eq> FocusRing<T> {
+    pub fn new(current: T) -> Self {
+        Self {
+            order: Vec::new(),
+            current,
+        }
+    }
+
+    pub fn set_order(&mut self, order: Vec<T>) {
+        self.order = order;
+    }
+
+    pub fn current(&self) -> T {
+        self.current
+    }
+
+    pub fn set_current(&mut self, current: T) {
+        self.current = current;
+    }
+
+    pub fn advance(&mut self, forward: bool) {
+        if self.order.is_empty() {
+            return;
+        }
+        let idx = self
+            .order
+            .iter()
+            .position(|item| *item == self.current)
+            .unwrap_or(0);
+        let step = if forward { 1isize } else { -1isize };
+        let next = ((idx as isize + step).rem_euclid(self.order.len() as isize)) as usize;
+        self.current = self.order[next];
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     focus: FocusRing<W>,
@@ -116,41 +151,6 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
 
     pub fn region(&self, id: R) -> Rect {
         self.regions.get(id).unwrap_or_default()
-    }
-}
-
-impl<T: Copy + Eq> FocusRing<T> {
-    pub fn new(current: T) -> Self {
-        Self {
-            order: Vec::new(),
-            current,
-        }
-    }
-
-    pub fn set_order(&mut self, order: Vec<T>) {
-        self.order = order;
-    }
-
-    pub fn current(&self) -> T {
-        self.current
-    }
-
-    pub fn set_current(&mut self, current: T) {
-        self.current = current;
-    }
-
-    pub fn advance(&mut self, forward: bool) {
-        if self.order.is_empty() {
-            return;
-        }
-        let idx = self
-            .order
-            .iter()
-            .position(|item| *item == self.current)
-            .unwrap_or(0);
-        let step = if forward { 1isize } else { -1isize };
-        let next = ((idx as isize + step).rem_euclid(self.order.len() as isize)) as usize;
-        self.current = self.order[next];
     }
 }
 

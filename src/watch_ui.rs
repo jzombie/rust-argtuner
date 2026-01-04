@@ -21,7 +21,7 @@ use ratatui::widgets::{
 };
 use ratatui::{Frame, Terminal};
 use rusqlite::{Connection, OpenFlags};
-use crate::ui::window::{rect_contains, render_scrollbar, ScrollState, WindowManager};
+use term_wm::window::{rect_contains, render_scrollbar, ScrollState, WindowManager};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let mut app = AppState {

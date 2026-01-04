@@ -137,6 +137,7 @@ dependencies = [
  "shell-words",
  "similar",
  "tempfile",
+ "term-wm",
  "thiserror 2.0.17",
  "toml",
  "windows-sys",
@@ -1771,6 +1772,13 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "term-wm"
+version = "0.1.0-alpha"
+dependencies = [
+ "ratatui",
 ]
 
 [[package]]

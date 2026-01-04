@@ -5,7 +5,6 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 mod watch_ui;
-mod ui;
 
 #[derive(Parser)]
 #[command(
