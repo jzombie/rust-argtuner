@@ -14,6 +14,12 @@ pub enum CaptureStatus {
     Active,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutContract {
+    AppManaged,
+    WindowManaged,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ScrollState {
     pub offset: usize,
@@ -108,6 +114,7 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     capture_deadline: Option<Instant>,
     pending_deadline: Option<Instant>,
     capture_badge: CaptureBadge,
+    layout_contract: LayoutContract,
 }
 
 impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
@@ -121,14 +128,33 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
             capture_deadline: None,
             pending_deadline: None,
             capture_badge: CaptureBadge::new(),
+            layout_contract: LayoutContract::AppManaged,
         }
+    }
+
+    pub fn new_managed(current: W) -> Self {
+        let mut manager = Self::new(current);
+        manager.layout_contract = LayoutContract::WindowManaged;
+        manager
+    }
+
+    pub fn set_layout_contract(&mut self, contract: LayoutContract) {
+        self.layout_contract = contract;
+    }
+
+    pub fn layout_contract(&self) -> LayoutContract {
+        self.layout_contract
     }
 
     pub fn begin_frame(&mut self) {
         self.regions = RegionMap::default();
         self.handles.clear();
-        // Refresh deadlines so overlay badges can expire without events.
-        self.refresh_capture();
+        if self.layout_contract == LayoutContract::AppManaged {
+            self.clear_capture();
+        } else {
+            // Refresh deadlines so overlay badges can expire without events.
+            self.refresh_capture();
+        }
     }
 
     pub fn arm_capture(&mut self, timeout: Duration) {
@@ -257,9 +283,11 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                     .find(|handle| rect_contains(handle.rect, column, row))
             });
         render_handles(frame, &self.handles, hovered);
-        let status = self.capture_status();
-        self.capture_badge.set_status(status);
-        self.capture_badge.render(frame, frame.area(), false);
+        if self.layout_contract == LayoutContract::WindowManaged {
+            let status = self.capture_status();
+            self.capture_badge.set_status(status);
+            self.capture_badge.render(frame, frame.area(), false);
+        }
     }
 
     pub fn set_regions_from_plan(&mut self, plan: &LayoutPlan<R>, area: Rect) {

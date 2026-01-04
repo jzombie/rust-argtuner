@@ -91,7 +91,7 @@ impl App {
         }
         load_into(&mut left, &paths[0])?;
         load_into(&mut right, &paths[1])?;
-        let mut windows = WindowManager::new(PaneId::Left);
+        let mut windows = WindowManager::new_managed(PaneId::Left);
         windows.set_focus_order(vec![PaneId::Left, PaneId::Right]);
         let layout = TilingLayout::new(LayoutNode::split(
             Direction::Horizontal,

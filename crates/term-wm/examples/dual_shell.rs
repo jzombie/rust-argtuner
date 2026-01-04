@@ -92,7 +92,7 @@ impl App {
             TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other)?;
         let right =
             TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other)?;
-        let mut windows = WindowManager::new(PaneId::Left);
+        let mut windows = WindowManager::new_managed(PaneId::Left);
         windows.set_focus_order(vec![PaneId::Left, PaneId::Right]);
         let panes = vec![PaneId::Left, PaneId::Right];
         let layout = TilingLayout::new(build_layout(&panes));

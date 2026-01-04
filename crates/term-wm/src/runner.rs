@@ -5,7 +5,7 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::backend::Backend;
 use ratatui::Terminal;
 
-use crate::window::WindowManager;
+use crate::window::{LayoutContract, WindowManager};
 
 pub trait HasWindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     fn windows(&mut self) -> &mut WindowManager<W, R>;
@@ -39,17 +39,22 @@ where
         if should_quit(None, app) {
             return Ok(());
         }
-        // If Esc timed out without a chord, forward it to the app.
-        if pending_esc
-            .as_ref()
-            .is_some_and(|(_, deadline)| Instant::now() > *deadline)
-        {
-            let (esc_evt, _) = pending_esc.take().expect("pending esc missing");
-            app.windows().clear_capture();
-            if should_quit(Some(&esc_evt), app) {
-                return Ok(());
+        let use_esc_chord = app.windows().layout_contract() == LayoutContract::WindowManaged;
+        if use_esc_chord {
+            // If Esc timed out without a chord, forward it to the app.
+            if pending_esc
+                .as_ref()
+                .is_some_and(|(_, deadline)| Instant::now() > *deadline)
+            {
+                let (esc_evt, _) = pending_esc.take().expect("pending esc missing");
+                app.windows().clear_capture();
+                if should_quit(Some(&esc_evt), app) {
+                    return Ok(());
+                }
+                let _ = dispatch(&esc_evt, app);
             }
-            let _ = dispatch(&esc_evt, app);
+        } else {
+            pending_esc = None;
         }
         app.windows().begin_frame();
         terminal.draw(|frame| {
@@ -58,28 +63,30 @@ where
         })?;
         if event::poll(poll_interval)? {
             let evt = normalize_event(event::read()?);
-            if let Some((esc_evt, _deadline)) = pending_esc.take() {
-                // Esc + Tab/BackTab enters WM capture; otherwise Esc passes through.
-                if matches!(
-                    evt,
-                    Event::Key(key) if key.code == KeyCode::Tab || key.code == KeyCode::BackTab
-                ) {
-                    app.windows().arm_capture(capture_timeout);
-                    let _ = app
-                        .windows()
-                        .handle_focus_event(&evt, focus_regions, &map_region);
+            if use_esc_chord {
+                if let Some((esc_evt, _deadline)) = pending_esc.take() {
+                    // Esc + Tab/BackTab enters WM capture; otherwise Esc passes through.
+                    if matches!(
+                        evt,
+                        Event::Key(key) if key.code == KeyCode::Tab || key.code == KeyCode::BackTab
+                    ) {
+                        app.windows().arm_capture(capture_timeout);
+                        let _ = app
+                            .windows()
+                            .handle_focus_event(&evt, focus_regions, &map_region);
+                        continue;
+                    }
+                    if should_quit(Some(&esc_evt), app) {
+                        return Ok(());
+                    }
+                    let _ = dispatch(&esc_evt, app);
+                }
+                if matches!(evt, Event::Key(key) if key.code == KeyCode::Esc) {
+                    pending_esc = Some((evt, Instant::now() + capture_timeout));
+                    // Show pending indicator while we wait for a chord.
+                    app.windows().arm_pending(capture_timeout);
                     continue;
                 }
-                if should_quit(Some(&esc_evt), app) {
-                    return Ok(());
-                }
-                let _ = dispatch(&esc_evt, app);
-            }
-            if matches!(evt, Event::Key(key) if key.code == KeyCode::Esc) {
-                pending_esc = Some((evt, Instant::now() + capture_timeout));
-                // Show pending indicator while we wait for a chord.
-                app.windows().arm_pending(capture_timeout);
-                continue;
             }
             if should_quit(Some(&evt), app) {
                 return Ok(());
