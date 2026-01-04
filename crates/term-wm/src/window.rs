@@ -514,6 +514,19 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         self.regions.hit_test(column, row, ids)
     }
 
+    /// Hit-test regions by draw order so overlapping panes pick the topmost one.
+    /// This avoids clicks "falling through" floating panes to windows behind them.
+    fn hit_test_region_topmost(&self, column: u16, row: u16, ids: &[R]) -> Option<R> {
+        for id in ids.iter().rev() {
+            if let Some(rect) = self.regions.get(*id) {
+                if rect_contains(rect, column, row) {
+                    return Some(*id);
+                }
+            }
+        }
+        None
+    }
+
     pub fn handle_focus_event<F>(&mut self, event: &Event, hit_targets: &[R], map: F) -> bool
     where
         F: Fn(R) -> W,
@@ -534,7 +547,18 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                 self.hover = Some((mouse.column, mouse.row));
                 match mouse.kind {
                 MouseEventKind::Down(_) => {
-                    if let Some(hit) = self.hit_test_region(mouse.column, mouse.row, hit_targets) {
+                    let hit = if self.layout_contract == LayoutContract::WindowManaged
+                        && !self.managed_draw_order.is_empty()
+                    {
+                        self.hit_test_region_topmost(
+                            mouse.column,
+                            mouse.row,
+                            &self.managed_draw_order,
+                        )
+                    } else {
+                        self.hit_test_region(mouse.column, mouse.row, hit_targets)
+                    };
+                    if let Some(hit) = hit {
                         self.set_focus(map(hit));
                         if self.layout_contract == LayoutContract::WindowManaged {
                             self.bring_floating_to_front(hit);
