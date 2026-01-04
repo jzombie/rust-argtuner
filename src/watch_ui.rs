@@ -16,12 +16,12 @@ use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Axis, Block, Borders, Chart, Dataset, GraphType, List, ListItem, ListState, Paragraph,
-    Scrollbar, ScrollbarOrientation, ScrollbarState,
     canvas::{Canvas, Line as CanvasLine},
+    Axis, Block, Borders, Chart, Dataset, GraphType, List, ListItem, ListState, Paragraph,
 };
 use ratatui::{Frame, Terminal};
 use rusqlite::{Connection, OpenFlags};
+use crate::ui::window::{rect_contains, render_scrollbar, ScrollState, WindowManager};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let mut app = AppState {
@@ -34,24 +34,17 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         epoch_rows: BTreeMap::new(),
         selected: 0,
         last_error: None,
-        trials_scroll: ScrollPane::default(),
-        metrics_scroll: ScrollPane::default(),
-        details_scroll: ScrollPane::default(),
-        focus: PaneFocus::Trials,
-        pane_rects: PaneRects::default(),
+        windows: WindowManager::new(FocusTarget::Trials),
         chart_zoom: 1.0,
         chart_view: ChartView::Summary,
         chart_selected: 0,
         metrics_len: 0,
         chart_mode: ChartMode::Metrics,
         params: Vec::new(),
-        params_scroll: ScrollPane::default(),
         params_selected: 0,
         params_x_offset: 0,
         metrics: Vec::new(),
-        metrics_list_scroll: ScrollPane::default(),
         metrics_selected: 0,
-        details_focus: DetailsFocus::Params,
     };
 
     terminal::enable_raw_mode()?;
@@ -93,24 +86,17 @@ struct AppState {
     epoch_rows: BTreeMap<i64, Vec<TrialRow>>,
     selected: usize,
     last_error: Option<String>,
-    trials_scroll: ScrollPane,
-    metrics_scroll: ScrollPane,
-    details_scroll: ScrollPane,
-    focus: PaneFocus,
-    pane_rects: PaneRects,
+    windows: WindowManager<FocusTarget, RegionId>,
     chart_zoom: f64,
     chart_view: ChartView,
     chart_selected: usize,
     metrics_len: usize,
     chart_mode: ChartMode,
     params: Vec<ParamToggle>,
-    params_scroll: ScrollPane,
     params_selected: usize,
     params_x_offset: usize,
     metrics: Vec<ParamToggle>,
-    metrics_list_scroll: ScrollPane,
     metrics_selected: usize,
-    details_focus: DetailsFocus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,19 +109,25 @@ enum PaneFocus {
 const CHART_ITEM_HEIGHT: u16 = 7;
 const PARAM_AXIS_WIDTH: u16 = 6;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+enum RegionId {
+    Trials,
+    Charts,
+    Details,
+    TrialsInner,
+    ChartsInner,
+    DetailsInner,
+    ParamsInner,
+    MetricsInner,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum FocusTarget {
     Trials,
     Charts,
     Details,
     DetailsParams,
     DetailsMetrics,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DetailsFocus {
-    Params,
-    Metrics,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,50 +148,7 @@ struct ParamToggle {
     enabled: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct PaneRects {
-    trials: Rect,
-    trials_inner: Rect,
-    charts: Rect,
-    charts_inner: Rect,
-    details: Rect,
-    details_inner: Rect,
-    params_inner: Rect,
-    metrics_inner: Rect,
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-struct ScrollPane {
-    offset: usize,
-    pending: isize,
-}
-
-impl ScrollPane {
-    fn reset(&mut self) {
-        self.offset = 0;
-        self.pending = 0;
-    }
-
-    fn bump(&mut self, delta: isize) {
-        self.pending = self.pending.saturating_add(delta);
-    }
-
-    fn apply(&mut self, total: usize, view: usize) {
-        let max_offset = total.saturating_sub(view);
-        if self.pending != 0 {
-            let delta = self.pending;
-            self.pending = 0;
-            let next = if delta.is_negative() {
-                self.offset.saturating_sub(delta.unsigned_abs())
-            } else {
-                self.offset.saturating_add(delta as usize)
-            };
-            self.offset = next.min(max_offset);
-        } else if self.offset > max_offset {
-            self.offset = max_offset;
-        }
-    }
-}
+// ScrollState and region handling live in crate::ui::window
 
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
@@ -222,52 +171,76 @@ fn run_app(
                     KeyCode::Tab => advance_focus(app, true),
                     KeyCode::BackTab => advance_focus(app, false),
                     KeyCode::Char('h') => {
-                        if app.focus == PaneFocus::Charts {
+                        if pane_focus(app) == PaneFocus::Charts {
                             app.chart_mode = match app.chart_mode {
                                 ChartMode::Metrics => ChartMode::HyperParams,
                                 ChartMode::HyperParams => ChartMode::Metrics,
                             };
+                            if app.chart_mode == ChartMode::HyperParams
+                                && pane_focus(app) == PaneFocus::Details
+                            {
+                                app.windows.set_focus(FocusTarget::DetailsParams);
+                            } else if app.chart_mode == ChartMode::Metrics
+                                && matches!(
+                                    app.windows.focus(),
+                                    FocusTarget::DetailsParams | FocusTarget::DetailsMetrics
+                                )
+                            {
+                                app.windows.set_focus(FocusTarget::Details);
+                            }
                         }
                     }
                     KeyCode::Char('f') => {
-                        if app.focus == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
+                        if pane_focus(app) == PaneFocus::Charts
+                            && app.chart_mode == ChartMode::Metrics
+                        {
                             toggle_chart_view(app);
                         }
                     }
                     KeyCode::Enter => {
-                        if app.focus == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
+                        if pane_focus(app) == PaneFocus::Charts
+                            && app.chart_mode == ChartMode::Metrics
+                        {
                             toggle_chart_view(app);
-                        } else if app.focus == PaneFocus::Details
+                        } else if pane_focus(app) == PaneFocus::Details
                             && app.chart_mode == ChartMode::HyperParams
                         {
-                            match app.details_focus {
-                                DetailsFocus::Params => toggle_param_selected(app),
-                                DetailsFocus::Metrics => toggle_metric_selected(app),
+                            match app.windows.focus() {
+                                FocusTarget::DetailsParams => toggle_param_selected(app),
+                                FocusTarget::DetailsMetrics => toggle_metric_selected(app),
+                                _ => toggle_param_selected(app),
                             }
                         }
                     }
                     KeyCode::Char(' ') => {
-                        if app.focus == PaneFocus::Details
+                        if pane_focus(app) == PaneFocus::Details
                             && app.chart_mode == ChartMode::HyperParams
                         {
-                            match app.details_focus {
-                                DetailsFocus::Params => toggle_param_selected(app),
-                                DetailsFocus::Metrics => toggle_metric_selected(app),
+                            match app.windows.focus() {
+                                FocusTarget::DetailsParams => toggle_param_selected(app),
+                                FocusTarget::DetailsMetrics => toggle_metric_selected(app),
+                                _ => toggle_param_selected(app),
                             }
                         }
                     }
                     KeyCode::Char('+') | KeyCode::Char('=') => {
-                        if app.focus == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
+                        if pane_focus(app) == PaneFocus::Charts
+                            && app.chart_mode == ChartMode::Metrics
+                        {
                             zoom_charts(app, 0.8);
                         }
                     }
                     KeyCode::Char('-') => {
-                        if app.focus == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
+                        if pane_focus(app) == PaneFocus::Charts
+                            && app.chart_mode == ChartMode::Metrics
+                        {
                             zoom_charts(app, 1.25);
                         }
                     }
                     KeyCode::Char('0') => {
-                        if app.focus == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
+                        if pane_focus(app) == PaneFocus::Charts
+                            && app.chart_mode == ChartMode::Metrics
+                        {
                             reset_chart_zoom(app);
                         }
                     }
@@ -275,14 +248,14 @@ fn run_app(
                     KeyCode::PageUp | KeyCode::Char('[') => apply_focus_delta(app, -5),
                     KeyCode::Right => {
                         if app.chart_mode == ChartMode::HyperParams
-                            && app.focus == PaneFocus::Charts
+                            && pane_focus(app) == PaneFocus::Charts
                         {
                             pan_params(app, 1);
                         }
                     }
                     KeyCode::Left => {
                         if app.chart_mode == ChartMode::HyperParams
-                            && app.focus == PaneFocus::Charts
+                            && pane_focus(app) == PaneFocus::Charts
                         {
                             pan_params(app, -1);
                         }
@@ -348,7 +321,7 @@ fn run_app(
                     }
                     MouseEventKind::Down(MouseButton::Left) => {
                         if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
-                            app.focus = pane;
+                            app.windows.set_focus(focus_target_for_pane(app, pane));
                             if pane == PaneFocus::Trials {
                                 handle_trial_click(app, mouse.column, mouse.row);
                             } else if pane == PaneFocus::Charts {
@@ -372,7 +345,7 @@ fn run_app(
 }
 
 fn apply_focus_delta(app: &mut AppState, delta: isize) {
-    apply_delta_for_pane(app, app.focus, delta);
+    apply_delta_for_pane(app, pane_focus(app), delta);
 }
 
 fn focus_targets(app: &AppState) -> Vec<FocusTarget> {
@@ -391,46 +364,37 @@ fn focus_targets(app: &AppState) -> Vec<FocusTarget> {
     }
 }
 
-fn focus_target(app: &AppState) -> FocusTarget {
-    match app.focus {
-        PaneFocus::Trials => FocusTarget::Trials,
-        PaneFocus::Charts => FocusTarget::Charts,
-        PaneFocus::Details => match app.details_focus {
-            DetailsFocus::Params => FocusTarget::DetailsParams,
-            DetailsFocus::Metrics => FocusTarget::DetailsMetrics,
-        },
+fn pane_focus(app: &AppState) -> PaneFocus {
+    match app.windows.focus() {
+        FocusTarget::Trials => PaneFocus::Trials,
+        FocusTarget::Charts => PaneFocus::Charts,
+        FocusTarget::Details | FocusTarget::DetailsParams | FocusTarget::DetailsMetrics => {
+            PaneFocus::Details
+        }
     }
 }
 
-fn set_focus_target(app: &mut AppState, target: FocusTarget) {
-    match target {
-        FocusTarget::Trials => app.focus = PaneFocus::Trials,
-        FocusTarget::Charts => app.focus = PaneFocus::Charts,
-        FocusTarget::Details => app.focus = PaneFocus::Details,
-        FocusTarget::DetailsParams => {
-            app.focus = PaneFocus::Details;
-            app.details_focus = DetailsFocus::Params;
-        }
-        FocusTarget::DetailsMetrics => {
-            app.focus = PaneFocus::Details;
-            app.details_focus = DetailsFocus::Metrics;
+fn focus_target_for_pane(app: &AppState, pane: PaneFocus) -> FocusTarget {
+    match pane {
+        PaneFocus::Trials => FocusTarget::Trials,
+        PaneFocus::Charts => FocusTarget::Charts,
+        PaneFocus::Details => {
+            if app.chart_mode == ChartMode::HyperParams {
+                match app.windows.focus() {
+                    FocusTarget::DetailsMetrics => FocusTarget::DetailsMetrics,
+                    _ => FocusTarget::DetailsParams,
+                }
+            } else {
+                FocusTarget::Details
+            }
         }
     }
 }
 
 fn advance_focus(app: &mut AppState, forward: bool) {
     let targets = focus_targets(app);
-    if targets.is_empty() {
-        return;
-    }
-    let current = focus_target(app);
-    let idx = targets
-        .iter()
-        .position(|target| *target == current)
-        .unwrap_or(0);
-    let step = if forward { 1isize } else { -1isize };
-    let next_idx = ((idx as isize + step).rem_euclid(targets.len() as isize)) as usize;
-    set_focus_target(app, targets[next_idx]);
+    app.windows.set_focus_order(targets);
+    app.windows.advance_focus(forward);
 }
 
 fn apply_delta_for_pane(app: &mut AppState, pane: PaneFocus, delta: isize) {
@@ -442,17 +406,17 @@ fn apply_delta_for_pane(app: &mut AppState, pane: PaneFocus, delta: isize) {
             } else if app.chart_view == ChartView::Focused {
                 move_chart_selection(app, delta);
             } else {
-                app.metrics_scroll.bump(delta);
+                app.windows.scroll_mut(FocusTarget::Charts).bump(delta);
             }
         }
         PaneFocus::Details => {
             if app.chart_mode == ChartMode::HyperParams {
-                match app.details_focus {
-                    DetailsFocus::Params => move_param_selection(app, delta),
-                    DetailsFocus::Metrics => move_metric_selection(app, delta),
+                match app.windows.focus() {
+                    FocusTarget::DetailsMetrics => move_metric_selection(app, delta),
+                    _ => move_param_selection(app, delta),
                 }
             } else {
-                app.details_scroll.bump(delta);
+                app.windows.scroll_mut(FocusTarget::Details).bump(delta);
             }
         }
     }
@@ -473,13 +437,16 @@ fn toggle_chart_view(app: &mut AppState) {
             if app.metrics_len == 0 {
                 ChartView::Summary
             } else {
-                app.chart_selected = app.metrics_scroll.offset.min(app.metrics_len - 1);
+                let offset = app.windows.scroll(FocusTarget::Charts).offset;
+                app.chart_selected = offset.min(app.metrics_len - 1);
                 ChartView::Focused
             }
         }
         ChartView::Focused => {
             if app.metrics_len > 0 {
-                app.metrics_scroll.offset = app.chart_selected.min(app.metrics_len - 1);
+                app.windows
+                    .scroll_mut(FocusTarget::Charts)
+                    .offset = app.chart_selected.min(app.metrics_len - 1);
             }
             ChartView::Summary
         }
@@ -543,45 +510,44 @@ fn toggle_metric_selected(app: &mut AppState) {
 }
 
 fn update_details_focus_for_mouse(app: &mut AppState, column: u16, row: u16) {
-    if rect_contains(app.pane_rects.params_inner, column, row) {
-        app.details_focus = DetailsFocus::Params;
-    } else if rect_contains(app.pane_rects.metrics_inner, column, row) {
-        app.details_focus = DetailsFocus::Metrics;
+    if rect_contains(app.windows.region(RegionId::ParamsInner), column, row) {
+        app.windows.set_focus(FocusTarget::DetailsParams);
+    } else if rect_contains(app.windows.region(RegionId::MetricsInner), column, row) {
+        app.windows.set_focus(FocusTarget::DetailsMetrics);
     }
 }
 
 fn pane_for_mouse(app: &AppState, column: u16, row: u16) -> Option<PaneFocus> {
-    if rect_contains(app.pane_rects.trials, column, row) {
-        Some(PaneFocus::Trials)
-    } else if rect_contains(app.pane_rects.charts, column, row) {
-        Some(PaneFocus::Charts)
-    } else if rect_contains(app.pane_rects.details, column, row) {
-        Some(PaneFocus::Details)
-    } else {
-        None
+    if rect_contains(app.windows.region(RegionId::Trials), column, row) {
+        return Some(PaneFocus::Trials);
     }
-}
-
-fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
-    let max_x = rect.x.saturating_add(rect.width);
-    let max_y = rect.y.saturating_add(rect.height);
-    column >= rect.x && column < max_x && row >= rect.y && row < max_y
+    if rect_contains(app.windows.region(RegionId::Charts), column, row) {
+        return Some(PaneFocus::Charts);
+    }
+    if rect_contains(app.windows.region(RegionId::Details), column, row) {
+        return Some(PaneFocus::Details);
+    }
+    None
 }
 
 fn handle_trial_click(app: &mut AppState, column: u16, row: u16) {
-    let inner = app.pane_rects.trials_inner;
+    let inner = app.windows.region(RegionId::TrialsInner);
     if inner.height == 0 || !rect_contains(inner, column, row) {
         return;
     }
     let offset_row = row.saturating_sub(inner.y) as usize;
-    let index = app.trials_scroll.offset.saturating_add(offset_row);
+    let index = app
+        .windows
+        .scroll(FocusTarget::Trials)
+        .offset
+        .saturating_add(offset_row);
     if index >= app.trials.len() {
         return;
     }
     if index != app.selected {
         app.selected = index;
-        app.metrics_scroll.reset();
-        app.details_scroll.reset();
+        app.windows.scroll_mut(FocusTarget::Charts).reset();
+        app.windows.scroll_mut(FocusTarget::Details).reset();
     }
 }
 
@@ -589,13 +555,17 @@ fn handle_chart_click(app: &mut AppState, column: u16, row: u16) {
     if app.chart_view == ChartView::Focused {
         return;
     }
-    let inner = app.pane_rects.charts_inner;
+    let inner = app.windows.region(RegionId::ChartsInner);
     if inner.height == 0 || !rect_contains(inner, column, row) {
         return;
     }
     let offset_row = row.saturating_sub(inner.y) as usize;
     let index_in_view = offset_row / CHART_ITEM_HEIGHT as usize;
-    let index = app.metrics_scroll.offset.saturating_add(index_in_view);
+    let index = app
+        .windows
+        .scroll(FocusTarget::Charts)
+        .offset
+        .saturating_add(index_in_view);
     if index >= app.metrics_len {
         return;
     }
@@ -604,25 +574,33 @@ fn handle_chart_click(app: &mut AppState, column: u16, row: u16) {
 }
 
 fn handle_details_click(app: &mut AppState, column: u16, row: u16) {
-    if app.details_focus == DetailsFocus::Params {
-        let inner = app.pane_rects.params_inner;
+    if matches!(app.windows.focus(), FocusTarget::DetailsParams) {
+        let inner = app.windows.region(RegionId::ParamsInner);
         if inner.height == 0 || !rect_contains(inner, column, row) {
             return;
         }
         let offset_row = row.saturating_sub(inner.y) as usize;
-        let index = app.params_scroll.offset.saturating_add(offset_row);
+        let index = app
+            .windows
+            .scroll(FocusTarget::DetailsParams)
+            .offset
+            .saturating_add(offset_row);
         if index >= app.params.len() {
             return;
         }
         app.params_selected = index;
         toggle_param_selected(app);
     } else {
-        let inner = app.pane_rects.metrics_inner;
+        let inner = app.windows.region(RegionId::MetricsInner);
         if inner.height == 0 || !rect_contains(inner, column, row) {
             return;
         }
         let offset_row = row.saturating_sub(inner.y) as usize;
-        let index = app.metrics_list_scroll.offset.saturating_add(offset_row);
+        let index = app
+            .windows
+            .scroll(FocusTarget::DetailsMetrics)
+            .offset
+            .saturating_add(offset_row);
         if index >= app.metrics.len() {
             return;
         }
@@ -640,8 +618,8 @@ fn move_trial_selection(app: &mut AppState, delta: isize) {
     let next = (current + delta).clamp(0, max) as usize;
     if next != app.selected {
         app.selected = next;
-        app.metrics_scroll.reset();
-        app.details_scroll.reset();
+        app.windows.scroll_mut(FocusTarget::Charts).reset();
+        app.windows.scroll_mut(FocusTarget::Details).reset();
     }
 }
 
@@ -842,37 +820,39 @@ fn draw_ui(frame: &mut Frame, app: &mut AppState) {
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(area);
 
-    app.pane_rects.trials = columns[0];
+    app.windows.set_region(RegionId::Trials, columns[0]);
     draw_trial_list(frame, app, columns[0]);
     draw_metrics_overview(frame, app, columns[1]);
 }
 
 fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    let title = match app.focus {
+    let focus = pane_focus(app);
+    let title = match focus {
         PaneFocus::Trials => "Trials (focus)",
         _ => "Trials",
     };
-    let block = styled_block(title, app.focus == PaneFocus::Trials);
+    let block = styled_block(title, focus == PaneFocus::Trials);
     let inner = block.inner(area);
-    app.pane_rects.trials_inner = inner;
+    app.windows.set_region(RegionId::TrialsInner, inner);
     let visible_rows = inner.height as usize;
     let total_items = app.trials.len();
     if total_items > 0 && visible_rows > 0 {
-        let offset = &mut app.trials_scroll.offset;
+        let scroll = app.windows.scroll_mut(FocusTarget::Trials);
+        let offset = &mut scroll.offset;
         if app.selected < *offset {
             *offset = app.selected;
         } else if app.selected >= *offset + visible_rows {
             *offset = app.selected + 1 - visible_rows;
         }
-        app.trials_scroll.apply(total_items, visible_rows);
+        scroll.apply(total_items, visible_rows);
     } else {
-        app.trials_scroll.reset();
+        app.windows.scroll_mut(FocusTarget::Trials).reset();
     }
 
     let items = app
         .trials
         .iter()
-        .skip(app.trials_scroll.offset)
+        .skip(app.windows.scroll(FocusTarget::Trials).offset)
         .take(visible_rows.max(1))
         .map(|trial| {
             let metric_text = metric_value_text(trial).unwrap_or_else(|| "-".to_string());
@@ -886,7 +866,9 @@ fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
 
     let mut state = ListState::default();
     if !app.trials.is_empty() {
-        let selected = app.selected.saturating_sub(app.trials_scroll.offset);
+        let selected = app
+            .selected
+            .saturating_sub(app.windows.scroll(FocusTarget::Trials).offset);
         state.select(Some(selected));
     }
     let list = List::new(items)
@@ -899,7 +881,7 @@ fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
         inner,
         total_items,
         visible_rows,
-        app.trials_scroll.offset,
+        app.windows.scroll(FocusTarget::Trials).offset,
     );
 }
 
@@ -927,7 +909,8 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
         }
         ChartMode::HyperParams => "Hyperparameters (Tab/Shift-Tab to switch focus, h for metrics)",
     };
-    let block = styled_block(title, app.focus == PaneFocus::Charts);
+    let focus = pane_focus(app);
+    let block = styled_block(title, focus == PaneFocus::Charts);
     frame.render_widget(&block, area);
     let inner = block.inner(area);
     if inner.height == 0 {
@@ -938,12 +921,12 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
         .split(inner);
-    app.pane_rects.charts = chunks[0];
-    app.pane_rects.details = chunks[1];
-    app.pane_rects.charts_inner = Rect::default();
-    app.pane_rects.details_inner = Rect::default();
-    app.pane_rects.params_inner = Rect::default();
-    app.pane_rects.metrics_inner = Rect::default();
+    app.windows.set_region(RegionId::Charts, chunks[0]);
+    app.windows.set_region(RegionId::Details, chunks[1]);
+    app.windows.set_region(RegionId::ChartsInner, Rect::default());
+    app.windows.set_region(RegionId::DetailsInner, Rect::default());
+    app.windows.set_region(RegionId::ParamsInner, Rect::default());
+    app.windows.set_region(RegionId::MetricsInner, Rect::default());
     app.metrics_len = 0;
 
     if let Some(err) = app.last_error.as_ref() {
@@ -988,7 +971,8 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
     let metric_keys = collect_metric_keys_for_epochs(epochs);
     app.metrics_len = metric_keys.len();
 
-    let title = match (app.focus, app.chart_view, app.metrics_len) {
+    let focus = pane_focus(app);
+    let title = match (focus, app.chart_view, app.metrics_len) {
         (PaneFocus::Charts, ChartView::Focused, total) if total > 0 => {
             let current = app.chart_selected.saturating_add(1);
             format!("Metric Curve {current}/{total} (focus view)")
@@ -1002,10 +986,10 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
         (_, ChartView::Focused, _) => "Metric Curve (focus view)".to_string(),
         _ => "Metric Curves".to_string(),
     };
-    let block = styled_block(title, app.focus == PaneFocus::Charts);
+    let block = styled_block(title, focus == PaneFocus::Charts);
     frame.render_widget(&block, area);
     let inner = block.inner(area);
-    app.pane_rects.charts_inner = inner;
+    app.windows.set_region(RegionId::ChartsInner, inner);
     if inner.height == 0 {
         return;
     }
@@ -1022,11 +1006,13 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
         ChartView::Summary => {
             let visible_items = (inner.height / CHART_ITEM_HEIGHT).max(1) as usize;
             let total_items = metric_keys.len();
-            app.metrics_scroll.apply(total_items, visible_items);
+            app.windows
+                .scroll_mut(FocusTarget::Charts)
+                .apply(total_items, visible_items);
 
             for (row, key) in metric_keys
                 .iter()
-                .skip(app.metrics_scroll.offset)
+                .skip(app.windows.scroll(FocusTarget::Charts).offset)
                 .take(visible_items)
                 .enumerate()
             {
@@ -1045,7 +1031,7 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
                 inner,
                 total_items,
                 visible_items,
-                app.metrics_scroll.offset,
+                app.windows.scroll(FocusTarget::Charts).offset,
             );
         }
         ChartView::Focused => {
@@ -1056,14 +1042,15 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
 }
 
 fn draw_hyperparam_space(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    let title = match app.focus {
+    let focus = pane_focus(app);
+    let title = match focus {
         PaneFocus::Charts => "Hyperparameter Space (loss color, focus, L/R pan axes)",
         _ => "Hyperparameter Space (loss color, L/R pan axes)",
     };
-    let block = styled_block(title, app.focus == PaneFocus::Charts);
+    let block = styled_block(title, focus == PaneFocus::Charts);
     frame.render_widget(&block, area);
     let inner = block.inner(area);
-    app.pane_rects.charts_inner = inner;
+    app.windows.set_region(RegionId::ChartsInner, inner);
     if inner.height == 0 || inner.width == 0 {
         return;
     }
@@ -1202,11 +1189,12 @@ fn draw_trial_details(
         draw_param_toggles(frame, app, area);
         return;
     }
-    let title = match app.focus {
+    let focus = pane_focus(app);
+    let title = match focus {
         PaneFocus::Details => "Trial Details (focus)",
         _ => "Trial Details",
     };
-    let block = styled_block(title, app.focus == PaneFocus::Details);
+    let block = styled_block(title, focus == PaneFocus::Details);
     frame.render_widget(&block, area);
     let inner = block.inner(area);
     if inner.height == 0 {
@@ -1216,8 +1204,11 @@ fn draw_trial_details(
     let text = trial_detail_lines(trial, epochs);
     let total_lines = text.len();
     let visible_lines = inner.height as usize;
-    app.details_scroll.apply(total_lines, visible_lines);
-    let paragraph = Paragraph::new(text).scroll((app.details_scroll.offset as u16, 0));
+    app.windows
+        .scroll_mut(FocusTarget::Details)
+        .apply(total_lines, visible_lines);
+    let paragraph =
+        Paragraph::new(text).scroll((app.windows.scroll(FocusTarget::Details).offset as u16, 0));
     frame.render_widget(paragraph, inner);
 
     render_scrollbar(
@@ -1225,7 +1216,7 @@ fn draw_trial_details(
         inner,
         total_lines,
         visible_lines,
-        app.details_scroll.offset,
+        app.windows.scroll(FocusTarget::Details).offset,
     );
 }
 
@@ -1238,16 +1229,17 @@ fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
     let (params_block, params_inner) = build_param_list_block(
         chunks[0],
         "Hyperparameters",
-        app.focus == PaneFocus::Details && app.details_focus == DetailsFocus::Params,
+        pane_focus(app) == PaneFocus::Details
+            && matches!(app.windows.focus(), FocusTarget::DetailsParams),
     );
-    app.pane_rects.details_inner = area;
-    app.pane_rects.params_inner = params_inner;
+    app.windows.set_region(RegionId::DetailsInner, area);
+    app.windows.set_region(RegionId::ParamsInner, params_inner);
     draw_toggle_list(
         frame,
         chunks[0],
         params_block,
         params_inner,
-        &mut app.params_scroll,
+        app.windows.scroll_mut(FocusTarget::DetailsParams),
         &app.params,
         app.params_selected,
     );
@@ -1255,15 +1247,16 @@ fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
     let (metrics_block, metrics_inner) = build_param_list_block(
         chunks[1],
         "Metrics",
-        app.focus == PaneFocus::Details && app.details_focus == DetailsFocus::Metrics,
+        pane_focus(app) == PaneFocus::Details
+            && matches!(app.windows.focus(), FocusTarget::DetailsMetrics),
     );
-    app.pane_rects.metrics_inner = metrics_inner;
+    app.windows.set_region(RegionId::MetricsInner, metrics_inner);
     draw_toggle_list(
         frame,
         chunks[1],
         metrics_block,
         metrics_inner,
-        &mut app.metrics_list_scroll,
+        app.windows.scroll_mut(FocusTarget::DetailsMetrics),
         &app.metrics,
         app.metrics_selected,
     );
@@ -1294,7 +1287,7 @@ fn draw_toggle_list(
     area: Rect,
     block: Block<'static>,
     inner: Rect,
-    scroll: &mut ScrollPane,
+    scroll: &mut ScrollState,
     items: &[ParamToggle],
     selected: usize,
 ) {
@@ -1805,16 +1798,4 @@ fn trial_detail_lines(trial: &TrialRow, epochs: &[TrialRow]) -> Vec<Line<'static
         }
     }
     lines
-}
-
-fn render_scrollbar(frame: &mut Frame, area: Rect, total: usize, view: usize, offset: usize) {
-    if total <= view || view == 0 || area.height == 0 {
-        return;
-    }
-    let content_len = total.saturating_sub(view).saturating_add(1).max(1);
-    let mut state = ScrollbarState::new(content_len)
-        .position(offset.min(content_len.saturating_sub(1)))
-        .viewport_content_length(view.max(1));
-    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-    frame.render_stateful_widget(scrollbar, area, &mut state);
 }
