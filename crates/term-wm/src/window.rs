@@ -145,12 +145,39 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         self.scroll.entry(id).or_default()
     }
 
+    pub fn scroll_offset(&self, id: W) -> usize {
+        self.scroll(id).offset
+    }
+
+    pub fn reset_scroll(&mut self, id: W) {
+        self.scroll_mut(id).reset();
+    }
+
+    pub fn apply_scroll(&mut self, id: W, total: usize, view: usize) {
+        self.scroll_mut(id).apply(total, view);
+    }
+
+    pub fn draw_scrollbar(
+        &self,
+        id: W,
+        frame: &mut Frame,
+        area: Rect,
+        total: usize,
+        view: usize,
+    ) {
+        render_scrollbar(frame, area, total, view, self.scroll_offset(id));
+    }
+
     pub fn set_region(&mut self, id: R, rect: Rect) {
         self.regions.set(id, rect);
     }
 
     pub fn region(&self, id: R) -> Rect {
         self.regions.get(id).unwrap_or_default()
+    }
+
+    pub fn hit_test_region(&self, column: u16, row: u16, ids: &[R]) -> Option<R> {
+        self.regions.hit_test(column, row, ids)
     }
 }
 
@@ -174,6 +201,17 @@ impl<T: Copy + Eq + Ord> RegionMap<T> {
 
     pub fn get(&self, id: T) -> Option<Rect> {
         self.regions.get(&id).copied()
+    }
+
+    pub fn hit_test(&self, column: u16, row: u16, ids: &[T]) -> Option<T> {
+        for id in ids {
+            if let Some(rect) = self.regions.get(id) {
+                if rect_contains(*rect, column, row) {
+                    return Some(*id);
+                }
+            }
+        }
+        None
     }
 }
 

@@ -547,8 +547,8 @@ fn handle_trial_click(app: &mut AppState, column: u16, row: u16) {
     }
     if index != app.selected {
         app.selected = index;
-        app.windows.scroll_mut(FocusTarget::Charts).reset();
-        app.windows.scroll_mut(FocusTarget::Details).reset();
+        app.windows.reset_scroll(FocusTarget::Charts);
+        app.windows.reset_scroll(FocusTarget::Details);
     }
 }
 
@@ -619,8 +619,8 @@ fn move_trial_selection(app: &mut AppState, delta: isize) {
     let next = (current + delta).clamp(0, max) as usize;
     if next != app.selected {
         app.selected = next;
-        app.windows.scroll_mut(FocusTarget::Charts).reset();
-        app.windows.scroll_mut(FocusTarget::Details).reset();
+        app.windows.reset_scroll(FocusTarget::Charts);
+        app.windows.reset_scroll(FocusTarget::Details);
     }
 }
 
@@ -852,15 +852,15 @@ fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
         } else if app.selected >= *offset + visible_rows {
             *offset = app.selected + 1 - visible_rows;
         }
-        scroll.apply(total_items, visible_rows);
+        app.windows.apply_scroll(FocusTarget::Trials, total_items, visible_rows);
     } else {
-        app.windows.scroll_mut(FocusTarget::Trials).reset();
+        app.windows.reset_scroll(FocusTarget::Trials);
     }
 
     let items = app
         .trials
         .iter()
-        .skip(app.windows.scroll(FocusTarget::Trials).offset)
+        .skip(app.windows.scroll_offset(FocusTarget::Trials))
         .take(visible_rows.max(1))
         .map(|trial| {
             let metric_text = metric_value_text(trial).unwrap_or_else(|| "-".to_string());
@@ -876,7 +876,7 @@ fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
     if !app.trials.is_empty() {
         let selected = app
             .selected
-            .saturating_sub(app.windows.scroll(FocusTarget::Trials).offset);
+            .saturating_sub(app.windows.scroll_offset(FocusTarget::Trials));
         state.select(Some(selected));
     }
     let list = List::new(items)
@@ -884,13 +884,8 @@ fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
         .highlight_style(Style::default().fg(Color::Yellow));
     frame.render_stateful_widget(list, area, &mut state);
 
-    render_scrollbar(
-        frame,
-        inner,
-        total_items,
-        visible_rows,
-        app.windows.scroll(FocusTarget::Trials).offset,
-    );
+    app.windows
+        .draw_scrollbar(FocusTarget::Trials, frame, inner, total_items, visible_rows);
 }
 
 fn metric_for_trial(trial: &TrialRow) -> Option<(String, f64)> {
@@ -1024,12 +1019,11 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
             let visible_items = (inner.height / CHART_ITEM_HEIGHT).max(1) as usize;
             let total_items = metric_keys.len();
             app.windows
-                .scroll_mut(FocusTarget::Charts)
-                .apply(total_items, visible_items);
+                .apply_scroll(FocusTarget::Charts, total_items, visible_items);
 
             for (row, key) in metric_keys
                 .iter()
-                .skip(app.windows.scroll(FocusTarget::Charts).offset)
+                .skip(app.windows.scroll_offset(FocusTarget::Charts))
                 .take(visible_items)
                 .enumerate()
             {
@@ -1043,13 +1037,8 @@ fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow]
                 render_metric_chart(frame, epochs, key, rect, &x_axis, app.chart_zoom);
             }
 
-            render_scrollbar(
-                frame,
-                inner,
-                total_items,
-                visible_items,
-                app.windows.scroll(FocusTarget::Charts).offset,
-            );
+            app.windows
+                .draw_scrollbar(FocusTarget::Charts, frame, inner, total_items, visible_items);
         }
         ChartView::Focused => {
             let key = &metric_keys[app.chart_selected];
@@ -1221,20 +1210,13 @@ fn draw_trial_details(
     let text = trial_detail_lines(trial, epochs);
     let total_lines = text.len();
     let visible_lines = inner.height as usize;
-    app.windows
-        .scroll_mut(FocusTarget::Details)
-        .apply(total_lines, visible_lines);
-    let paragraph =
-        Paragraph::new(text).scroll((app.windows.scroll(FocusTarget::Details).offset as u16, 0));
+    app.windows.apply_scroll(FocusTarget::Details, total_lines, visible_lines);
+    let paragraph = Paragraph::new(text)
+        .scroll((app.windows.scroll_offset(FocusTarget::Details) as u16, 0));
     frame.render_widget(paragraph, inner);
 
-    render_scrollbar(
-        frame,
-        inner,
-        total_lines,
-        visible_lines,
-        app.windows.scroll(FocusTarget::Details).offset,
-    );
+    app.windows
+        .draw_scrollbar(FocusTarget::Details, frame, inner, total_lines, visible_lines);
 }
 
 fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
