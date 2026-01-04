@@ -42,15 +42,15 @@ impl ListComponent {
         self.selected = selected.min(self.items.len().saturating_sub(1));
     }
 
-    pub fn scroll_state(&self) -> ScrollState {
-        self.scroll
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll.offset
     }
 
-    pub fn scroll_state_mut(&mut self) -> &mut ScrollState {
-        &mut self.scroll
+    pub fn move_selection(&mut self, delta: isize) {
+        self.bump_selection(delta);
     }
 
-    fn move_selection(&mut self, delta: isize) {
+    fn bump_selection(&mut self, delta: isize) {
         if self.items.is_empty() {
             self.selected = 0;
             return;
@@ -60,6 +60,32 @@ impl ListComponent {
         } else {
             self.selected = (self.selected + delta as usize).min(self.items.len() - 1);
         }
+    }
+
+    pub fn scroll_state(&self) -> ScrollState {
+        self.scroll
+    }
+
+    pub fn scroll_state_mut(&mut self) -> &mut ScrollState {
+        &mut self.scroll
+    }
+
+    fn keep_selected_in_view(&mut self, view: usize) {
+        if view == 0 {
+            self.scroll.reset();
+            return;
+        }
+        if self.items.is_empty() {
+            self.scroll.reset();
+            return;
+        }
+        let offset = &mut self.scroll.offset;
+        if self.selected < *offset {
+            *offset = self.selected;
+        } else if self.selected >= *offset + view {
+            *offset = self.selected + 1 - view;
+        }
+        self.scroll.apply(self.items.len(), view);
     }
 }
 
@@ -81,11 +107,7 @@ impl super::Component for ListComponent {
 
         let total = self.items.len();
         let view = inner.height as usize;
-        if self.items.is_empty() {
-            self.scroll.reset();
-        } else {
-            self.scroll.apply(total, view);
-        }
+        self.keep_selected_in_view(view);
 
         let offset = self.scroll.offset;
         let items = self
@@ -111,19 +133,19 @@ impl super::Component for ListComponent {
         };
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                self.move_selection(-1);
+                self.bump_selection(-1);
                 true
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.move_selection(1);
+                self.bump_selection(1);
                 true
             }
             KeyCode::PageUp => {
-                self.move_selection(-5);
+                self.bump_selection(-5);
                 true
             }
             KeyCode::PageDown => {
-                self.move_selection(5);
+                self.bump_selection(5);
                 true
             }
             KeyCode::Home => {

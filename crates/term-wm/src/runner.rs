@@ -27,7 +27,7 @@ where
     W: Copy + Eq + Ord,
     R: Copy + Eq + Ord,
     FDraw: FnMut(&mut ratatui::Frame, &mut A),
-    FDispatch: FnMut(&Event, &mut A),
+    FDispatch: FnMut(&Event, bool, &mut A),
     FQuit: FnMut(&Event) -> bool,
     FMap: Fn(R) -> W,
     E: From<io::Error> + From<<B as Backend>::Error>,
@@ -39,13 +39,10 @@ where
             if should_quit(&evt) {
                 return Ok(());
             }
-            if app
+            let focus_handled = app
                 .windows()
-                .handle_focus_event(&evt, focus_regions, &map_region)
-            {
-                continue;
-            }
-            dispatch(&evt, app);
+                .handle_focus_event(&evt, focus_regions, &map_region);
+            dispatch(&evt, focus_handled, app);
         }
     }
 }

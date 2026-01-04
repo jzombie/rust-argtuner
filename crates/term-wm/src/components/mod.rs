@@ -3,9 +3,11 @@ use ratatui::{layout::Rect, Frame};
 
 pub mod terminal;
 pub mod list;
+pub mod status_bar;
 pub mod toggle_list;
 
 pub use list::ListComponent;
+pub use status_bar::StatusBar;
 pub use terminal::{default_shell, default_shell_command, TerminalComponent};
 pub use toggle_list::{ToggleItem, ToggleListComponent};
 

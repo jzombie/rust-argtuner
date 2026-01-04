@@ -36,12 +36,17 @@ fn main() -> io::Result<()> {
         |id| id,
         Duration::from_millis(16),
         |frame, app| draw_ui(frame, app),
-        |event, app| match app.windows.focus() {
-            PaneId::Left => {
-                let _ = app.left.handle_event(event);
+        |event, focus_handled, app| {
+            if focus_handled {
+                return;
             }
-            PaneId::Right => {
-                let _ = app.right.handle_event(event);
+            match app.windows.focus() {
+                PaneId::Left => {
+                    let _ = app.left.handle_event(event);
+                }
+                PaneId::Right => {
+                    let _ = app.right.handle_event(event);
+                }
             }
         },
         |event| matches!(
