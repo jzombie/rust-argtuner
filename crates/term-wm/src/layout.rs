@@ -257,6 +257,12 @@ impl<Id: Copy + Eq + Ord> TilingLayout<Id> {
         self.root.hit_test_handle(area, column, row)
     }
 
+    pub fn render_handles(&self, frame: &mut Frame, area: Rect) {
+        let handles = self.handles(area);
+        let hovered = self.hovered_handle(area);
+        render_handles(frame, &handles, hovered.as_ref());
+    }
+
     pub fn handle_event(&mut self, event: &crossterm::event::Event, area: Rect) -> bool {
         use crossterm::event::MouseEventKind;
         let crossterm::event::Event::Mouse(mouse) = event else {

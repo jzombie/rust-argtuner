@@ -24,7 +24,7 @@ use rusqlite::{Connection, OpenFlags};
 use term_wm::components::{
     Component, ListComponent, ScrollView, StatusBar, ToggleItem, ToggleListComponent,
 };
-use term_wm::layout::{render_handles, LayoutNode, TilingLayout};
+use term_wm::layout::{LayoutNode, TilingLayout};
 use term_wm::runner::{run_app, HasWindowManager};
 use term_wm::window::{rect_contains, WindowManager};
 
@@ -852,17 +852,13 @@ fn draw_ui(frame: &mut Frame, app: &mut AppState) {
     let area = frame.area();
     app.main_area = area;
     app.windows.set_focus_order(focus_targets(app));
-    for (id, rect) in app.main_layout.regions(area) {
-        app.windows.set_region(id, rect);
-    }
+    app.windows
+        .set_regions_from_tiling_layout(&app.main_layout, area);
     let trials_area = app.windows.region(RegionId::Trials);
     let charts_area = app.windows.region(RegionId::Charts);
     draw_trial_list(frame, app, trials_area);
     draw_metrics_overview(frame, app, charts_area);
     draw_status_bar(frame, app, app.windows.region(RegionId::Status));
-    let main_handles = app.main_layout.handles(area);
-    let main_hover = app.main_layout.hovered_handle(area);
-    render_handles(frame, &main_handles, main_hover.as_ref());
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &mut AppState, area: Rect) {
@@ -941,9 +937,8 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
     }
     app.charts_area = inner;
 
-    for (id, rect) in app.charts_layout.regions(inner) {
-        app.windows.set_region(id, rect);
-    }
+    app.windows
+        .push_regions_from_tiling_layout(&app.charts_layout, inner);
     app.windows.set_region(RegionId::ChartsInner, Rect::default());
     app.windows.set_region(RegionId::DetailsInner, Rect::default());
     app.windows.set_region(RegionId::ParamsInner, Rect::default());
@@ -956,17 +951,11 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
             Style::default().fg(Color::Red),
         ))];
         frame.render_widget(Paragraph::new(text), inner);
-        let charts_handles = app.charts_layout.handles(inner);
-        let charts_hover = app.charts_layout.hovered_handle(inner);
-        render_handles(frame, &charts_handles, charts_hover.as_ref());
         return;
     }
 
     let Some(trial) = app.trials.get(app.trials_list.selected()) else {
         frame.render_widget(Paragraph::new("No trials loaded."), inner);
-        let charts_handles = app.charts_layout.handles(inner);
-        let charts_hover = app.charts_layout.hovered_handle(inner);
-        render_handles(frame, &charts_handles, charts_hover.as_ref());
         return;
     };
     let trial = trial.clone();
@@ -996,9 +985,6 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
             draw_param_toggles(frame, app, details_area);
         }
     }
-    let charts_handles = app.charts_layout.handles(inner);
-    let charts_hover = app.charts_layout.hovered_handle(inner);
-    render_handles(frame, &charts_handles, charts_hover.as_ref());
 }
 
 fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow], area: Rect) {
@@ -1241,9 +1227,8 @@ fn draw_trial_details(
 
 fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
     app.details_area = area;
-    for (id, rect) in app.details_layout.regions(area) {
-        app.windows.set_region(id, rect);
-    }
+    app.windows
+        .push_regions_from_tiling_layout(&app.details_layout, area);
     let params_area = app.windows.region(RegionId::ParamsInner);
     let metrics_area = app.windows.region(RegionId::MetricsInner);
 
@@ -1260,9 +1245,6 @@ fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
 
     app.params_list.render(frame, params_area, params_focused);
     app.metrics_list.render(frame, metrics_area, metrics_focused);
-    let details_handles = app.details_layout.handles(area);
-    let details_hover = app.details_layout.hovered_handle(area);
-    render_handles(frame, &details_handles, details_hover.as_ref());
 }
 
 fn styled_block<T: Into<Line<'static>>>(title: T, focused: bool) -> Block<'static> {

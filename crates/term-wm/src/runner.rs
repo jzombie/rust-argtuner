@@ -36,7 +36,11 @@ where
         if should_quit(None, app) {
             return Ok(());
         }
-        terminal.draw(|frame| draw(frame, app))?;
+        app.windows().begin_frame();
+        terminal.draw(|frame| {
+            draw(frame, app);
+            app.windows().render_overlays(frame);
+        })?;
         if event::poll(poll_interval)? {
             let evt = event::read()?;
             if should_quit(Some(&evt), app) {

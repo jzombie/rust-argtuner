@@ -11,7 +11,7 @@ use ratatui::{Frame, Terminal};
 
 use portable_pty::PtySize;
 use term_wm::components::{Component, TerminalComponent, default_shell_command};
-use term_wm::layout::{render_handles, LayoutNode, TilingLayout};
+use term_wm::layout::{LayoutNode, TilingLayout};
 use term_wm::runner::{HasWindowManager, run_app};
 use term_wm::window::WindowManager;
 
@@ -143,9 +143,8 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
             .set_string(area.x, area.y, "all shells exited", ratatui::style::Style::default());
         return;
     }
-    for (id, rect) in app.layout.regions(area) {
-        app.windows.set_region(id, rect);
-    }
+    app.windows
+        .set_regions_from_tiling_layout(&app.layout, area);
 
     if panes.contains(&PaneId::Left) {
         let left_rect = app.windows.region(PaneId::Left);
@@ -155,9 +154,6 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         let right_rect = app.windows.region(PaneId::Right);
         render_pane(frame, app, PaneId::Right, right_rect);
     }
-    let handles = app.layout.handles(area);
-    let hover = app.layout.hovered_handle(area);
-    render_handles(frame, &handles, hover.as_ref());
 }
 
 fn build_layout(panes: &[PaneId]) -> LayoutNode<PaneId> {

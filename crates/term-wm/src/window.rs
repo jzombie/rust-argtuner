@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crossterm::event::{Event, KeyCode, MouseEventKind};
 use ratatui::prelude::Rect;
 
-use crate::layout::{LayoutNode, LayoutPlan};
+use crate::layout::{render_handles, LayoutNode, LayoutPlan, SplitHandle, TilingLayout};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ScrollState {
@@ -94,6 +94,8 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     focus: FocusRing<W>,
     regions: RegionMap<R>,
     scroll: BTreeMap<W, ScrollState>,
+    handles: Vec<SplitHandle>,
+    hover: Option<(u16, u16)>,
 }
 
 impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
@@ -102,7 +104,13 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
             focus: FocusRing::new(current),
             regions: RegionMap::default(),
             scroll: BTreeMap::new(),
+            handles: Vec::new(),
+            hover: None,
         }
+    }
+
+    pub fn begin_frame(&mut self) {
+        self.handles.clear();
     }
 
     pub fn focus(&self) -> W {
@@ -165,6 +173,34 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         }
     }
 
+    pub fn set_regions_from_tiling_layout(&mut self, layout: &TilingLayout<R>, area: Rect) {
+        self.regions = RegionMap::default();
+        let (regions, handles) = layout.root().layout_with_handles(area);
+        for (id, rect) in regions {
+            self.regions.set(id, rect);
+        }
+        self.handles.extend(handles);
+    }
+
+    pub fn push_regions_from_tiling_layout(&mut self, layout: &TilingLayout<R>, area: Rect) {
+        let (regions, handles) = layout.root().layout_with_handles(area);
+        for (id, rect) in regions {
+            self.regions.set(id, rect);
+        }
+        self.handles.extend(handles);
+    }
+
+    pub fn render_overlays(&self, frame: &mut ratatui::Frame) {
+        let hovered = self
+            .hover
+            .and_then(|(column, row)| {
+                self.handles
+                    .iter()
+                    .find(|handle| rect_contains(handle.rect, column, row))
+            });
+        render_handles(frame, &self.handles, hovered);
+    }
+
     pub fn set_regions_from_plan(&mut self, plan: &LayoutPlan<R>, area: Rect) {
         self.regions = plan.regions(area);
     }
@@ -189,7 +225,9 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                 }
                 _ => false,
             },
-            Event::Mouse(mouse) => match mouse.kind {
+            Event::Mouse(mouse) => {
+                self.hover = Some((mouse.column, mouse.row));
+                match mouse.kind {
                 MouseEventKind::Down(_) => {
                     if let Some(hit) = self.hit_test_region(mouse.column, mouse.row, hit_targets) {
                         self.set_focus(map(hit));
@@ -199,7 +237,7 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                     }
                 }
                 _ => false,
-            },
+            }}
             _ => false,
         }
     }
