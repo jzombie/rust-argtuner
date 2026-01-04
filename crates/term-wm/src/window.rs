@@ -4,7 +4,15 @@ use std::time::{Duration, Instant};
 use crossterm::event::{Event, KeyCode, MouseEventKind};
 use ratatui::prelude::Rect;
 
+use crate::components::{CaptureBadge, Component};
 use crate::layout::{render_handles, LayoutNode, LayoutPlan, SplitHandle, TilingLayout};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureStatus {
+    None,
+    Pending,
+    Active,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct ScrollState {
@@ -99,6 +107,7 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     hover: Option<(u16, u16)>,
     capture_deadline: Option<Instant>,
     pending_deadline: Option<Instant>,
+    capture_badge: CaptureBadge,
 }
 
 impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
@@ -111,6 +120,7 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
             hover: None,
             capture_deadline: None,
             pending_deadline: None,
+            capture_badge: CaptureBadge::new(),
         }
     }
 
@@ -144,6 +154,17 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
     pub fn pending_active(&mut self) -> bool {
         self.refresh_capture();
         self.pending_deadline.is_some()
+    }
+
+    pub fn capture_status(&mut self) -> CaptureStatus {
+        self.refresh_capture();
+        if self.capture_deadline.is_some() {
+            CaptureStatus::Active
+        } else if self.pending_deadline.is_some() {
+            CaptureStatus::Pending
+        } else {
+            CaptureStatus::None
+        }
     }
 
     fn refresh_capture(&mut self) {
@@ -236,34 +257,9 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                     .find(|handle| rect_contains(handle.rect, column, row))
             });
         render_handles(frame, &self.handles, hovered);
-
-        if self.capture_active() {
-            let area = frame.area();
-            if area.width > 0 && area.height > 0 {
-                let label = " WM ";
-                let style = ratatui::style::Style::default()
-                    .fg(ratatui::style::Color::Black)
-                    .bg(ratatui::style::Color::Yellow)
-                    .add_modifier(ratatui::style::Modifier::BOLD);
-                frame
-                    .buffer_mut()
-                    .set_string(area.x, area.y, label, style);
-            }
-        }
-        if self.pending_active() {
-            let area = frame.area();
-            if area.width > 0 && area.height > 0 {
-                let label = " ESC ";
-                let style = ratatui::style::Style::default()
-                    .fg(ratatui::style::Color::Black)
-                    .bg(ratatui::style::Color::LightYellow)
-                    .add_modifier(ratatui::style::Modifier::BOLD);
-                let x = area.x.saturating_add(4);
-                frame
-                    .buffer_mut()
-                    .set_string(x, area.y, label, style);
-            }
-        }
+        let status = self.capture_status();
+        self.capture_badge.set_status(status);
+        self.capture_badge.render(frame, frame.area(), false);
     }
 
     pub fn set_regions_from_plan(&mut self, plan: &LayoutPlan<R>, area: Rect) {
