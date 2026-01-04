@@ -11,7 +11,7 @@ use crossterm::event::{
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use ratatui::backend::CrosstermBackend;
-use ratatui::prelude::{Constraint, Direction, Layout, Rect};
+use ratatui::prelude::{Constraint, Direction, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
@@ -21,6 +21,7 @@ use ratatui::widgets::{
 };
 use ratatui::{Frame, Terminal};
 use rusqlite::{Connection, OpenFlags};
+use term_wm::layout::LayoutNode;
 use term_wm::window::{rect_contains, render_scrollbar, ScrollState, WindowManager};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
@@ -815,14 +816,21 @@ fn open_connection(path: &Path) -> Result<Connection, String> {
 
 fn draw_ui(frame: &mut Frame, app: &mut AppState) {
     let area = frame.area();
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(area);
-
-    app.windows.set_region(RegionId::Trials, columns[0]);
-    draw_trial_list(frame, app, columns[0]);
-    draw_metrics_overview(frame, app, columns[1]);
+    let layout = LayoutNode::split(
+        Direction::Horizontal,
+        vec![Constraint::Percentage(40), Constraint::Percentage(60)],
+        vec![
+            LayoutNode::leaf(RegionId::Trials),
+            LayoutNode::leaf(RegionId::Charts),
+        ],
+    );
+    for (id, rect) in layout.layout(area) {
+        app.windows.set_region(id, rect);
+    }
+    let trials_area = app.windows.region(RegionId::Trials);
+    let charts_area = app.windows.region(RegionId::Charts);
+    draw_trial_list(frame, app, trials_area);
+    draw_metrics_overview(frame, app, charts_area);
 }
 
 fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
@@ -917,12 +925,17 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
         return;
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-        .split(inner);
-    app.windows.set_region(RegionId::Charts, chunks[0]);
-    app.windows.set_region(RegionId::Details, chunks[1]);
+    let layout = LayoutNode::split(
+        Direction::Vertical,
+        vec![Constraint::Percentage(65), Constraint::Percentage(35)],
+        vec![
+            LayoutNode::leaf(RegionId::Charts),
+            LayoutNode::leaf(RegionId::Details),
+        ],
+    );
+    for (id, rect) in layout.layout(inner) {
+        app.windows.set_region(id, rect);
+    }
     app.windows.set_region(RegionId::ChartsInner, Rect::default());
     app.windows.set_region(RegionId::DetailsInner, Rect::default());
     app.windows.set_region(RegionId::ParamsInner, Rect::default());
@@ -957,12 +970,16 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
                 );
                 return;
             }
-            draw_metric_charts(frame, app, &epochs, chunks[0]);
-            draw_trial_details(frame, app, &trial, &epochs, chunks[1]);
+            let charts_area = app.windows.region(RegionId::Charts);
+            let details_area = app.windows.region(RegionId::Details);
+            draw_metric_charts(frame, app, &epochs, charts_area);
+            draw_trial_details(frame, app, &trial, &epochs, details_area);
         }
         ChartMode::HyperParams => {
-            draw_hyperparam_space(frame, app, chunks[0]);
-            draw_param_toggles(frame, app, chunks[1]);
+            let charts_area = app.windows.region(RegionId::Charts);
+            let details_area = app.windows.region(RegionId::Details);
+            draw_hyperparam_space(frame, app, charts_area);
+            draw_param_toggles(frame, app, details_area);
         }
     }
 }
@@ -1221,13 +1238,22 @@ fn draw_trial_details(
 }
 
 fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(area);
+    let layout = LayoutNode::split(
+        Direction::Horizontal,
+        vec![Constraint::Percentage(55), Constraint::Percentage(45)],
+        vec![
+            LayoutNode::leaf(RegionId::ParamsInner),
+            LayoutNode::leaf(RegionId::MetricsInner),
+        ],
+    );
+    for (id, rect) in layout.layout(area) {
+        app.windows.set_region(id, rect);
+    }
+    let params_area = app.windows.region(RegionId::ParamsInner);
+    let metrics_area = app.windows.region(RegionId::MetricsInner);
 
     let (params_block, params_inner) = build_param_list_block(
-        chunks[0],
+        params_area,
         "Hyperparameters",
         pane_focus(app) == PaneFocus::Details
             && matches!(app.windows.focus(), FocusTarget::DetailsParams),
@@ -1236,7 +1262,7 @@ fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
     app.windows.set_region(RegionId::ParamsInner, params_inner);
     draw_toggle_list(
         frame,
-        chunks[0],
+        params_area,
         params_block,
         params_inner,
         app.windows.scroll_mut(FocusTarget::DetailsParams),
@@ -1245,7 +1271,7 @@ fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
     );
 
     let (metrics_block, metrics_inner) = build_param_list_block(
-        chunks[1],
+        metrics_area,
         "Metrics",
         pane_focus(app) == PaneFocus::Details
             && matches!(app.windows.focus(), FocusTarget::DetailsMetrics),
@@ -1253,7 +1279,7 @@ fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
     app.windows.set_region(RegionId::MetricsInner, metrics_inner);
     draw_toggle_list(
         frame,
-        chunks[1],
+        metrics_area,
         metrics_block,
         metrics_inner,
         app.windows.scroll_mut(FocusTarget::DetailsMetrics),
