@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
+use crossterm::event::{Event, KeyCode, MouseEventKind};
 use ratatui::prelude::Rect;
+
+use crate::layout::{LayoutNode, LayoutPlan};
 use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::Frame;
 
@@ -176,8 +179,50 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         self.regions.get(id).unwrap_or_default()
     }
 
+    pub fn set_regions_from_layout(&mut self, layout: &LayoutNode<R>, area: Rect) {
+        self.regions = RegionMap::default();
+        for (id, rect) in layout.layout(area) {
+            self.regions.set(id, rect);
+        }
+    }
+
+    pub fn set_regions_from_plan(&mut self, plan: &LayoutPlan<R>, area: Rect) {
+        self.regions = plan.regions(area);
+    }
+
     pub fn hit_test_region(&self, column: u16, row: u16, ids: &[R]) -> Option<R> {
         self.regions.hit_test(column, row, ids)
+    }
+
+    pub fn handle_focus_event<F>(&mut self, event: &Event, hit_targets: &[R], map: F) -> bool
+    where
+        F: Fn(R) -> W,
+    {
+        match event {
+            Event::Key(key) => match key.code {
+                KeyCode::Tab => {
+                    self.advance_focus(true);
+                    true
+                }
+                KeyCode::BackTab => {
+                    self.advance_focus(false);
+                    true
+                }
+                _ => false,
+            },
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::Down(_) => {
+                    if let Some(hit) = self.hit_test_region(mouse.column, mouse.row, hit_targets) {
+                        self.set_focus(map(hit));
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            },
+            _ => false,
+        }
     }
 }
 
