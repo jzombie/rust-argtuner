@@ -1,13 +1,17 @@
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use portable_pty::{CommandBuilder, PtySize};
 use ratatui::{
     layout::Rect,
     style::{Color as TColor, Modifier, Style},
     Frame,
 };
+use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
-use crate::terminal::TerminalPane;
 use crate::components::scroll_view::ScrollView;
+use crate::terminal::TerminalPane;
+use crate::window::rect_contains;
 
 const DEFAULT_SCROLLBACK_LEN: usize = 2000;
 
@@ -15,6 +19,7 @@ pub struct TerminalComponent {
     pane: TerminalPane,
     last_size: (u16, u16),
     scroll_view: ScrollView,
+    last_area: Rect,
 }
 
 impl TerminalComponent {
@@ -24,6 +29,7 @@ impl TerminalComponent {
             pane,
             last_size: (size.cols, size.rows),
             scroll_view: ScrollView::new(),
+            last_area: Rect::default(),
         })
     }
 
@@ -138,8 +144,10 @@ impl super::Component for TerminalComponent {
 
     fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
         if area.height == 0 || area.width == 0 {
+            self.last_area = Rect::default();
             return;
         }
+        self.last_area = area;
         if self.pane.has_exited() {
             frame
                 .buffer_mut()
@@ -175,23 +183,48 @@ impl super::Component for TerminalComponent {
                 true
             }
             Event::Mouse(mouse) => {
-                if self.pane.alternate_screen() {
+                if !self.pane.alternate_screen() {
+                    if self.handle_scrollbar_event(event) {
+                        return true;
+                    }
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            self.scroll_scrollback(1);
+                            return true;
+                        }
+                        MouseEventKind::ScrollDown => {
+                            self.scroll_scrollback(-1);
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
+                if !rect_contains(self.last_area, mouse.column, mouse.row) {
                     return false;
                 }
-                if self.handle_scrollbar_event(event) {
-                    return true;
+                // Only forward mouse events when the nested app opted in to SGR mouse reporting.
+                let screen = self.pane.screen();
+                if screen.mouse_protocol_encoding() != MouseProtocolEncoding::Sgr {
+                    return false;
                 }
-                match mouse.kind {
-                    MouseEventKind::ScrollUp => {
-                        self.scroll_scrollback(1);
-                        true
-                    }
-                    MouseEventKind::ScrollDown => {
-                        self.scroll_scrollback(-1);
-                        true
-                    }
-                    _ => false,
+                let mode = screen.mouse_protocol_mode();
+                // Avoid emitting sequences for modes that the app didn't request.
+                if !mouse_event_allowed(mode, mouse.kind) {
+                    return false;
                 }
+                // Convert global coordinates into the PTY-local viewport.
+                let local = MouseEvent {
+                    column: mouse.column.saturating_sub(self.last_area.x),
+                    row: mouse.row.saturating_sub(self.last_area.y),
+                    kind: mouse.kind,
+                    modifiers: mouse.modifiers,
+                };
+                let bytes = mouse_event_to_bytes(local);
+                if bytes.is_empty() {
+                    return false;
+                }
+                let _ = self.pane.write_bytes(&bytes);
+                true
             }
             _ => false,
         }
@@ -251,6 +284,59 @@ fn ctrl_char(c: char) -> Option<u8> {
     } else {
         None
     }
+}
+
+// Only forward events that match the active mouse reporting mode.
+fn mouse_event_allowed(mode: MouseProtocolMode, kind: MouseEventKind) -> bool {
+    use MouseEventKind::*;
+    match mode {
+        MouseProtocolMode::None => false,
+        MouseProtocolMode::Press => matches!(kind, Down(_)),
+        MouseProtocolMode::PressRelease => matches!(kind, Down(_) | Up(_)),
+        MouseProtocolMode::ButtonMotion => matches!(kind, Down(_) | Up(_) | Drag(_)),
+        MouseProtocolMode::AnyMotion => true,
+    }
+}
+
+fn mouse_event_to_bytes(mouse: MouseEvent) -> Vec<u8> {
+    let (mut code, release) = match mouse.kind {
+        MouseEventKind::Down(button) => (
+            match button {
+                MouseButton::Left => 0,
+                MouseButton::Middle => 1,
+                MouseButton::Right => 2,
+            },
+            false,
+        ),
+        MouseEventKind::Up(_) => (3, true),
+        MouseEventKind::Drag(button) => (
+            32
+                + match button {
+                    MouseButton::Left => 0,
+                    MouseButton::Middle => 1,
+                    MouseButton::Right => 2,
+                },
+            false,
+        ),
+        MouseEventKind::Moved => (35, false),
+        MouseEventKind::ScrollUp => (64, false),
+        MouseEventKind::ScrollDown => (65, false),
+        MouseEventKind::ScrollLeft => (66, false),
+        MouseEventKind::ScrollRight => (67, false),
+    };
+    if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+        code |= 4;
+    }
+    if mouse.modifiers.contains(KeyModifiers::ALT) {
+        code |= 8;
+    }
+    if mouse.modifiers.contains(KeyModifiers::CONTROL) {
+        code |= 16;
+    }
+    let action = if release { 'm' } else { 'M' };
+    let col = mouse.column.saturating_add(1);
+    let row = mouse.row.saturating_add(1);
+    format!("\x1b[<{};{};{}{}", code, col, row, action).into_bytes()
 }
 
 fn resolve_colors(cell: &vt100::Cell, screen: &vt100::Screen) -> (Option<TColor>, Option<TColor>) {
