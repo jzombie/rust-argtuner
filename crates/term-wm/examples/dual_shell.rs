@@ -5,9 +5,9 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEventK
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use ratatui::backend::CrosstermBackend;
-use ratatui::prelude::{Constraint, Direction, Line, Rect, Span};
+use ratatui::prelude::{Constraint, Direction, Rect};
 use ratatui::style::{Color as TColor, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders};
 use ratatui::{Frame, Terminal};
 
 use term_wm::layout::LayoutNode;
@@ -181,21 +181,26 @@ fn render_pane(frame: &mut Frame, app: &mut App, id: PaneId, area: Rect) {
         return;
     }
 
-    let (lines, exited) = match id {
-        PaneId::Left => (
-            render_screen_lines(app.left.screen(), inner.height, inner.width),
-            app.left.has_exited(),
-        ),
-        PaneId::Right => (
-            render_screen_lines(app.right.screen(), inner.height, inner.width),
-            app.right.has_exited(),
-        ),
+    let (screen, exited) = match id {
+        PaneId::Left => {
+            let exited = app.left.has_exited();
+            let screen = app.left.screen();
+            (screen, exited)
+        }
+        PaneId::Right => {
+            let exited = app.right.has_exited();
+            let screen = app.right.screen();
+            (screen, exited)
+        }
     };
     if exited {
-        frame.render_widget(Paragraph::new("shell exited"), inner);
+        let buffer = frame.buffer_mut();
+        let x = inner.x;
+        let y = inner.y;
+        buffer.set_string(x, y, "shell exited", Style::default());
         return;
     }
-    frame.render_widget(Paragraph::new(lines), inner);
+    render_screen_to_buffer(frame, inner, screen, focused);
 }
 
 fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
@@ -242,23 +247,20 @@ fn default_shell() -> String {
     std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
 }
 
-fn render_screen_lines(screen: &vt100::Screen, rows: u16, cols: u16) -> Vec<Line<'static>> {
-    let mut lines = Vec::with_capacity(rows as usize);
-    for row in 0..rows {
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        let mut current = String::new();
-        let mut current_style = Style::default();
-        let mut have_style = false;
-
-        for col in 0..cols {
+fn render_screen_to_buffer(
+    frame: &mut Frame,
+    area: Rect,
+    screen: &vt100::Screen,
+    focused: bool,
+) {
+    let buffer = frame.buffer_mut();
+    for row in 0..area.height {
+        for col in 0..area.width {
             let Some(cell) = screen.cell(row, col) else {
-                push_span(&mut spans, &mut current, have_style, current_style);
                 continue;
             };
-            if cell.is_wide_continuation() {
-                continue;
-            }
-            let (fg, bg) = resolve_colors(cell);
+            let mut symbol = cell.contents().chars().next().unwrap_or(' ');
+            let (fg, bg) = resolve_colors(cell, screen);
             let mut style = Style::default();
             if let Some(fg) = fg {
                 style = style.fg(fg);
@@ -278,50 +280,37 @@ fn render_screen_lines(screen: &vt100::Screen, rows: u16, cols: u16) -> Vec<Line
             if cell.underline() {
                 style = style.add_modifier(Modifier::UNDERLINED);
             }
-
-            let contents = cell.contents();
-            if !have_style {
-                have_style = true;
-                current_style = style;
-                current.push_str(if contents.is_empty() { " " } else { contents });
-                continue;
+            if cell.inverse() {
+                style = style.add_modifier(Modifier::REVERSED);
             }
-            if style == current_style {
-                current.push_str(if contents.is_empty() { " " } else { contents });
-            } else {
-                push_span(&mut spans, &mut current, true, current_style);
-                current_style = style;
-                current.push_str(if contents.is_empty() { " " } else { contents });
+            if cell.is_wide_continuation() {
+                symbol = ' ';
+            }
+            let x = area.x + col;
+            let y = area.y + row;
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                let mut buf = [0u8; 4];
+                let sym = symbol.encode_utf8(&mut buf);
+                cell.set_symbol(sym).set_style(style);
             }
         }
-        push_span(&mut spans, &mut current, have_style, current_style);
-        lines.push(Line::from(spans));
     }
-    lines
-}
 
-fn push_span(
-    spans: &mut Vec<Span<'static>>,
-    current: &mut String,
-    have_style: bool,
-    style: Style,
-) {
-    if current.is_empty() {
-        return;
-    }
-    let content = std::mem::take(current);
-    if have_style {
-        spans.push(Span::styled(content, style));
-    } else {
-        spans.push(Span::raw(content));
+    if focused && !screen.hide_cursor() {
+        let (row, col) = screen.cursor_position();
+        if row < area.height && col < area.width {
+            if let Some(cell) = buffer.cell_mut((area.x + col, area.y + row)) {
+                cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+            }
+        }
     }
 }
 
-fn resolve_colors(cell: &vt100::Cell) -> (Option<TColor>, Option<TColor>) {
-    let mut fg = vt_color_to_ratatui(cell.fgcolor());
-    let mut bg = vt_color_to_ratatui(cell.bgcolor());
-    if cell.inverse() {
-        std::mem::swap(&mut fg, &mut bg);
+fn resolve_colors(cell: &vt100::Cell, screen: &vt100::Screen) -> (Option<TColor>, Option<TColor>) {
+    let mut fg = resolve_color(cell.fgcolor(), screen.fgcolor());
+    let mut bg = resolve_color(cell.bgcolor(), screen.bgcolor());
+    if cell.bold() {
+        fg = brighten_indexed(fg);
     }
     (fg, bg)
 }
@@ -331,5 +320,22 @@ fn vt_color_to_ratatui(color: vt100::Color) -> Option<TColor> {
         vt100::Color::Default => None,
         vt100::Color::Idx(idx) => Some(TColor::Indexed(idx)),
         vt100::Color::Rgb(r, g, b) => Some(TColor::Rgb(r, g, b)),
+    }
+}
+
+fn resolve_color(color: vt100::Color, screen_default: vt100::Color) -> Option<TColor> {
+    match color {
+        vt100::Color::Default => match screen_default {
+            vt100::Color::Default => None,
+            other => vt_color_to_ratatui(other),
+        },
+        other => vt_color_to_ratatui(other),
+    }
+}
+
+fn brighten_indexed(color: Option<TColor>) -> Option<TColor> {
+    match color {
+        Some(TColor::Indexed(idx)) if idx < 8 => Some(TColor::Indexed(idx + 8)),
+        _ => color,
     }
 }
