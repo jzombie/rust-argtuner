@@ -853,7 +853,7 @@ fn draw_ui(frame: &mut Frame, app: &mut AppState) {
     app.main_area = area;
     app.windows.set_focus_order(focus_targets(app));
     app.windows
-        .set_regions_from_tiling_layout(&app.main_layout, area);
+        .register_tiling_layout(&app.main_layout, area);
     let trials_area = app.windows.region(RegionId::Trials);
     let charts_area = app.windows.region(RegionId::Charts);
     draw_trial_list(frame, app, trials_area);
@@ -938,7 +938,7 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
     app.charts_area = inner;
 
     app.windows
-        .push_regions_from_tiling_layout(&app.charts_layout, inner);
+        .register_tiling_layout(&app.charts_layout, inner);
     app.windows.set_region(RegionId::ChartsInner, Rect::default());
     app.windows.set_region(RegionId::DetailsInner, Rect::default());
     app.windows.set_region(RegionId::ParamsInner, Rect::default());
@@ -1228,7 +1228,7 @@ fn draw_trial_details(
 fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
     app.details_area = area;
     app.windows
-        .push_regions_from_tiling_layout(&app.details_layout, area);
+        .register_tiling_layout(&app.details_layout, area);
     let params_area = app.windows.region(RegionId::ParamsInner);
     let metrics_area = app.windows.region(RegionId::MetricsInner);
 

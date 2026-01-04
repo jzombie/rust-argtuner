@@ -144,7 +144,7 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         return;
     }
     app.windows
-        .set_regions_from_tiling_layout(&app.layout, area);
+        .register_tiling_layout(&app.layout, area);
 
     if panes.contains(&PaneId::Left) {
         let left_rect = app.windows.region(PaneId::Left);

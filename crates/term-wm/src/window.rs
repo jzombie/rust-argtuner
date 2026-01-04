@@ -110,6 +110,7 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
     }
 
     pub fn begin_frame(&mut self) {
+        self.regions = RegionMap::default();
         self.handles.clear();
     }
 
@@ -173,16 +174,7 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         }
     }
 
-    pub fn set_regions_from_tiling_layout(&mut self, layout: &TilingLayout<R>, area: Rect) {
-        self.regions = RegionMap::default();
-        let (regions, handles) = layout.root().layout_with_handles(area);
-        for (id, rect) in regions {
-            self.regions.set(id, rect);
-        }
-        self.handles.extend(handles);
-    }
-
-    pub fn push_regions_from_tiling_layout(&mut self, layout: &TilingLayout<R>, area: Rect) {
+    pub fn register_tiling_layout(&mut self, layout: &TilingLayout<R>, area: Rect) {
         let (regions, handles) = layout.root().layout_with_handles(area);
         for (id, rect) in regions {
             self.regions.set(id, rect);
