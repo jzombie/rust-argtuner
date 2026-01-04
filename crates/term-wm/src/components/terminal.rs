@@ -7,6 +7,9 @@ use ratatui::{
 };
 
 use crate::terminal::TerminalPane;
+use crate::window::render_scrollbar;
+
+const DEFAULT_SCROLLBACK_LEN: usize = 2000;
 
 pub struct TerminalComponent {
     pane: TerminalPane,
@@ -15,7 +18,7 @@ pub struct TerminalComponent {
 
 impl TerminalComponent {
     pub fn spawn(command: CommandBuilder, size: PtySize) -> crate::terminal::PtyResult<Self> {
-        let pane = TerminalPane::spawn(command, size)?;
+        let pane = TerminalPane::spawn_with_scrollback(command, size, DEFAULT_SCROLLBACK_LEN)?;
         Ok(Self {
             pane,
             last_size: (size.cols, size.rows),
@@ -83,6 +86,18 @@ impl TerminalComponent {
                 }
             }
         }
+
+        if !screen.alternate_screen() && self.pane.scrollback_len() > 0 {
+            let view = area.height as usize;
+            if view > 0 {
+                let total = self.pane.scrollback_len().saturating_add(view);
+                let offset = self
+                    .pane
+                    .scrollback_len()
+                    .saturating_sub(self.pane.scrollback());
+                render_scrollbar(frame, area, total, view, offset);
+            }
+        }
     }
 }
 
@@ -128,15 +143,52 @@ impl super::Component for TerminalComponent {
     }
 
     fn handle_event(&mut self, event: &Event) -> bool {
-        if let Event::Key(key) = event {
-            let bytes = key_to_bytes(*key);
-            if bytes.is_empty() {
-                return false;
+        match event {
+            Event::Key(key) => {
+                if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+                    && key.modifiers.contains(KeyModifiers::SHIFT)
+                    && !self.pane.alternate_screen()
+                {
+                    let delta = if key.code == KeyCode::PageUp {
+                        10isize
+                    } else {
+                        -10isize
+                    };
+                    self.scroll_scrollback(delta);
+                    return true;
+                }
+                let bytes = key_to_bytes(*key);
+                if bytes.is_empty() {
+                    return false;
+                }
+                let _ = self.pane.write_bytes(&bytes);
+                true
             }
-            let _ = self.pane.write_bytes(&bytes);
-            return true;
+            Event::Mouse(mouse) => {
+                if self.pane.alternate_screen() {
+                    return false;
+                }
+                let delta = match mouse.kind {
+                    crossterm::event::MouseEventKind::ScrollUp => Some(1isize),
+                    crossterm::event::MouseEventKind::ScrollDown => Some(-1isize),
+                    _ => None,
+                };
+                if let Some(delta) = delta {
+                    self.scroll_scrollback(delta);
+                    return true;
+                }
+                false
+            }
+            _ => false,
         }
-        false
+    }
+}
+
+impl TerminalComponent {
+    fn scroll_scrollback(&mut self, delta: isize) {
+        let current = self.pane.scrollback() as isize;
+        let next = (current + delta).clamp(0, self.pane.scrollback_len() as isize) as usize;
+        self.pane.set_scrollback(next);
     }
 }
 

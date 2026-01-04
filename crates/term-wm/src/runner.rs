@@ -28,15 +28,18 @@ where
     R: Copy + Eq + Ord,
     FDraw: FnMut(&mut ratatui::Frame, &mut A),
     FDispatch: FnMut(&Event, bool, &mut A),
-    FQuit: FnMut(&Event) -> bool,
+    FQuit: FnMut(Option<&Event>, &mut A) -> bool,
     FMap: Fn(R) -> W,
     E: From<io::Error> + From<<B as Backend>::Error>,
 {
     loop {
+        if should_quit(None, app) {
+            return Ok(());
+        }
         terminal.draw(|frame| draw(frame, app))?;
         if event::poll(poll_interval)? {
             let evt = event::read()?;
-            if should_quit(&evt) {
+            if should_quit(Some(&evt), app) {
                 return Ok(());
             }
             let focus_handled = app

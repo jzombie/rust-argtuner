@@ -10,9 +10,9 @@ use ratatui::widgets::{Block, Borders};
 use ratatui::{Frame, Terminal};
 
 use portable_pty::PtySize;
-use term_wm::components::{default_shell_command, Component, TerminalComponent};
+use term_wm::components::{Component, TerminalComponent, default_shell_command};
 use term_wm::layout::LayoutNode;
-use term_wm::runner::{run_app, HasWindowManager};
+use term_wm::runner::{HasWindowManager, run_app};
 use term_wm::window::WindowManager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -49,12 +49,17 @@ fn main() -> io::Result<()> {
                 }
             }
         },
-        |event| matches!(
-            event,
-            Event::Key(key)
-                if key.code == KeyCode::Char('q')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-        ),
+        |event, app| {
+            if app.left.has_exited() && app.right.has_exited() {
+                return true;
+            }
+            matches!(
+                event,
+                Some(Event::Key(key))
+                    if key.code == KeyCode::Char('q')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+            )
+        },
     );
 
     terminal::disable_raw_mode()?;
@@ -82,10 +87,10 @@ impl App {
             pixel_width: 0,
             pixel_height: 0,
         };
-        let left = TerminalComponent::spawn(default_shell_command(), size)
-            .map_err(io::Error::other)?;
-        let right = TerminalComponent::spawn(default_shell_command(), size)
-            .map_err(io::Error::other)?;
+        let left =
+            TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other)?;
+        let right =
+            TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other)?;
         let mut windows = WindowManager::new(PaneId::Left);
         windows.set_focus_order(vec![PaneId::Left, PaneId::Right]);
         Ok(Self {
@@ -104,19 +109,44 @@ impl HasWindowManager<PaneId, PaneId> for App {
 
 fn draw_ui(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
-    let layout = LayoutNode::split(
-        Direction::Horizontal,
-        vec![Constraint::Percentage(50), Constraint::Percentage(50)],
-        vec![LayoutNode::leaf(PaneId::Left), LayoutNode::leaf(PaneId::Right)],
-    );
-    for (id, rect) in layout.layout(area) {
-        app.windows.set_region(id, rect);
-    }
-    let left_rect = app.windows.region(PaneId::Left);
-    let right_rect = app.windows.region(PaneId::Right);
+    let left_exited = app.left.has_exited();
+    let right_exited = app.right.has_exited();
+    let panes = match (left_exited, right_exited) {
+        (false, false) => vec![PaneId::Left, PaneId::Right],
+        (false, true) => vec![PaneId::Left],
+        (true, false) => vec![PaneId::Right],
+        (true, true) => Vec::new(),
+    };
+    app.windows.set_focus_order(panes.clone());
 
-    render_pane(frame, app, PaneId::Left, left_rect);
-    render_pane(frame, app, PaneId::Right, right_rect);
+    let layout = match panes.as_slice() {
+        [PaneId::Left, PaneId::Right] => LayoutNode::split(
+            Direction::Horizontal,
+            vec![Constraint::Percentage(50), Constraint::Percentage(50)],
+            vec![
+                LayoutNode::leaf(PaneId::Left),
+                LayoutNode::leaf(PaneId::Right),
+            ],
+        ),
+        [PaneId::Left] => LayoutNode::leaf(PaneId::Left),
+        [PaneId::Right] => LayoutNode::leaf(PaneId::Right),
+        _ => {
+            frame
+                .buffer_mut()
+                .set_string(area.x, area.y, "all shells exited", ratatui::style::Style::default());
+            return;
+        }
+    };
+    app.windows.set_regions_from_layout(&layout, area);
+
+    if panes.contains(&PaneId::Left) {
+        let left_rect = app.windows.region(PaneId::Left);
+        render_pane(frame, app, PaneId::Left, left_rect);
+    }
+    if panes.contains(&PaneId::Right) {
+        let right_rect = app.windows.region(PaneId::Right);
+        render_pane(frame, app, PaneId::Right, right_rect);
+    }
 }
 
 fn render_pane(frame: &mut Frame, app: &mut App, id: PaneId, area: Rect) {

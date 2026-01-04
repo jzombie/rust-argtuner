@@ -12,6 +12,7 @@ pub struct TerminalPane {
     pending: Arc<Mutex<Vec<u8>>>,
     parser: vt100::Parser,
     size: PtySize,
+    scrollback_len: usize,
     child: Option<Box<dyn Child + Send + Sync>>,
     exited: bool,
     _reader: JoinHandle<()>,
@@ -19,6 +20,14 @@ pub struct TerminalPane {
 
 impl TerminalPane {
     pub fn spawn(command: CommandBuilder, size: PtySize) -> PtyResult<Self> {
+        Self::spawn_with_scrollback(command, size, 0)
+    }
+
+    pub fn spawn_with_scrollback(
+        command: CommandBuilder,
+        size: PtySize,
+        scrollback_len: usize,
+    ) -> PtyResult<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(size)
@@ -38,13 +47,14 @@ impl TerminalPane {
         let pending = Arc::new(Mutex::new(Vec::new()));
         let reader_pending = Arc::clone(&pending);
         let reader_handle = thread::spawn(move || read_loop(reader, reader_pending));
-        let parser = vt100::Parser::new(size.rows, size.cols, 0);
+        let parser = vt100::Parser::new(size.rows, size.cols, scrollback_len);
         Ok(Self {
             master: pair.master,
             writer,
             pending,
             parser,
             size,
+            scrollback_len,
             child: Some(child),
             exited: false,
             _reader: reader_handle,
@@ -114,6 +124,27 @@ impl TerminalPane {
     pub fn screen(&mut self) -> &vt100::Screen {
         self.update();
         self.parser.screen()
+    }
+
+    pub fn screen_mut(&mut self) -> &mut vt100::Screen {
+        self.update();
+        self.parser.screen_mut()
+    }
+
+    pub fn scrollback(&mut self) -> usize {
+        self.screen().scrollback()
+    }
+
+    pub fn set_scrollback(&mut self, rows: usize) {
+        self.screen_mut().set_scrollback(rows);
+    }
+
+    pub fn scrollback_len(&self) -> usize {
+        self.scrollback_len
+    }
+
+    pub fn alternate_screen(&mut self) -> bool {
+        self.screen().alternate_screen()
     }
 }
 

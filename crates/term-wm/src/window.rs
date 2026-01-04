@@ -134,6 +134,15 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
 
     pub fn set_focus_order(&mut self, order: Vec<W>) {
         self.focus.set_order(order);
+        if !self.focus.order.is_empty()
+            && !self
+                .focus
+                .order
+                .iter()
+                .any(|item| *item == self.focus.current)
+        {
+            self.focus.current = self.focus.order[0];
+        }
     }
 
     pub fn advance_focus(&mut self, forward: bool) {

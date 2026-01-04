@@ -77,7 +77,12 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         |event, focus_handled, app| {
             handle_event(app, event, focus_handled);
         },
-        |event| matches!(event, Event::Key(key) if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc),
+        |event, _app| {
+            matches!(
+                event,
+                Some(Event::Key(key)) if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc
+            )
+        },
     );
 
     terminal::disable_raw_mode()?;
