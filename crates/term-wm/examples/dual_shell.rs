@@ -11,7 +11,7 @@ use ratatui::{Frame, Terminal};
 
 use portable_pty::PtySize;
 use term_wm::components::{Component, TerminalComponent, default_shell_command};
-use term_wm::layout::LayoutNode;
+use term_wm::layout::{render_handles, LayoutNode, TilingLayout};
 use term_wm::runner::{HasWindowManager, run_app};
 use term_wm::window::WindowManager;
 
@@ -38,6 +38,11 @@ fn main() -> io::Result<()> {
         |frame, app| draw_ui(frame, app),
         |event, focus_handled, app| {
             if focus_handled && matches!(event, Event::Key(_)) {
+                return;
+            }
+            if matches!(event, Event::Mouse(_))
+                && app.layout.handle_event(event, app.layout_area)
+            {
                 return;
             }
             match app.windows.focus() {
@@ -77,6 +82,9 @@ struct App {
     windows: WindowManager<PaneId, PaneId>,
     left: TerminalComponent,
     right: TerminalComponent,
+    layout: TilingLayout<PaneId>,
+    layout_area: Rect,
+    panes: Vec<PaneId>,
 }
 
 impl App {
@@ -93,10 +101,15 @@ impl App {
             TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other)?;
         let mut windows = WindowManager::new(PaneId::Left);
         windows.set_focus_order(vec![PaneId::Left, PaneId::Right]);
+        let panes = vec![PaneId::Left, PaneId::Right];
+        let layout = TilingLayout::new(build_layout(&panes));
         Ok(Self {
             windows,
             left,
             right,
+            layout,
+            layout_area: Rect::default(),
+            panes,
         })
     }
 }
@@ -118,8 +131,37 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         (true, true) => Vec::new(),
     };
     app.windows.set_focus_order(panes.clone());
+    if panes != app.panes {
+        app.layout = TilingLayout::new(build_layout(&panes));
+        app.panes = panes.clone();
+    }
+    app.layout_area = area;
 
-    let layout = match panes.as_slice() {
+    if panes.is_empty() {
+        frame
+            .buffer_mut()
+            .set_string(area.x, area.y, "all shells exited", ratatui::style::Style::default());
+        return;
+    }
+    for (id, rect) in app.layout.regions(area) {
+        app.windows.set_region(id, rect);
+    }
+
+    if panes.contains(&PaneId::Left) {
+        let left_rect = app.windows.region(PaneId::Left);
+        render_pane(frame, app, PaneId::Left, left_rect);
+    }
+    if panes.contains(&PaneId::Right) {
+        let right_rect = app.windows.region(PaneId::Right);
+        render_pane(frame, app, PaneId::Right, right_rect);
+    }
+    let handles = app.layout.handles(area);
+    let hover = app.layout.hovered_handle(area);
+    render_handles(frame, &handles, hover.as_ref());
+}
+
+fn build_layout(panes: &[PaneId]) -> LayoutNode<PaneId> {
+    match panes {
         [PaneId::Left, PaneId::Right] => LayoutNode::split(
             Direction::Horizontal,
             vec![Constraint::Percentage(50), Constraint::Percentage(50)],
@@ -130,22 +172,7 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
         ),
         [PaneId::Left] => LayoutNode::leaf(PaneId::Left),
         [PaneId::Right] => LayoutNode::leaf(PaneId::Right),
-        _ => {
-            frame
-                .buffer_mut()
-                .set_string(area.x, area.y, "all shells exited", ratatui::style::Style::default());
-            return;
-        }
-    };
-    app.windows.set_regions_from_layout(&layout, area);
-
-    if panes.contains(&PaneId::Left) {
-        let left_rect = app.windows.region(PaneId::Left);
-        render_pane(frame, app, PaneId::Left, left_rect);
-    }
-    if panes.contains(&PaneId::Right) {
-        let right_rect = app.windows.region(PaneId::Right);
-        render_pane(frame, app, PaneId::Right, right_rect);
+        _ => LayoutNode::leaf(PaneId::Left),
     }
 }
 

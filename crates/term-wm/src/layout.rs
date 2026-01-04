@@ -1,14 +1,52 @@
 use ratatui::prelude::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::Frame;
 
-use crate::window::RegionMap;
+use crate::window::{rect_contains, RegionMap};
+
+const HANDLE_THICKNESS: u16 = 3;
+
+fn handle_thickness(direction: Direction, area: Rect) -> u16 {
+    let base = match direction {
+        Direction::Horizontal => 1,
+        Direction::Vertical => (HANDLE_THICKNESS.saturating_add(3)) / 8,
+    };
+    let max = match direction {
+        Direction::Horizontal => area.width,
+        Direction::Vertical => area.height,
+    };
+    base.clamp(1, max.max(1))
+}
+
+fn gap_size(direction: Direction, area: Rect, child_count: usize, resizable: bool) -> u16 {
+    if !resizable || child_count < 2 {
+        return 0;
+    }
+    let total = match direction {
+        Direction::Horizontal => area.width,
+        Direction::Vertical => area.height,
+    };
+    if total == 0 {
+        return 0;
+    }
+    let min_content = child_count as u16;
+    if total <= min_content {
+        return 0;
+    }
+    let max_gap = total.saturating_sub(min_content);
+    let per_gap = max_gap / (child_count as u16 - 1);
+    handle_thickness(direction, area).min(per_gap)
+}
 
 #[derive(Debug, Clone)]
 pub enum LayoutNode<Id: Copy + Eq + Ord> {
     Leaf(Id),
     Split {
         direction: Direction,
-        constraints: Vec<Constraint>,
         children: Vec<LayoutNode<Id>>,
+        weights: Vec<f32>,
+        constraints: Vec<Constraint>,
+        resizable: bool,
     },
 }
 
@@ -24,27 +62,243 @@ impl<Id: Copy + Eq + Ord> LayoutNode<Id> {
     ) -> Self {
         Self::Split {
             direction,
-            constraints,
             children,
+            weights: Vec::new(),
+            constraints,
+            resizable: true,
+        }
+    }
+
+    pub fn split_resizable(
+        direction: Direction,
+        constraints: Vec<Constraint>,
+        children: Vec<LayoutNode<Id>>,
+        resizable: bool,
+    ) -> Self {
+        Self::Split {
+            direction,
+            children,
+            weights: Vec::new(),
+            constraints,
+            resizable,
         }
     }
 
     pub fn layout(&self, area: Rect) -> Vec<(Id, Rect)> {
+        let (regions, _) = self.layout_with_handles(area);
+        regions
+    }
+
+    pub fn layout_with_handles(&self, area: Rect) -> (Vec<(Id, Rect)>, Vec<SplitHandle>) {
+        let mut regions = Vec::new();
+        let mut handles = Vec::new();
+        self.layout_recursive(area, &mut regions, &mut handles, &mut Vec::new());
+        (regions, handles)
+    }
+
+    pub fn hit_test_handle(&self, area: Rect, column: u16, row: u16) -> Option<SplitHandle> {
+        let (_, handles) = self.layout_with_handles(area);
+        handles
+            .into_iter()
+            .find(|handle| rect_contains(handle.rect, column, row))
+    }
+
+    pub fn apply_drag(
+        &mut self,
+        area: Rect,
+        path: &[usize],
+        index: usize,
+        direction: Direction,
+        delta: i16,
+    ) -> bool {
+        let Some(split_area) = split_area_for_path(self, area, path) else {
+            return false;
+        };
+        let Some(split) = split_at_path_mut(self, path) else {
+            return false;
+        };
+        let LayoutNode::Split {
+            weights,
+            children,
+            constraints,
+            resizable,
+            ..
+        } = split
+        else {
+            return false;
+        };
+        if !*resizable || children.len() < 2 || index + 1 >= children.len() {
+            return false;
+        }
+        let sizes = split_sizes(
+            split_area,
+            direction,
+            weights,
+            constraints,
+            children.len(),
+            *resizable,
+        );
+        if sizes.is_empty() {
+            return false;
+        }
+        let mut sizes = sizes.into_iter().map(|v| v as i16).collect::<Vec<_>>();
+        let min_size: i16 = 4;
+        let total_pair = sizes[index] + sizes[index + 1];
+        let mut left = sizes[index] + delta;
+        let min_left = min_size;
+        let max_left = (total_pair - min_size).max(min_size);
+        left = left.clamp(min_left, max_left);
+        let right = total_pair - left;
+        sizes[index] = left;
+        sizes[index + 1] = right;
+        *weights = sizes.iter().map(|v| (*v).max(1) as f32).collect();
+        true
+    }
+
+    fn layout_recursive(
+        &self,
+        area: Rect,
+        regions: &mut Vec<(Id, Rect)>,
+        handles: &mut Vec<SplitHandle>,
+        path: &mut Vec<usize>,
+    ) {
         match self {
-            LayoutNode::Leaf(id) => vec![(*id, area)],
+            LayoutNode::Leaf(id) => {
+                regions.push((*id, area));
+            }
             LayoutNode::Split {
                 direction,
-                constraints,
                 children,
+                weights,
+                constraints,
+                resizable,
             } => {
-                let splits = split_rects(*direction, constraints, area, children.len());
-                let mut results = Vec::new();
-                for (child, rect) in children.iter().zip(splits.into_iter()) {
-                    results.extend(child.layout(rect));
+                let (rects, gaps) = split_rects_with_gaps(
+                    *direction,
+                    area,
+                    weights,
+                    constraints,
+                    children.len(),
+                    *resizable,
+                );
+                for (idx, (child, rect)) in children.iter().zip(rects.iter().copied()).enumerate()
+                {
+                    path.push(idx);
+                    child.layout_recursive(rect, regions, handles, path);
+                    path.pop();
                 }
-                results
+                if *resizable && children.len() > 1 {
+                    for (index, handle_rect) in gaps.into_iter().enumerate() {
+                        handles.push(SplitHandle {
+                            rect: handle_rect,
+                            path: path.clone(),
+                            index,
+                            direction: *direction,
+                        });
+                    }
+                }
             }
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SplitHandle {
+    pub rect: Rect,
+    pub path: Vec<usize>,
+    pub index: usize,
+    pub direction: Direction,
+}
+
+#[derive(Debug)]
+pub struct DragState {
+    pub path: Vec<usize>,
+    pub index: usize,
+    pub direction: Direction,
+    pub last_col: u16,
+    pub last_row: u16,
+}
+
+#[derive(Debug)]
+pub struct TilingLayout<Id: Copy + Eq + Ord> {
+    root: LayoutNode<Id>,
+    drag: Option<DragState>,
+    hover: Option<(u16, u16)>,
+}
+
+impl<Id: Copy + Eq + Ord> TilingLayout<Id> {
+    pub fn new(root: LayoutNode<Id>) -> Self {
+        Self {
+            root,
+            drag: None,
+            hover: None,
+        }
+    }
+
+    pub fn root(&self) -> &LayoutNode<Id> {
+        &self.root
+    }
+
+    pub fn root_mut(&mut self) -> &mut LayoutNode<Id> {
+        &mut self.root
+    }
+
+    pub fn regions(&self, area: Rect) -> Vec<(Id, Rect)> {
+        self.root.layout(area)
+    }
+
+    pub fn handles(&self, area: Rect) -> Vec<SplitHandle> {
+        let (_, handles) = self.root.layout_with_handles(area);
+        handles
+    }
+
+    pub fn hovered_handle(&self, area: Rect) -> Option<SplitHandle> {
+        let (column, row) = self.hover?;
+        self.root.hit_test_handle(area, column, row)
+    }
+
+    pub fn handle_event(&mut self, event: &crossterm::event::Event, area: Rect) -> bool {
+        use crossterm::event::MouseEventKind;
+        let crossterm::event::Event::Mouse(mouse) = event else {
+            return false;
+        };
+        self.hover = Some((mouse.column, mouse.row));
+        match mouse.kind {
+            MouseEventKind::Down(_) => {
+                if let Some(handle) = self.root.hit_test_handle(area, mouse.column, mouse.row) {
+                    self.drag = Some(DragState {
+                        path: handle.path,
+                        index: handle.index,
+                        direction: handle.direction,
+                        last_col: mouse.column,
+                        last_row: mouse.row,
+                    });
+                    return true;
+                }
+            }
+            MouseEventKind::Drag(_) => {
+                if let Some(state) = self.drag.as_mut() {
+                    let delta = match state.direction {
+                        Direction::Horizontal => mouse.column as i16 - state.last_col as i16,
+                        Direction::Vertical => mouse.row as i16 - state.last_row as i16,
+                    };
+                    state.last_col = mouse.column;
+                    state.last_row = mouse.row;
+                    return self
+                        .root
+                        .apply_drag(area, &state.path, state.index, state.direction, delta);
+                }
+            }
+            MouseEventKind::Moved => {}
+            MouseEventKind::Up(_) => {
+                if self.drag.is_some() {
+                    self.drag = None;
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
     }
 }
 
@@ -115,19 +369,323 @@ impl<Id: Copy + Eq + Ord> LayoutPlan<Id> {
 
 fn split_rects(
     direction: Direction,
-    constraints: &[Constraint],
     area: Rect,
+    weights: &[f32],
+    constraints: &[Constraint],
     child_count: usize,
 ) -> Vec<Rect> {
-    let constraints = if constraints.is_empty() || constraints.len() != child_count {
-        let count = child_count.max(1) as u16;
-        vec![Constraint::Percentage(100 / count); child_count]
+    if weights.len() == child_count && weights.iter().any(|value| *value > 0.0) {
+        return split_rects_weighted(direction, area, weights, child_count);
+    }
+    if constraints.len() == child_count {
+        return Layout::default()
+            .direction(direction)
+            .constraints(constraints.to_vec())
+            .split(area)
+            .to_vec();
+    }
+    split_rects_weighted(direction, area, weights, child_count)
+}
+
+fn split_rects_with_gaps(
+    direction: Direction,
+    area: Rect,
+    weights: &[f32],
+    constraints: &[Constraint],
+    child_count: usize,
+    resizable: bool,
+) -> (Vec<Rect>, Vec<Rect>) {
+    let gap = gap_size(direction, area, child_count, resizable);
+    if gap == 0 || child_count < 2 {
+        return (
+            split_rects(direction, area, weights, constraints, child_count),
+            Vec::new(),
+        );
+    }
+    let gap_total = gap.saturating_mul(child_count.saturating_sub(1) as u16);
+    let mut shrunk = area;
+    match direction {
+        Direction::Horizontal => {
+            shrunk.width = area.width.saturating_sub(gap_total);
+        }
+        Direction::Vertical => {
+            shrunk.height = area.height.saturating_sub(gap_total);
+        }
+    }
+    let raw = split_rects(direction, shrunk, weights, constraints, child_count);
+    let mut rects = Vec::with_capacity(raw.len());
+    for (idx, rect) in raw.into_iter().enumerate() {
+        let offset = gap.saturating_mul(idx as u16);
+        let shifted = match direction {
+            Direction::Horizontal => Rect {
+                x: rect.x.saturating_add(offset),
+                ..rect
+            },
+            Direction::Vertical => Rect {
+                y: rect.y.saturating_add(offset),
+                ..rect
+            },
+        };
+        rects.push(shifted);
+    }
+    let mut gaps = Vec::with_capacity(child_count.saturating_sub(1));
+    for idx in 0..child_count.saturating_sub(1) {
+        let rect = match direction {
+            Direction::Horizontal => Rect {
+                x: rects[idx].x.saturating_add(rects[idx].width),
+                y: area.y,
+                width: gap,
+                height: area.height,
+            },
+            Direction::Vertical => Rect {
+                x: area.x,
+                y: rects[idx].y.saturating_add(rects[idx].height),
+                width: area.width,
+                height: gap,
+            },
+        };
+        gaps.push(rect);
+    }
+    (rects, gaps)
+}
+
+fn split_rects_weighted(
+    direction: Direction,
+    area: Rect,
+    weights: &[f32],
+    child_count: usize,
+) -> Vec<Rect> {
+    let count = child_count.max(1);
+    let weights = if weights.len() == child_count {
+        weights.to_vec()
     } else {
-        constraints.to_vec()
+        vec![1.0; child_count]
     };
-    Layout::default()
-        .direction(direction)
-        .constraints(constraints)
-        .split(area)
-        .to_vec()
+    let total_weight: f32 = weights.iter().sum::<f32>().max(1.0);
+    let total = match direction {
+        Direction::Horizontal => area.width,
+        Direction::Vertical => area.height,
+    };
+    let mut sizes = Vec::with_capacity(count);
+    let mut used: u16 = 0;
+    for (idx, weight) in weights.iter().enumerate() {
+        let size = if idx + 1 == count {
+            total.saturating_sub(used)
+        } else {
+            let portion = ((*weight / total_weight) * total as f32).floor() as u16;
+            used = used.saturating_add(portion);
+            portion
+        };
+        sizes.push(size);
+    }
+    build_rects_from_sizes(direction, area, &sizes)
+}
+
+fn split_sizes(
+    area: Rect,
+    direction: Direction,
+    weights: &[f32],
+    constraints: &[Constraint],
+    child_count: usize,
+    resizable: bool,
+) -> Vec<u16> {
+    let (rects, _) =
+        split_rects_with_gaps(direction, area, weights, constraints, child_count, resizable);
+    rects
+        .iter()
+        .map(|rect| match direction {
+            Direction::Horizontal => rect.width,
+            Direction::Vertical => rect.height,
+        })
+        .collect()
+}
+
+fn build_rects_from_sizes(direction: Direction, area: Rect, sizes: &[u16]) -> Vec<Rect> {
+    let mut rects = Vec::with_capacity(sizes.len());
+    let mut cursor_x = area.x;
+    let mut cursor_y = area.y;
+    for size in sizes {
+        let rect = match direction {
+            Direction::Horizontal => {
+                let rect = Rect {
+                    x: cursor_x,
+                    y: area.y,
+                    width: *size,
+                    height: area.height,
+                };
+                cursor_x = cursor_x.saturating_add(*size);
+                rect
+            }
+            Direction::Vertical => {
+                let rect = Rect {
+                    x: area.x,
+                    y: cursor_y,
+                    width: area.width,
+                    height: *size,
+                };
+                cursor_y = cursor_y.saturating_add(*size);
+                rect
+            }
+        };
+        rects.push(rect);
+    }
+    rects
+}
+
+fn split_area_for_path<Id: Copy + Eq + Ord>(
+    node: &LayoutNode<Id>,
+    area: Rect,
+    path: &[usize],
+) -> Option<Rect> {
+    let mut area = area;
+    let mut current = node;
+    for &idx in path {
+        let LayoutNode::Split {
+            direction,
+            children,
+            weights,
+            constraints,
+            resizable,
+            ..
+        } = current
+        else {
+            return None;
+        };
+        let (rects, _) = split_rects_with_gaps(
+            *direction,
+            area,
+            weights,
+            constraints,
+            children.len(),
+            *resizable,
+        );
+        area = *rects.get(idx)?;
+        current = children.get(idx)?;
+    }
+    Some(area)
+}
+
+fn split_at_path_mut<'a, Id: Copy + Eq + Ord>(
+    node: &'a mut LayoutNode<Id>,
+    path: &[usize],
+) -> Option<&'a mut LayoutNode<Id>> {
+    let mut current = node;
+    for &idx in path {
+        let LayoutNode::Split { children, .. } = current else {
+            return None;
+        };
+        current = children.get_mut(idx)?;
+    }
+    Some(current)
+}
+
+pub fn render_handles(
+    frame: &mut Frame,
+    handles: &[SplitHandle],
+    hovered: Option<&SplitHandle>,
+) {
+    let buffer = frame.buffer_mut();
+    let hover_rect = hovered.map(|handle| handle.rect);
+    for handle in handles {
+        if handle.rect.width == 0 || handle.rect.height == 0 {
+            continue;
+        }
+        let is_hovered = hover_rect == Some(handle.rect);
+        let style = if is_hovered {
+            Style::default()
+                .fg(ratatui::style::Color::Gray)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(ratatui::style::Color::DarkGray)
+                .add_modifier(Modifier::DIM)
+        };
+        for y in handle.rect.y..handle.rect.y.saturating_add(handle.rect.height) {
+            for x in handle.rect.x..handle.rect.x.saturating_add(handle.rect.width) {
+                if let Some(cell) = buffer.cell_mut((x, y)) {
+                    cell.set_symbol(".");
+                    cell.set_style(style);
+                }
+            }
+        }
+        match handle.direction {
+            Direction::Horizontal => {
+                let x = handle.rect.x + handle.rect.width / 2;
+                let y_center = handle.rect.y + handle.rect.height / 2;
+                for offset in 0..3 {
+                    let y = y_center.saturating_sub(1).saturating_add(offset);
+                    if y < handle.rect.y || y >= handle.rect.y.saturating_add(handle.rect.height) {
+                        continue;
+                    }
+                    if let Some(cell) = buffer.cell_mut((x, y)) {
+                        cell.set_symbol(if is_hovered { "O" } else { "o" });
+                        cell.set_style(style);
+                    }
+                }
+            }
+            Direction::Vertical => {
+                let y = handle.rect.y + handle.rect.height / 2;
+                let x_center = handle.rect.x + handle.rect.width / 2;
+                for offset in 0..3 {
+                    let x = x_center.saturating_sub(1).saturating_add(offset);
+                    if x < handle.rect.x || x >= handle.rect.x.saturating_add(handle.rect.width) {
+                        continue;
+                    }
+                    if let Some(cell) = buffer.cell_mut((x, y)) {
+                        cell.set_symbol(if is_hovered { "O" } else { "o" });
+                        cell.set_style(style);
+                    }
+                }
+            }
+        }
+        if is_hovered {
+            let border_style = Style::default()
+                .fg(ratatui::style::Color::Rgb(255, 165, 0))
+                .add_modifier(Modifier::BOLD);
+            let max_x = handle
+                .rect
+                .x
+                .saturating_add(handle.rect.width.saturating_sub(1));
+            let max_y = handle
+                .rect
+                .y
+                .saturating_add(handle.rect.height.saturating_sub(1));
+            for x in handle.rect.x..=max_x {
+                if let Some(cell) = buffer.cell_mut((x, handle.rect.y)) {
+                    cell.set_symbol("-");
+                    cell.set_style(border_style);
+                }
+                if let Some(cell) = buffer.cell_mut((x, max_y)) {
+                    cell.set_symbol("-");
+                    cell.set_style(border_style);
+                }
+            }
+            for y in handle.rect.y..=max_y {
+                if let Some(cell) = buffer.cell_mut((handle.rect.x, y)) {
+                    cell.set_symbol("|");
+                    cell.set_style(border_style);
+                }
+                if let Some(cell) = buffer.cell_mut((max_x, y)) {
+                    cell.set_symbol("|");
+                    cell.set_style(border_style);
+                }
+            }
+            if let Some(cell) = buffer.cell_mut((handle.rect.x, handle.rect.y)) {
+                cell.set_symbol("+");
+                cell.set_style(border_style);
+            }
+            if let Some(cell) = buffer.cell_mut((max_x, handle.rect.y)) {
+                cell.set_symbol("+");
+                cell.set_style(border_style);
+            }
+            if let Some(cell) = buffer.cell_mut((handle.rect.x, max_y)) {
+                cell.set_symbol("+");
+                cell.set_style(border_style);
+            }
+            if let Some(cell) = buffer.cell_mut((max_x, max_y)) {
+                cell.set_symbol("+");
+                cell.set_style(border_style);
+            }
+        }
+    }
 }

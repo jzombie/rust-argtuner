@@ -24,7 +24,7 @@ use rusqlite::{Connection, OpenFlags};
 use term_wm::components::{
     Component, ListComponent, ScrollView, StatusBar, ToggleItem, ToggleListComponent,
 };
-use term_wm::layout::LayoutNode;
+use term_wm::layout::{render_handles, LayoutNode, TilingLayout};
 use term_wm::runner::{run_app, HasWindowManager};
 use term_wm::window::{rect_contains, WindowManager};
 
@@ -51,6 +51,41 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         params_x_offset: 0,
         metrics_list: ToggleListComponent::new("Metrics"),
         status_bar: StatusBar::new(),
+        main_layout: TilingLayout::new(LayoutNode::split_resizable(
+            Direction::Vertical,
+            vec![Constraint::Min(1), Constraint::Length(1)],
+            vec![
+                LayoutNode::split(
+                    Direction::Horizontal,
+                    vec![Constraint::Percentage(40), Constraint::Percentage(60)],
+                    vec![
+                        LayoutNode::leaf(RegionId::Trials),
+                        LayoutNode::leaf(RegionId::Charts),
+                    ],
+                ),
+                LayoutNode::leaf(RegionId::Status),
+            ],
+            false,
+        )),
+        charts_layout: TilingLayout::new(LayoutNode::split(
+            Direction::Vertical,
+            vec![Constraint::Percentage(65), Constraint::Percentage(35)],
+            vec![
+                LayoutNode::leaf(RegionId::Charts),
+                LayoutNode::leaf(RegionId::Details),
+            ],
+        )),
+        details_layout: TilingLayout::new(LayoutNode::split(
+            Direction::Horizontal,
+            vec![Constraint::Percentage(55), Constraint::Percentage(45)],
+            vec![
+                LayoutNode::leaf(RegionId::ParamsInner),
+                LayoutNode::leaf(RegionId::MetricsInner),
+            ],
+        )),
+        main_area: Rect::default(),
+        charts_area: Rect::default(),
+        details_area: Rect::default(),
     };
 
     terminal::enable_raw_mode()?;
@@ -132,6 +167,12 @@ struct AppState {
     params_x_offset: usize,
     metrics_list: ToggleListComponent,
     status_bar: StatusBar,
+    main_layout: TilingLayout<RegionId>,
+    charts_layout: TilingLayout<RegionId>,
+    details_layout: TilingLayout<RegionId>,
+    main_area: Rect,
+    charts_area: Rect,
+    details_area: Rect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,6 +330,12 @@ fn handle_event(app: &mut AppState, event: &Event, focus_handled: bool) {
             }
         }
         Event::Mouse(mouse) => {
+            if app.details_layout.handle_event(event, app.details_area)
+                || app.charts_layout.handle_event(event, app.charts_area)
+                || app.main_layout.handle_event(event, app.main_area)
+            {
+                return;
+            }
             if app.trials_list.handle_event(event) {
                 return;
             }
@@ -803,28 +850,19 @@ fn open_connection(path: &Path) -> Result<Connection, String> {
 
 fn draw_ui(frame: &mut Frame, app: &mut AppState) {
     let area = frame.area();
-    let layout = LayoutNode::split(
-        Direction::Vertical,
-        vec![Constraint::Min(1), Constraint::Length(1)],
-        vec![
-            LayoutNode::split(
-                Direction::Horizontal,
-                vec![Constraint::Percentage(40), Constraint::Percentage(60)],
-                vec![
-                    LayoutNode::leaf(RegionId::Trials),
-                    LayoutNode::leaf(RegionId::Charts),
-                ],
-            ),
-            LayoutNode::leaf(RegionId::Status),
-        ],
-    );
+    app.main_area = area;
     app.windows.set_focus_order(focus_targets(app));
-    app.windows.set_regions_from_layout(&layout, area);
+    for (id, rect) in app.main_layout.regions(area) {
+        app.windows.set_region(id, rect);
+    }
     let trials_area = app.windows.region(RegionId::Trials);
     let charts_area = app.windows.region(RegionId::Charts);
     draw_trial_list(frame, app, trials_area);
     draw_metrics_overview(frame, app, charts_area);
     draw_status_bar(frame, app, app.windows.region(RegionId::Status));
+    let main_handles = app.main_layout.handles(area);
+    let main_hover = app.main_layout.hovered_handle(area);
+    render_handles(frame, &main_handles, main_hover.as_ref());
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &mut AppState, area: Rect) {
@@ -898,18 +936,12 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
     frame.render_widget(&block, area);
     let inner = block.inner(area);
     if inner.height == 0 {
+        app.charts_area = Rect::default();
         return;
     }
+    app.charts_area = inner;
 
-    let layout = LayoutNode::split(
-        Direction::Vertical,
-        vec![Constraint::Percentage(65), Constraint::Percentage(35)],
-        vec![
-            LayoutNode::leaf(RegionId::Charts),
-            LayoutNode::leaf(RegionId::Details),
-        ],
-    );
-    for (id, rect) in layout.layout(inner) {
+    for (id, rect) in app.charts_layout.regions(inner) {
         app.windows.set_region(id, rect);
     }
     app.windows.set_region(RegionId::ChartsInner, Rect::default());
@@ -924,11 +956,17 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
             Style::default().fg(Color::Red),
         ))];
         frame.render_widget(Paragraph::new(text), inner);
+        let charts_handles = app.charts_layout.handles(inner);
+        let charts_hover = app.charts_layout.hovered_handle(inner);
+        render_handles(frame, &charts_handles, charts_hover.as_ref());
         return;
     }
 
     let Some(trial) = app.trials.get(app.trials_list.selected()) else {
         frame.render_widget(Paragraph::new("No trials loaded."), inner);
+        let charts_handles = app.charts_layout.handles(inner);
+        let charts_hover = app.charts_layout.hovered_handle(inner);
+        render_handles(frame, &charts_handles, charts_hover.as_ref());
         return;
     };
     let trial = trial.clone();
@@ -958,6 +996,9 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
             draw_param_toggles(frame, app, details_area);
         }
     }
+    let charts_handles = app.charts_layout.handles(inner);
+    let charts_hover = app.charts_layout.hovered_handle(inner);
+    render_handles(frame, &charts_handles, charts_hover.as_ref());
 }
 
 fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow], area: Rect) {
@@ -1174,6 +1215,7 @@ fn draw_trial_details(
         draw_param_toggles(frame, app, area);
         return;
     }
+    app.details_area = Rect::default();
     let focus = pane_focus(app);
     let title = match focus {
         PaneFocus::Details => "Trial Details (focus)",
@@ -1198,15 +1240,8 @@ fn draw_trial_details(
 }
 
 fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    let layout = LayoutNode::split(
-        Direction::Horizontal,
-        vec![Constraint::Percentage(55), Constraint::Percentage(45)],
-        vec![
-            LayoutNode::leaf(RegionId::ParamsInner),
-            LayoutNode::leaf(RegionId::MetricsInner),
-        ],
-    );
-    for (id, rect) in layout.layout(area) {
+    app.details_area = area;
+    for (id, rect) in app.details_layout.regions(area) {
         app.windows.set_region(id, rect);
     }
     let params_area = app.windows.region(RegionId::ParamsInner);
@@ -1225,6 +1260,9 @@ fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
 
     app.params_list.render(frame, params_area, params_focused);
     app.metrics_list.render(frame, metrics_area, metrics_focused);
+    let details_handles = app.details_layout.handles(area);
+    let details_hover = app.details_layout.hovered_handle(area);
+    render_handles(frame, &details_handles, details_hover.as_ref());
 }
 
 fn styled_block<T: Into<Line<'static>>>(title: T, focused: bool) -> Block<'static> {
