@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, MouseEventKind};
 use ratatui::prelude::Rect;
+use ratatui::style::Style;
 
 use self::decorator::{OpenStepDecorator, WindowDecorator};
 use crate::components::{Component, DialogOverlay};
@@ -110,6 +111,10 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     managed_layout: Option<TilingLayout<R>>,
     managed_floating: Vec<FloatingPane<R>>,
     managed_area: Rect,
+    panel_visible: bool,
+    panel_height: u16,
+    panel_area: Rect,
+    panel_window_hits: Vec<PanelWindowHit<R>>,
     drag_header: Option<HeaderDrag<R>>,
     drag_resize: Option<ResizeDrag<R>>,
     hover: Option<(u16, u16)>,
@@ -121,6 +126,12 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     esc_passthrough_window: Duration,
     wm_overlay: DialogOverlay,
     decorator: Box<dyn WindowDecorator>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PanelWindowHit<R: Copy + Eq + Ord> {
+    id: R,
+    rect: Rect,
 }
 
 impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord + std::fmt::Debug> WindowManager<W, R>
@@ -139,6 +150,10 @@ where
             managed_layout: None,
             managed_floating: Vec::new(),
             managed_area: Rect::default(),
+            panel_visible: true,
+            panel_height: 1,
+            panel_area: Rect::default(),
+            panel_window_hits: Vec::new(),
             drag_header: None,
             drag_resize: None,
             hover: None,
@@ -173,6 +188,7 @@ where
         self.resize_handles.clear();
         self.floating_headers.clear();
         self.managed_draw_order.clear();
+        self.panel_window_hits.clear();
         if self.layout_contract == LayoutContract::AppManaged {
             self.clear_capture();
         } else {
@@ -349,16 +365,26 @@ where
         self.managed_floating.clear();
     }
 
+    pub fn set_panel_visible(&mut self, visible: bool) {
+        self.panel_visible = visible;
+    }
+
+    pub fn set_panel_height(&mut self, height: u16) {
+        self.panel_height = height.max(1);
+    }
+
     pub fn register_managed_layout(&mut self, area: Rect) {
-        self.managed_area = area;
+        let (panel_area, managed_area) = self.split_panel_area(area);
+        self.panel_area = panel_area;
+        self.managed_area = managed_area;
         if let Some(layout) = self.managed_layout.as_ref() {
-            let (regions, handles) = layout.root().layout_with_handles(area);
+            let (regions, handles) = layout.root().layout_with_handles(self.managed_area);
             for (id, rect) in &regions {
                 if self.floating_index(*id).is_some() {
                     continue;
                 }
                 self.regions.set(*id, *rect);
-                if let Some(header) = floating_header_for_region(*id, *rect, area) {
+                if let Some(header) = floating_header_for_region(*id, *rect, self.managed_area) {
                     self.floating_headers.push(header);
                 }
                 self.managed_draw_order.push(*id);
@@ -383,11 +409,11 @@ where
             self.handles.extend(filtered_handles);
         }
         for floating in &self.managed_floating {
-            let rect = floating.rect.resolve(area);
+            let rect = floating.rect.resolve(self.managed_area);
             self.regions.set(floating.id, rect);
             self.resize_handles
-                .extend(resize_handles_for_region(floating.id, rect, area));
-            if let Some(header) = floating_header_for_region(floating.id, rect, area) {
+                .extend(resize_handles_for_region(floating.id, rect, self.managed_area));
+            if let Some(header) = floating_header_for_region(floating.id, rect, self.managed_area) {
                 self.floating_headers.push(header);
             }
             self.managed_draw_order.push(floating.id);
@@ -401,6 +427,11 @@ where
     pub fn handle_managed_event(&mut self, event: &Event) -> bool {
         if self.layout_contract != LayoutContract::WindowManaged {
             return false;
+        }
+        if let Event::Mouse(mouse) = event {
+            if self.panel_active() && rect_contains(self.panel_area, mouse.column, mouse.row) {
+                return self.handle_panel_event(event);
+            }
         }
         if let Event::Mouse(mouse) = event {
             self.hover = Some((mouse.column, mouse.row));
@@ -587,14 +618,19 @@ where
     }
 
     fn move_floating(&mut self, index: usize, column: u16, row: u16, offset_x: u16, offset_y: u16) {
+        let panel_active = self.panel_active();
+        let bounds = self.managed_area;
         let pane = &mut self.managed_floating[index];
         let RectSpec::Absolute(rect) = pane.rect else {
             return;
         };
         let width = rect.width.max(1);
         let height = rect.height.max(1);
-        let x = column.saturating_sub(offset_x);
-        let y = row.saturating_sub(offset_y);
+        let mut x = column.saturating_sub(offset_x);
+        let mut y = row.saturating_sub(offset_y);
+        if panel_active && y < bounds.y {
+            y = bounds.y;
+        }
         pane.rect = RectSpec::Absolute(Rect {
             x,
             y,
@@ -661,6 +697,7 @@ where
             &self.managed_floating,
             &self.managed_draw_order,
         );
+        self.render_panel(frame);
         if self.layout_contract == LayoutContract::WindowManaged && self.wm_overlay_visible {
             let (remaining_ms, bar) = if let Some(remaining) = self.esc_passthrough_remaining() {
                 let total = self.esc_passthrough_window.as_millis().max(1);
@@ -747,6 +784,132 @@ where
                 }
             }
             _ => false,
+        }
+    }
+
+    fn panel_active(&self) -> bool {
+        self.layout_contract == LayoutContract::WindowManaged
+            && self.panel_visible
+            && self.panel_height > 0
+    }
+
+    fn split_panel_area(&self, area: Rect) -> (Rect, Rect) {
+        if !self.panel_active() {
+            return (Rect::default(), area);
+        }
+        let height = self.panel_height.min(area.height);
+        let panel = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height,
+        };
+        let managed = Rect {
+            x: area.x,
+            y: area.y.saturating_add(height),
+            width: area.width,
+            height: area.height.saturating_sub(height),
+        };
+        (panel, managed)
+    }
+
+    fn panel_order(&self) -> Vec<R> {
+        if self.focus.order.is_empty() {
+            return self.managed_draw_order.clone();
+        }
+        let mut ordered = Vec::new();
+        for focus in &self.focus.order {
+            if let Some(id) = self
+                .managed_draw_order
+                .iter()
+                .copied()
+                .find(|id| *id == *focus)
+            {
+                ordered.push(id);
+            }
+        }
+        for id in &self.managed_draw_order {
+            if !ordered.contains(id) {
+                ordered.push(*id);
+            }
+        }
+        ordered
+    }
+
+    fn render_panel(&mut self, frame: &mut ratatui::Frame) {
+        if !self.panel_active() {
+            return;
+        }
+        let area = self.panel_area;
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let buffer = frame.buffer_mut();
+        let mut x = area.x;
+        let y = area.y;
+        let prefix = "Windows:";
+        let prefix_width = prefix.chars().count() as u16;
+        let max_x = area.x.saturating_add(area.width);
+        if x.saturating_add(prefix_width) <= max_x {
+            buffer.set_string(x, y, prefix, Style::default());
+            x = x.saturating_add(prefix_width);
+        }
+        for id in self.panel_order() {
+            let focused = id == self.focus.current;
+            let chunk = if focused {
+                format!(" [*{:?}]", id)
+            } else {
+                format!(" [{:?}]", id)
+            };
+            let chunk_width = chunk.chars().count() as u16;
+            if x.saturating_add(chunk_width) > max_x {
+                break;
+            }
+            buffer.set_string(x, y, &chunk, Style::default());
+            self.panel_window_hits.push(PanelWindowHit {
+                id,
+                rect: Rect {
+                    x,
+                    y,
+                    width: chunk_width,
+                    height: 1,
+                },
+            });
+            x = x.saturating_add(chunk_width);
+        }
+    }
+
+    fn handle_panel_event(&mut self, event: &Event) -> bool {
+        let Event::Mouse(mouse) = event else {
+            return false;
+        };
+        if !matches!(mouse.kind, MouseEventKind::Down(_)) {
+            return false;
+        }
+        if let Some(hit) = self
+            .panel_window_hits
+            .iter()
+            .find(|hit| rect_contains(hit.rect, mouse.column, mouse.row))
+            .copied()
+        {
+            if let Some(target) = self.focus_for_region(hit.id) {
+                self.set_focus(target);
+                self.bring_floating_to_front(hit.id);
+            }
+            return true;
+        }
+        true
+    }
+
+    fn focus_for_region(&self, id: R) -> Option<W> {
+        if self.focus.order.is_empty() {
+            if id == self.focus.current {
+                Some(self.focus.current)
+            } else {
+                None
+            }
+        } else {
+            self.focus.order.iter().copied().find(|focus| id == *focus)
         }
     }
 }
