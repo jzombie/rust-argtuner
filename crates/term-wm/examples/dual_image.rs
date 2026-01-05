@@ -11,6 +11,8 @@ use ratatui::widgets::{Block, Borders, Clear};
 use ratatui::{Frame, Terminal};
 
 use term_wm::components::{AsciiImage, Component};
+use term_wm::drivers::console::ConsoleDriver;
+use term_wm::drivers::mouse::MouseDriver;
 use term_wm::layout::{LayoutNode, TilingLayout};
 use term_wm::runner::{HasWindowManager, run_app};
 use term_wm::window::WindowManager;
@@ -25,12 +27,15 @@ fn main() -> io::Result<()> {
     let mut app = App::new(std::env::args().skip(1).collect())?;
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, event::EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    let mut driver = ConsoleDriver::new();
+    driver.enable()?;
 
     let result = run_app(
         &mut terminal,
+        &mut driver,
         &mut app,
         &[PaneId::Left, PaneId::Right],
         |id| id,

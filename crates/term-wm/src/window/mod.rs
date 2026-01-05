@@ -1,12 +1,17 @@
+pub mod decorator;
+
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, MouseEventKind};
 use ratatui::prelude::Rect;
 
+use self::decorator::{OpenStepDecorator, WindowDecorator};
 use crate::components::{Component, DialogOverlay};
+use crate::layout::floating::*;
 use crate::layout::{
-    FloatingPane, LayoutNode, LayoutPlan, RectSpec, SplitHandle, TilingLayout, render_handles,
+    FloatingPane, LayoutNode, LayoutPlan, RectSpec, RegionMap, SplitHandle, TilingLayout,
+    rect_contains, render_handles,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,12 +104,14 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     regions: RegionMap<R>,
     scroll: BTreeMap<W, ScrollState>,
     handles: Vec<SplitHandle>,
-    tab_handles: Vec<TabHandle<R>>,
+    resize_handles: Vec<ResizeHandle<R>>,
+    floating_headers: Vec<DragHandle<R>>,
     managed_draw_order: Vec<R>,
     managed_layout: Option<TilingLayout<R>>,
     managed_floating: Vec<FloatingPane<R>>,
     managed_area: Rect,
-    drag_tab: Option<TabDrag<R>>,
+    drag_header: Option<HeaderDrag<R>>,
+    drag_resize: Option<ResizeDrag<R>>,
     hover: Option<(u16, u16)>,
     capture_deadline: Option<Instant>,
     pending_deadline: Option<Instant>,
@@ -113,21 +120,27 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     wm_overlay_opened_at: Option<Instant>,
     esc_passthrough_window: Duration,
     wm_overlay: DialogOverlay,
+    decorator: Box<dyn WindowDecorator>,
 }
 
-impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
+impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord + std::fmt::Debug> WindowManager<W, R>
+where
+    R: PartialEq<W>,
+{
     pub fn new(current: W) -> Self {
         Self {
             focus: FocusRing::new(current),
             regions: RegionMap::default(),
             scroll: BTreeMap::new(),
             handles: Vec::new(),
-            tab_handles: Vec::new(),
+            resize_handles: Vec::new(),
+            floating_headers: Vec::new(),
             managed_draw_order: Vec::new(),
             managed_layout: None,
             managed_floating: Vec::new(),
             managed_area: Rect::default(),
-            drag_tab: None,
+            drag_header: None,
+            drag_resize: None,
             hover: None,
             capture_deadline: None,
             pending_deadline: None,
@@ -136,6 +149,7 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
             wm_overlay_opened_at: None,
             esc_passthrough_window: esc_passthrough_window_default(),
             wm_overlay: DialogOverlay::new(),
+            decorator: Box::new(OpenStepDecorator),
         }
     }
 
@@ -156,7 +170,8 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
     pub fn begin_frame(&mut self) {
         self.regions = RegionMap::default();
         self.handles.clear();
-        self.tab_handles.clear();
+        self.resize_handles.clear();
+        self.floating_headers.clear();
         self.managed_draw_order.clear();
         if self.layout_contract == LayoutContract::AppManaged {
             self.clear_capture();
@@ -299,7 +314,16 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
     pub fn region(&self, id: R) -> Rect {
         let rect = self.regions.get(id).unwrap_or_default();
         if self.layout_contract == LayoutContract::WindowManaged {
-            clamp_rect(rect, self.managed_area)
+            let clamped = clamp_rect(rect, self.managed_area);
+            if clamped.width < 3 || clamped.height < 4 {
+                return Rect::default();
+            }
+            Rect {
+                x: clamped.x + 1,
+                y: clamped.y + 2,
+                width: clamped.width.saturating_sub(2),
+                height: clamped.height.saturating_sub(3),
+            }
         } else {
             rect
         }
@@ -330,19 +354,41 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         if let Some(layout) = self.managed_layout.as_ref() {
             let (regions, handles) = layout.root().layout_with_handles(area);
             for (id, rect) in &regions {
+                if self.floating_index(*id).is_some() {
+                    continue;
+                }
                 self.regions.set(*id, *rect);
-                if let Some(tab) = tab_handle_for_region(*id, *rect) {
-                    self.tab_handles.push(tab);
+                if let Some(header) = floating_header_for_region(*id, *rect, area) {
+                    self.floating_headers.push(header);
                 }
                 self.managed_draw_order.push(*id);
             }
-            self.handles.extend(handles);
+            let filtered_handles: Vec<SplitHandle> = handles
+                .into_iter()
+                .filter(|handle| {
+                    let Some(LayoutNode::Split { children, .. }) =
+                        layout.root().node_at_path(&handle.path)
+                    else {
+                        return false;
+                    };
+                    let left = children.get(handle.index);
+                    let right = children.get(handle.index + 1);
+                    left.is_some_and(|node| {
+                        node.subtree_any(|id| self.floating_index(id).is_none())
+                    }) || right.is_some_and(|node| {
+                        node.subtree_any(|id| self.floating_index(id).is_none())
+                    })
+                })
+                .collect();
+            self.handles.extend(filtered_handles);
         }
         for floating in &self.managed_floating {
             let rect = floating.rect.resolve(area);
             self.regions.set(floating.id, rect);
-            if let Some(tab) = tab_handle_for_region(floating.id, rect) {
-                self.tab_handles.push(tab);
+            self.resize_handles
+                .extend(resize_handles_for_region(floating.id, rect, area));
+            if let Some(header) = floating_header_for_region(floating.id, rect, area) {
+                self.floating_headers.push(header);
             }
             self.managed_draw_order.push(floating.id);
         }
@@ -356,7 +402,13 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         if self.layout_contract != LayoutContract::WindowManaged {
             return false;
         }
-        if self.handle_tab_drag_event(event) {
+        if let Event::Mouse(mouse) = event {
+            self.hover = Some((mouse.column, mouse.row));
+        }
+        if self.handle_resize_event(event) {
+            return true;
+        }
+        if self.handle_header_drag_event(event) {
             return true;
         }
         if let Some(layout) = self.managed_layout.as_mut() {
@@ -365,27 +417,45 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         false
     }
 
-    fn handle_tab_drag_event(&mut self, event: &Event) -> bool {
+    fn handle_header_drag_event(&mut self, event: &Event) -> bool {
         use crossterm::event::MouseEventKind;
         let Event::Mouse(mouse) = event else {
             return false;
         };
         match mouse.kind {
             MouseEventKind::Down(_) => {
-                let hit_id = self
-                    .tab_handles
+                // Check if the mouse is blocked by a window above
+                let topmost_hit = if self.layout_contract == LayoutContract::WindowManaged
+                    && !self.managed_draw_order.is_empty()
+                {
+                    self.hit_test_region_topmost(mouse.column, mouse.row, &self.managed_draw_order)
+                } else {
+                    None
+                };
+
+                if let Some(header) = self
+                    .floating_headers
                     .iter()
-                    .find(|tab| rect_contains(tab.rect, mouse.column, mouse.row))
-                    .map(|tab| tab.id);
-                if let Some(id) = hit_id {
-                    let rect = self.region(id);
-                    if self.floating_index(id).is_none() {
-                        let _ = self.detach_to_floating(id, rect);
-                    } else {
-                        self.bring_floating_to_front(id);
+                    .rev()
+                    .find(|handle| rect_contains(handle.rect, mouse.column, mouse.row))
+                    .copied()
+                {
+                    // If we hit a window body that is NOT the owner of this header,
+                    // then the header is obscured.
+                    if let Some(hit_id) = topmost_hit
+                        && hit_id != header.id
+                    {
+                        return false;
                     }
-                    self.drag_tab = Some(TabDrag {
-                        id,
+
+                    let rect = self.full_region(header.id);
+                    if self.floating_index(header.id).is_none() {
+                        let _ = self.detach_to_floating(header.id, rect);
+                    } else {
+                        self.bring_floating_to_front(header.id);
+                    }
+                    self.drag_header = Some(HeaderDrag {
+                        id: header.id,
                         offset_x: mouse.column.saturating_sub(rect.x),
                         offset_y: mouse.row.saturating_sub(rect.y),
                     });
@@ -393,7 +463,7 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                 }
             }
             MouseEventKind::Drag(_) => {
-                if let Some(drag) = self.drag_tab {
+                if let Some(drag) = self.drag_header {
                     if let Some(index) = self.floating_index(drag.id) {
                         self.move_floating(
                             index,
@@ -407,7 +477,80 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                 }
             }
             MouseEventKind::Up(_) => {
-                if self.drag_tab.take().is_some() {
+                if self.drag_header.take().is_some() {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_resize_event(&mut self, event: &Event) -> bool {
+        use crossterm::event::MouseEventKind;
+        let Event::Mouse(mouse) = event else {
+            return false;
+        };
+        match mouse.kind {
+            MouseEventKind::Down(_) => {
+                // Check if the mouse is blocked by a window above
+                let topmost_hit = if self.layout_contract == LayoutContract::WindowManaged
+                    && !self.managed_draw_order.is_empty()
+                {
+                    self.hit_test_region_topmost(mouse.column, mouse.row, &self.managed_draw_order)
+                } else {
+                    None
+                };
+
+                let hit = self
+                    .resize_handles
+                    .iter()
+                    .rev()
+                    .find(|handle| rect_contains(handle.rect, mouse.column, mouse.row))
+                    .copied();
+                if let Some(handle) = hit {
+                    // If we hit a window body that is NOT the owner of this handle,
+                    // then the handle is obscured.
+                    if let Some(hit_id) = topmost_hit
+                        && hit_id != handle.id
+                    {
+                        return false;
+                    }
+
+                    let rect = self.full_region(handle.id);
+                    if self.floating_index(handle.id).is_none() {
+                        return false;
+                    }
+                    self.bring_floating_to_front(handle.id);
+                    self.drag_resize = Some(ResizeDrag {
+                        id: handle.id,
+                        edge: handle.edge,
+                        start_rect: rect,
+                        start_col: mouse.column,
+                        start_row: mouse.row,
+                    });
+                    return true;
+                }
+            }
+            MouseEventKind::Drag(_) => {
+                if let Some(drag) = self.drag_resize.as_ref()
+                    && let Some(index) = self.floating_index(drag.id)
+                {
+                    let resized = apply_resize_drag(
+                        drag.start_rect,
+                        drag.edge,
+                        mouse.column,
+                        mouse.row,
+                        drag.start_col,
+                        drag.start_row,
+                        self.managed_area,
+                    );
+                    self.managed_floating[index].rect = RectSpec::Absolute(resized);
+                    return true;
+                }
+            }
+            MouseEventKind::Up(_) => {
+                if self.drag_resize.take().is_some() {
                     return true;
                 }
             }
@@ -420,18 +563,7 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
         if self.floating_index(id).is_some() {
             return true;
         }
-        if let Some(layout) = self.managed_layout.as_ref() {
-            if matches!(layout.root(), LayoutNode::Leaf(leaf) if *leaf == id) {
-                self.managed_layout = None;
-            } else {
-                let Some(layout) = self.managed_layout.as_mut() else {
-                    return false;
-                };
-                if !layout.root_mut().remove_leaf(id) {
-                    return false;
-                }
-            }
-        } else {
+        if self.managed_layout.is_none() {
             return false;
         }
         let width = rect.width.max(1);
@@ -484,20 +616,50 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                 .iter()
                 .find(|handle| rect_contains(handle.rect, column, row))
         });
-        let hovered_tab = self
-            .hover
-            .and_then(|(column, row)| {
-                self.tab_handles
-                    .iter()
-                    .find(|tab| rect_contains(tab.rect, column, row))
-            })
-            .map(|tab| tab.id);
+        let hovered_resize = self.hover.and_then(|(column, row)| {
+            self.resize_handles
+                .iter()
+                .find(|handle| rect_contains(handle.rect, column, row))
+        });
         render_handles(frame, &self.handles, hovered);
-        render_tab_handles(
+        let focused = self.focus.current();
+
+        for (i, &id) in self.managed_draw_order.iter().enumerate() {
+            let Some(rect) = self.regions.get(id) else {
+                continue;
+            };
+            if rect.width < 3 || rect.height < 3 {
+                continue;
+            }
+
+            // Collect obscuring rects (windows above this one)
+            let obscuring: Vec<Rect> = self.managed_draw_order[i + 1..]
+                .iter()
+                .filter_map(|&above_id| self.regions.get(above_id))
+                .collect();
+
+            let is_obscured =
+                |x: u16, y: u16| -> bool { obscuring.iter().any(|r| rect_contains(*r, x, y)) };
+
+            let title = format!("Window {:?}", id);
+            self.decorator.render_window(
+                frame,
+                rect,
+                self.managed_area,
+                &title,
+                id == focused,
+                &is_obscured,
+            );
+        }
+
+        render_resize_outline(
             frame,
-            &self.tab_handles,
-            self.drag_tab.as_ref(),
-            hovered_tab,
+            hovered_resize.map(|handle| handle.id),
+            self.drag_resize.as_ref().map(|drag| drag.id),
+            &self.regions,
+            self.managed_area,
+            &self.managed_floating,
+            &self.managed_draw_order,
         );
         if self.layout_contract == LayoutContract::WindowManaged && self.wm_overlay_visible {
             let (remaining_ms, bar) = if let Some(remaining) = self.esc_passthrough_remaining() {
@@ -598,116 +760,6 @@ fn esc_passthrough_window_default() -> Duration {
     {
         Duration::from_millis(600)
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct TabHandle<R: Copy + Eq + Ord> {
-    id: R,
-    rect: Rect,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct TabDrag<R: Copy + Eq + Ord> {
-    id: R,
-    offset_x: u16,
-    offset_y: u16,
-}
-
-#[derive(Debug, Clone)]
-pub struct RegionMap<T: Copy + Eq + Ord> {
-    regions: BTreeMap<T, Rect>,
-}
-
-impl<T: Copy + Eq + Ord> Default for RegionMap<T> {
-    fn default() -> Self {
-        Self {
-            regions: BTreeMap::new(),
-        }
-    }
-}
-
-impl<T: Copy + Eq + Ord> RegionMap<T> {
-    pub fn set(&mut self, id: T, rect: Rect) {
-        self.regions.insert(id, rect);
-    }
-
-    pub fn get(&self, id: T) -> Option<Rect> {
-        self.regions.get(&id).copied()
-    }
-
-    pub fn hit_test(&self, column: u16, row: u16, ids: &[T]) -> Option<T> {
-        for id in ids {
-            if let Some(rect) = self.regions.get(id)
-                && rect_contains(*rect, column, row)
-            {
-                return Some(*id);
-            }
-        }
-        None
-    }
-}
-
-fn tab_handle_for_region<R: Copy + Eq + Ord>(id: R, rect: Rect) -> Option<TabHandle<R>> {
-    if rect.width < 6 || rect.height == 0 {
-        return None;
-    }
-    let width = rect.width.min(14);
-    Some(TabHandle {
-        id,
-        rect: Rect {
-            x: rect.x.saturating_add(1),
-            y: rect.y,
-            width,
-            height: 1,
-        },
-    })
-}
-
-fn render_tab_handles<R: Copy + Eq + Ord>(
-    frame: &mut ratatui::Frame,
-    tabs: &[TabHandle<R>],
-    drag: Option<&TabDrag<R>>,
-    hovered: Option<R>,
-) {
-    use ratatui::style::{Color, Style};
-    let buffer = frame.buffer_mut();
-    for tab in tabs {
-        let is_drag = drag.is_some_and(|active| active.id == tab.id);
-        if !is_drag && hovered != Some(tab.id) {
-            continue;
-        }
-        let style = if is_drag {
-            Style::default().fg(Color::Black).bg(Color::LightYellow)
-        } else {
-            Style::default().fg(Color::Black).bg(Color::DarkGray)
-        };
-        for dx in 0..tab.rect.width {
-            if let Some(cell) = buffer.cell_mut((tab.rect.x + dx, tab.rect.y)) {
-                cell.set_symbol(" ").set_style(style);
-            }
-        }
-        if tab.rect.width >= 3 {
-            let label = "tab";
-            for (idx, ch) in label.chars().enumerate() {
-                let x = tab.rect.x.saturating_add(1 + idx as u16);
-                if x >= tab.rect.x.saturating_add(tab.rect.width) {
-                    break;
-                }
-                if let Some(cell) = buffer.cell_mut((x, tab.rect.y)) {
-                    cell.set_symbol(&ch.to_string()).set_style(style);
-                }
-            }
-        }
-    }
-}
-
-pub fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
-    if rect.width == 0 || rect.height == 0 {
-        return false;
-    }
-    let max_x = rect.x.saturating_add(rect.width);
-    let max_y = rect.y.saturating_add(rect.height);
-    column >= rect.x && column < max_x && row >= rect.y && row < max_y
 }
 
 fn clamp_rect(area: Rect, bounds: Rect) -> Rect {

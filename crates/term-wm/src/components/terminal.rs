@@ -10,23 +10,23 @@ use ratatui::{
 use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
 use crate::components::scroll_view::ScrollView;
-use crate::terminal_pane::TerminalPane;
-use crate::window::rect_contains;
+use crate::layout::rect_contains;
+use crate::pty::Pty;
 
 // This controls the scrollback buffer size in the vt100 parser.
 // It determines how many lines you can scroll up to see.
 const DEFAULT_SCROLLBACK_LEN: usize = 2000;
 
 pub struct TerminalComponent {
-    pane: TerminalPane,
+    pane: Pty,
     last_size: (u16, u16),
     scroll_view: ScrollView,
     last_area: Rect,
 }
 
 impl TerminalComponent {
-    pub fn spawn(command: CommandBuilder, size: PtySize) -> crate::terminal_pane::PtyResult<Self> {
-        let pane = TerminalPane::spawn_with_scrollback(command, size, DEFAULT_SCROLLBACK_LEN)?;
+    pub fn spawn(command: CommandBuilder, size: PtySize) -> crate::pty::PtyResult<Self> {
+        let pane = Pty::spawn_with_scrollback(command, size, DEFAULT_SCROLLBACK_LEN)?;
         Ok(Self {
             pane,
             last_size: (size.cols, size.rows),

@@ -9,7 +9,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 
 pub type PtyResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-pub struct TerminalPane {
+pub struct Pty {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     pending: Arc<Mutex<Vec<u8>>>,
@@ -28,7 +28,7 @@ pub struct TerminalPane {
     pending_resize: Option<PtySize>,
 }
 
-impl TerminalPane {
+impl Pty {
     pub fn spawn(command: CommandBuilder, size: PtySize) -> PtyResult<Self> {
         Self::spawn_with_scrollback(command, size, 0)
     }

@@ -6,11 +6,13 @@ use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use ratatui::backend::CrosstermBackend;
 use ratatui::prelude::{Constraint, Direction, Rect};
-use ratatui::widgets::{Block, Borders, Clear};
+use ratatui::widgets::Clear;
 use ratatui::{Frame, Terminal};
 
 use portable_pty::PtySize;
 use term_wm::components::{Component, TerminalComponent, default_shell_command};
+use term_wm::drivers::console::ConsoleDriver;
+use term_wm::drivers::mouse::MouseDriver;
 use term_wm::layout::{LayoutNode, TilingLayout};
 use term_wm::runner::{HasWindowManager, run_app};
 use term_wm::window::WindowManager;
@@ -23,13 +25,16 @@ fn main() -> io::Result<()> {
     let mut app = App::new()?;
     let focus_regions: Vec<PaneId> = (0..MAX_WINDOWS).collect();
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, event::EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     terminal::enable_raw_mode()?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    let mut driver = ConsoleDriver::new();
+    driver.enable()?;
 
     let result = run_app(
         &mut terminal,
+        &mut driver,
         &mut app,
         &focus_regions,
         |id| id,
@@ -206,25 +211,9 @@ fn render_pane(frame: &mut Frame, app: &mut App, id: PaneId, area: Rect) {
         return;
     }
     let focused = app.windows.focus() == id;
-    let number = id + 1;
-    let title = if focused {
-        format!("Window {number} (focus)")
-    } else {
-        format!("Window {number}")
-    };
     frame.render_widget(Clear, area);
-    let block = if focused {
-        Block::default()
-            .borders(Borders::ALL)
-            .title(title.as_str())
-            .border_style(ratatui::style::Style::default().fg(ratatui::style::Color::Green))
-    } else {
-        Block::default().borders(Borders::ALL).title(title.as_str())
-    };
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
     if let Some(pane) = app.terminals.get_mut(id) {
-        pane.resize(inner);
-        pane.render(frame, inner, focused);
+        pane.resize(area);
+        pane.render(frame, area, focused);
     }
 }

@@ -1,11 +1,12 @@
 use std::io;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 
-use crate::user_input::{InputNormalizer, normalize_event};
+use crate::drivers::InputDriver;
+use crate::event_loop::{ControlFlow, EventLoop};
 use crate::window::{LayoutContract, WindowManager};
 
 pub trait HasWindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
@@ -14,8 +15,9 @@ pub trait HasWindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn run_app<B, A, W, R, FDraw, FDispatch, FQuit, FMap, FFocus, E>(
+pub fn run_app<B, D, A, W, R, FDraw, FDispatch, FQuit, FMap, FFocus, E>(
     terminal: &mut Terminal<B>,
+    driver: &mut D,
     app: &mut A,
     focus_regions: &[R],
     map_region: FMap,
@@ -27,9 +29,10 @@ pub fn run_app<B, A, W, R, FDraw, FDispatch, FQuit, FMap, FFocus, E>(
 ) -> Result<(), E>
 where
     B: Backend,
+    D: InputDriver,
     A: HasWindowManager<W, R>,
     W: Copy + Eq + Ord,
-    R: Copy + Eq + Ord,
+    R: Copy + Eq + Ord + PartialEq<W> + std::fmt::Debug,
     FDraw: FnMut(&mut ratatui::Frame, &mut A),
     FDispatch: FnMut(&Event, &mut A) -> bool,
     FQuit: FnMut(Option<&Event>, &mut A) -> bool,
@@ -38,21 +41,11 @@ where
     E: From<io::Error> + From<<B as Backend>::Error>,
 {
     let capture_timeout = Duration::from_millis(500);
-    let mut normalizer = InputNormalizer::default();
-    loop {
-        if should_quit(None, app) {
-            return Ok(());
-        }
-        let wm_mode = app.windows().layout_contract() == LayoutContract::WindowManaged;
-        app.windows().begin_frame();
-        terminal.draw(|frame| {
-            draw(frame, app);
-            app.windows().render_overlays(frame);
-        })?;
-        if event::poll(poll_interval)? {
-            let Some(evt) = normalize_event(event::read()?, &mut normalizer) else {
-                continue;
-            };
+    let mut event_loop = EventLoop::new(driver, poll_interval);
+
+    event_loop.run(|_driver, event| {
+        if let Some(evt) = event {
+            let wm_mode = app.windows().layout_contract() == LayoutContract::WindowManaged;
             if wm_mode && let Event::Key(key) = evt {
                 if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
                     if app.windows().wm_overlay_visible() {
@@ -64,7 +57,7 @@ where
                     } else {
                         app.windows().open_wm_overlay();
                     }
-                    continue;
+                    return Ok(ControlFlow::Continue);
                 }
                 if app.windows().wm_overlay_visible()
                     && key.code == KeyCode::Char('n')
@@ -72,11 +65,11 @@ where
                 {
                     app.wm_new_window();
                     app.windows().close_wm_overlay();
-                    continue;
+                    return Ok(ControlFlow::Continue);
                 }
             }
             if should_quit(Some(&evt), app) {
-                return Ok(());
+                return Ok(ControlFlow::Quit);
             }
             match &evt {
                 Event::Key(key) if key.code == KeyCode::BackTab => {
@@ -88,16 +81,16 @@ where
                             .windows()
                             .handle_focus_event(&evt, focus_regions, &map_region);
                         app.windows().bring_focus_to_front(&map_focus);
-                        continue;
+                        return Ok(ControlFlow::Continue);
                     }
                     if dispatch(&evt, app) {
-                        continue;
+                        return Ok(ControlFlow::Continue);
                     }
                     let _ = app
                         .windows()
                         .handle_focus_event(&evt, focus_regions, &map_region);
                     app.windows().bring_focus_to_front(&map_focus);
-                    continue;
+                    return Ok(ControlFlow::Continue);
                 }
                 Event::Key(key) if key.code == KeyCode::Tab => {
                     if app.windows().capture_active() {
@@ -108,10 +101,10 @@ where
                             .windows()
                             .handle_focus_event(&evt, focus_regions, &map_region);
                         app.windows().bring_focus_to_front(&map_focus);
-                        continue;
+                        return Ok(ControlFlow::Continue);
                     }
                     if dispatch(&evt, app) {
-                        continue;
+                        return Ok(ControlFlow::Continue);
                     }
                     let _ = app
                         .windows()
@@ -129,6 +122,20 @@ where
                     let _ = dispatch(&evt, app);
                 }
             }
+        } else {
+            if should_quit(None, app) {
+                return Ok(ControlFlow::Quit);
+            }
+            app.windows().begin_frame();
+                terminal
+                .draw(|frame| {
+                    draw(frame, app);
+                    app.windows().render_overlays(frame);
+                })
+                .map_err(|e| io::Error::other(e.to_string()))?;
         }
-    }
+        Ok(ControlFlow::Continue)
+    })?;
+
+    Ok(())
 }

@@ -2,41 +2,7 @@ use ratatui::Frame;
 use ratatui::prelude::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 
-use crate::window::{RegionMap, rect_contains};
-
-const HANDLE_THICKNESS: u16 = 3;
-
-fn handle_thickness(direction: Direction, area: Rect) -> u16 {
-    let base = match direction {
-        Direction::Horizontal => 1,
-        Direction::Vertical => (HANDLE_THICKNESS.saturating_add(3)) / 8,
-    };
-    let max = match direction {
-        Direction::Horizontal => area.width,
-        Direction::Vertical => area.height,
-    };
-    base.clamp(1, max.max(1))
-}
-
-fn gap_size(direction: Direction, area: Rect, child_count: usize, resizable: bool) -> u16 {
-    if !resizable || child_count < 2 {
-        return 0;
-    }
-    let total = match direction {
-        Direction::Horizontal => area.width,
-        Direction::Vertical => area.height,
-    };
-    if total == 0 {
-        return 0;
-    }
-    let min_content = child_count as u16;
-    if total <= min_content {
-        return 0;
-    }
-    let max_gap = total.saturating_sub(min_content);
-    let per_gap = max_gap / (child_count as u16 - 1);
-    handle_thickness(direction, area).min(per_gap)
-}
+use super::{FloatingPane, RegionMap, gap_size, rect_contains};
 
 #[derive(Debug, Clone)]
 pub enum LayoutNode<Id: Copy + Eq + Ord> {
@@ -94,6 +60,36 @@ impl<Id: Copy + Eq + Ord> LayoutNode<Id> {
         let mut handles = Vec::new();
         self.layout_recursive(area, &mut regions, &mut handles, &mut Vec::new());
         (regions, handles)
+    }
+
+    pub fn node_at_path(&self, path: &[usize]) -> Option<&LayoutNode<Id>> {
+        let mut current = self;
+        for &idx in path {
+            let LayoutNode::Split { children, .. } = current else {
+                return None;
+            };
+            current = children.get(idx)?;
+        }
+        Some(current)
+    }
+
+    pub fn subtree_any<F>(&self, mut predicate: F) -> bool
+    where
+        F: FnMut(Id) -> bool,
+    {
+        fn walk<Id: Copy + Eq + Ord, F: FnMut(Id) -> bool>(
+            node: &LayoutNode<Id>,
+            predicate: &mut F,
+        ) -> bool {
+            match node {
+                LayoutNode::Leaf(id) => predicate(*id),
+                LayoutNode::Split { children, .. } => {
+                    children.iter().any(|child| walk(child, predicate))
+                }
+            }
+        }
+
+        walk(self, &mut predicate)
     }
 
     pub fn hit_test_handle(&self, area: Rect, column: u16, row: u16) -> Option<SplitHandle> {
@@ -392,45 +388,6 @@ impl<Id: Copy + Eq + Ord> TilingLayout<Id> {
         }
         false
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum RectSpec {
-    Absolute(Rect),
-    Percent {
-        x: u16,
-        y: u16,
-        width: u16,
-        height: u16,
-    },
-}
-
-impl RectSpec {
-    pub fn resolve(self, area: Rect) -> Rect {
-        match self {
-            RectSpec::Absolute(rect) => rect,
-            RectSpec::Percent {
-                x,
-                y,
-                width,
-                height,
-            } => {
-                let to_abs = |base: u16, pct: u16| (base as u32 * pct as u32 / 100) as u16;
-                Rect {
-                    x: area.x.saturating_add(to_abs(area.width, x)),
-                    y: area.y.saturating_add(to_abs(area.height, y)),
-                    width: to_abs(area.width, width),
-                    height: to_abs(area.height, height),
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FloatingPane<Id: Copy + Eq + Ord> {
-    pub id: Id,
-    pub rect: RectSpec,
 }
 
 #[derive(Debug, Clone)]
