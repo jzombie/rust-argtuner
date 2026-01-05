@@ -92,10 +92,11 @@ impl TerminalComponent {
 
         if focused && !screen.hide_cursor() && show_cursor {
             let (row, col) = screen.cursor_position();
-            if row < area.height && col < area.width {
-                if let Some(cell) = buffer.cell_mut((area.x + col, area.y + row)) {
-                    cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
-                }
+            if row < area.height
+                && col < area.width
+                && let Some(cell) = buffer.cell_mut((area.x + col, area.y + row))
+            {
+                cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
             }
         }
 
@@ -255,10 +256,10 @@ impl TerminalComponent {
 fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
     match key.code {
         KeyCode::Char(c) => {
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
-                if let Some(byte) = ctrl_char(c) {
-                    return vec![byte];
-                }
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && let Some(byte) = ctrl_char(c)
+            {
+                return vec![byte];
             }
             c.to_string().into_bytes()
         }
@@ -281,7 +282,7 @@ fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
 
 fn ctrl_char(c: char) -> Option<u8> {
     let c = c.to_ascii_lowercase();
-    if ('a'..='z').contains(&c) {
+    if c.is_ascii_lowercase() {
         Some((c as u8) - b'a' + 1)
     } else {
         None

@@ -19,19 +19,10 @@ pub enum LayoutContract {
     WindowManaged,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ScrollState {
     pub offset: usize,
     pending: isize,
-}
-
-impl Default for ScrollState {
-    fn default() -> Self {
-        Self {
-            offset: 0,
-            pending: 0,
-        }
-    }
 }
 
 impl ScrollState {
@@ -202,15 +193,15 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
     }
 
     fn refresh_capture(&mut self) {
-        if let Some(deadline) = self.capture_deadline {
-            if Instant::now() > deadline {
-                self.capture_deadline = None;
-            }
+        if let Some(deadline) = self.capture_deadline
+            && Instant::now() > deadline
+        {
+            self.capture_deadline = None;
         }
-        if let Some(deadline) = self.pending_deadline {
-            if Instant::now() > deadline {
-                self.pending_deadline = None;
-            }
+        if let Some(deadline) = self.pending_deadline
+            && Instant::now() > deadline
+        {
+            self.pending_deadline = None;
         }
     }
 
@@ -256,13 +247,7 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
 
     pub fn set_focus_order(&mut self, order: Vec<W>) {
         self.focus.set_order(order);
-        if !self.focus.order.is_empty()
-            && !self
-                .focus
-                .order
-                .iter()
-                .any(|item| *item == self.focus.current)
-        {
+        if !self.focus.order.is_empty() && !self.focus.order.contains(&self.focus.current) {
             self.focus.current = self.focus.order[0];
         }
     }
@@ -546,10 +531,10 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
     /// This avoids clicks "falling through" floating panes to windows behind them.
     fn hit_test_region_topmost(&self, column: u16, row: u16, ids: &[R]) -> Option<R> {
         for id in ids.iter().rev() {
-            if let Some(rect) = self.regions.get(*id) {
-                if rect_contains(rect, column, row) {
-                    return Some(*id);
-                }
+            if let Some(rect) = self.regions.get(*id)
+                && rect_contains(rect, column, row)
+            {
+                return Some(*id);
             }
         }
         None
@@ -641,10 +626,10 @@ impl<T: Copy + Eq + Ord> RegionMap<T> {
 
     pub fn hit_test(&self, column: u16, row: u16, ids: &[T]) -> Option<T> {
         for id in ids {
-            if let Some(rect) = self.regions.get(id) {
-                if rect_contains(*rect, column, row) {
-                    return Some(*id);
-                }
+            if let Some(rect) = self.regions.get(id)
+                && rect_contains(*rect, column, row)
+            {
+                return Some(*id);
             }
         }
         None

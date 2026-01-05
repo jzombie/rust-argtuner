@@ -30,6 +30,12 @@ impl StatusBar {
     }
 }
 
+impl Default for StatusBar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl super::Component for StatusBar {
     fn render(&mut self, frame: &mut Frame, area: Rect, _focused: bool) {
         if area.height == 0 || area.width == 0 {

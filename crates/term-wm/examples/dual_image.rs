@@ -34,9 +34,9 @@ fn main() -> io::Result<()> {
         &mut app,
         &[PaneId::Left, PaneId::Right],
         |id| id,
-        |id| Some(id),
+        Some,
         Duration::from_millis(16),
-        |frame, app| draw_ui(frame, app),
+        draw_ui,
         |event, app| {
             if matches!(event, Event::Mouse(_)) && app.windows.handle_managed_event(event) {
                 return true;

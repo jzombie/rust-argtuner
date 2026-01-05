@@ -356,10 +356,10 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
             if app.trials_list.handle_event(event) {
                 return true;
             }
-            if app.chart_mode == ChartMode::HyperParams {
-                if app.params_list.handle_event(event) || app.metrics_list.handle_event(event) {
-                    return true;
-                }
+            if app.chart_mode == ChartMode::HyperParams
+                && (app.params_list.handle_event(event) || app.metrics_list.handle_event(event))
+            {
+                return true;
             }
             if app.details_scroll.handle_event(event).handled
                 || app.charts_scroll.handle_event(event).handled

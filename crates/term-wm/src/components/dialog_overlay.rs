@@ -47,6 +47,12 @@ impl DialogOverlay {
     }
 }
 
+impl Default for DialogOverlay {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl super::Component for DialogOverlay {
     fn render(&mut self, frame: &mut Frame, area: Rect, _focused: bool) {
         if !self.visible || area.width == 0 || area.height == 0 {

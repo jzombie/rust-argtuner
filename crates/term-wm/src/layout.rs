@@ -529,17 +529,17 @@ fn split_rects_with_gaps(
         rects.push(shifted);
     }
     let mut gaps = Vec::with_capacity(child_count.saturating_sub(1));
-    for idx in 0..child_count.saturating_sub(1) {
+    for rect in rects.iter().take(child_count.saturating_sub(1)) {
         let rect = match direction {
             Direction::Horizontal => Rect {
-                x: rects[idx].x.saturating_add(rects[idx].width),
+                x: rect.x.saturating_add(rect.width),
                 y: area.y,
                 width: gap,
                 height: area.height,
             },
             Direction::Vertical => Rect {
                 x: area.x,
-                y: rects[idx].y.saturating_add(rects[idx].height),
+                y: rect.y.saturating_add(rect.height),
                 width: area.width,
                 height: gap,
             },

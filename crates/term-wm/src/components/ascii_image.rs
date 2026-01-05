@@ -407,6 +407,12 @@ impl AsciiImage {
     }
 }
 
+impl Default for AsciiImage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn average_luma(luma: &[u8]) -> u8 {
     if luma.is_empty() {
         return 0;

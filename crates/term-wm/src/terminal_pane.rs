@@ -215,10 +215,12 @@ impl TerminalPane {
         self.pending_resize = None;
     }
 
+    #[allow(dead_code)]
     fn alternate_screen_cached(&self) -> bool {
         self.parser.screen().alternate_screen()
     }
 
+    #[allow(dead_code)]
     fn has_pending_output(&self) -> bool {
         self.pending
             .lock()
@@ -246,8 +248,5 @@ fn wrap_err<E: std::fmt::Display>(
     stage: &'static str,
     err: E,
 ) -> Box<dyn std::error::Error + Send + Sync> {
-    Box::new(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        format!("pty {stage} failed: {err}"),
-    ))
+    Box::new(std::io::Error::other(format!("pty {stage} failed: {err}")))
 }

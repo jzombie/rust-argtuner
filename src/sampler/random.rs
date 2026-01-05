@@ -45,7 +45,7 @@ impl DiscreteConfigPool {
             let Some(count) = spec.discrete_value_count() else {
                 return Ok(None);
             };
-            total = total.checked_mul(count).unwrap_or(usize::MAX);
+            total = total.saturating_mul(count);
             if total > MAX_RANDOM_EXHAUSTIVE_CONFIGS {
                 return Ok(None);
             }
@@ -147,32 +147,32 @@ fn run_scheduled(
                         discrete_pool =
                             DiscreteConfigPool::new(objective.space(), objective.store())?;
                     }
-                    if let Some(pool) = discrete_pool.as_mut() {
-                        if let Some(values) = pool.assign_values(trial.token.config_id) {
-                            let mut overrides = trial.overrides.clone();
-                            pool.apply_to_overrides(&values, &mut overrides);
-                            outcome = objective.eval_with_overrides_retryable(
-                                &trial.coords,
-                                &overrides,
-                                Some(_id),
+                    if let Some(pool) = discrete_pool.as_mut()
+                        && let Some(values) = pool.assign_values(trial.token.config_id)
+                    {
+                        let mut overrides = trial.overrides.clone();
+                        pool.apply_to_overrides(&values, &mut overrides);
+                        outcome = objective.eval_with_overrides_retryable(
+                            &trial.coords,
+                            &overrides,
+                            Some(_id),
+                        );
+                        if let Ok((score, finished_trial_id)) = outcome {
+                            scheduler.record_result(trial.token, Some(score));
+                            retry_trial_ids.remove(&token_key);
+                            duplicate_retries = 0;
+                            completed.insert(
+                                token_key,
+                                CompletedTrial {
+                                    status: TrialStatus::Ok,
+                                    score: Some(score),
+                                    trial_id: finished_trial_id,
+                                },
                             );
-                            if let Ok((score, finished_trial_id)) = outcome {
-                                scheduler.record_result(trial.token, Some(score));
-                                retry_trial_ids.remove(&token_key);
-                                duplicate_retries = 0;
-                                completed.insert(
-                                    token_key,
-                                    CompletedTrial {
-                                        status: TrialStatus::Ok,
-                                        score: Some(score),
-                                        trial_id: finished_trial_id,
-                                    },
-                                );
-                                continue;
-                            }
-                            if let Err((next_err, _)) = outcome {
-                                err = next_err;
-                            }
+                            continue;
+                        }
+                        if let Err((next_err, _)) = outcome {
+                            err = next_err;
                         }
                     }
                     duplicate_retries += 1;

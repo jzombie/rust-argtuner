@@ -12,6 +12,7 @@ pub trait HasWindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     fn wm_new_window(&mut self) {}
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_app<B, A, W, R, FDraw, FDispatch, FQuit, FMap, FFocus, E>(
     terminal: &mut Terminal<B>,
     app: &mut A,
@@ -48,28 +49,26 @@ where
         })?;
         if event::poll(poll_interval)? {
             let evt = normalize_event(event::read()?);
-            if wm_mode {
-                if let Event::Key(key) = evt {
-                    if key.code == KeyCode::Esc {
-                        if app.windows().wm_overlay_visible() {
-                            let passthrough = app.windows().esc_passthrough_active();
-                            app.windows().close_wm_overlay();
-                            if passthrough {
-                                let _ = dispatch(&Event::Key(key), app);
-                            }
-                        } else {
-                            app.windows().open_wm_overlay();
-                        }
-                        continue;
-                    }
-                    if app.windows().wm_overlay_visible()
-                        && key.code == KeyCode::Char('n')
-                        && key.modifiers.is_empty()
-                    {
-                        app.wm_new_window();
+            if wm_mode && let Event::Key(key) = evt {
+                if key.code == KeyCode::Esc {
+                    if app.windows().wm_overlay_visible() {
+                        let passthrough = app.windows().esc_passthrough_active();
                         app.windows().close_wm_overlay();
-                        continue;
+                        if passthrough {
+                            let _ = dispatch(&Event::Key(key), app);
+                        }
+                    } else {
+                        app.windows().open_wm_overlay();
                     }
+                    continue;
+                }
+                if app.windows().wm_overlay_visible()
+                    && key.code == KeyCode::Char('n')
+                    && key.modifiers.is_empty()
+                {
+                    app.wm_new_window();
+                    app.windows().close_wm_overlay();
+                    continue;
                 }
             }
             if should_quit(Some(&evt), app) {

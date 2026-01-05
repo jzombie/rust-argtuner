@@ -167,6 +167,12 @@ impl ScrollView {
     }
 }
 
+impl Default for ScrollView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn render_scrollbar(frame: &mut Frame, area: Rect, total: usize, view: usize, offset: usize) {
     if total <= view || view == 0 || area.height == 0 {
         return;
