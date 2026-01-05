@@ -101,11 +101,6 @@ impl App {
             TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other)?;
         let right =
             TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other)?;
-        #[cfg(windows)]
-        {
-            let _ = left.write_bytes(b"\r");
-            let _ = right.write_bytes(b"\r");
-        }
         let mut windows = WindowManager::new_managed(0);
         windows.set_focus_order(vec![0, 1]);
         let panes = vec![0, 1];
