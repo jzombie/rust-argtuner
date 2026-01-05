@@ -17,6 +17,7 @@ pub struct Panel<R: Copy + Eq + Ord> {
     window_hits: Vec<PanelWindowHit<R>>,
     menu_rect: Option<Rect>,
     menu_item_hits: Vec<PanelMenuHit>,
+    menu_bounds: Option<Rect>,
 }
 
 impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
@@ -28,6 +29,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             window_hits: Vec::new(),
             menu_rect: None,
             menu_item_hits: Vec::new(),
+            menu_bounds: None,
         }
     }
 
@@ -35,6 +37,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
         self.window_hits.clear();
         self.menu_rect = None;
         self.menu_item_hits.clear();
+        self.menu_bounds = None;
     }
 
     pub fn visible(&self) -> bool {
@@ -160,6 +163,20 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
         false
     }
 
+    pub fn menu_contains_point(&self, column: u16, row: u16) -> bool {
+        if let Some(rect) = self.menu_bounds {
+            return rect_contains(rect, column, row);
+        }
+        false
+    }
+
+    pub fn menu_icon_contains_point(&self, column: u16, row: u16) -> bool {
+        if let Some(rect) = self.menu_rect {
+            return rect_contains(rect, column, row);
+        }
+        false
+    }
+
     pub fn hit_test_window(&self, event: &Event) -> Option<R> {
         let Event::Mouse(mouse) = event else {
             return None;
@@ -205,13 +222,23 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             .max()
             .unwrap_or(1);
         let width = (label_width + 4).min(max_width);
-        let height = (items.len() as u16).saturating_add(2);
+        let max_height = bounds
+            .height
+            .saturating_sub(start_y.saturating_sub(bounds.y))
+            .max(1);
+        let height = (items.len() as u16).saturating_add(2).min(max_height);
         let buffer = frame.buffer_mut();
         let menu_style = Style::default().bg(Color::DarkGray).fg(Color::White);
         let selected_style = Style::default()
             .bg(Color::Gray)
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD);
+        self.menu_bounds = Some(Rect {
+            x: start_x,
+            y: start_y,
+            width,
+            height,
+        });
         for row in 0..height {
             let y = start_y.saturating_add(row);
             if y < bounds.y || y >= bounds.y.saturating_add(bounds.height) {
@@ -265,6 +292,33 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             .iter()
             .find(|hit| rect_contains(hit.rect, mouse.column, mouse.row))
             .map(|hit| hit.index)
+    }
+
+    pub fn render_menu_backdrop(
+        &self,
+        frame: &mut Frame,
+        open: bool,
+        bounds: Rect,
+        exclude: Rect,
+    ) {
+        if !open {
+            return;
+        }
+        let Some(menu_bounds) = self.menu_bounds else {
+            return;
+        };
+        let buffer = frame.buffer_mut();
+        let style = Style::default().add_modifier(Modifier::DIM);
+        for y in bounds.y..bounds.y.saturating_add(bounds.height) {
+            for x in bounds.x..bounds.x.saturating_add(bounds.width) {
+                if rect_contains(menu_bounds, x, y) || rect_contains(exclude, x, y) {
+                    continue;
+                }
+                if let Some(cell) = buffer.cell_mut((x, y)) {
+                    cell.set_style(style);
+                }
+            }
+        }
     }
 }
 

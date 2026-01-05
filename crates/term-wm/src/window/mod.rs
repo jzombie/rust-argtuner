@@ -728,12 +728,19 @@ where
             .iter()
             .map(|item| item.label)
             .collect::<Vec<_>>();
+        let bounds = frame.area();
         self.panel.render_menu(
             frame,
             self.wm_overlay_visible,
-            frame.area(),
+            bounds,
             &menu_labels,
             self.wm_menu_selected,
+        );
+        self.panel.render_menu_backdrop(
+            frame,
+            self.wm_overlay_visible,
+            self.managed_area,
+            self.panel.area(),
         );
     }
 
@@ -828,11 +835,21 @@ where
         if !self.wm_overlay_visible {
             return None;
         }
-        if let Some(index) = self.panel.hit_test_menu_item(event) {
-            self.wm_menu_selected = index.min(wm_menu_items().len().saturating_sub(1));
-            return wm_menu_items()
-                .get(self.wm_menu_selected)
-                .map(|item| item.action);
+        if let Event::Mouse(mouse) = event
+            && matches!(mouse.kind, MouseEventKind::Down(_))
+        {
+            if let Some(index) = self.panel.hit_test_menu_item(event) {
+                self.wm_menu_selected = index.min(wm_menu_items().len().saturating_sub(1));
+                return wm_menu_items()
+                    .get(self.wm_menu_selected)
+                    .map(|item| item.action);
+            }
+            if self.panel.menu_icon_contains_point(mouse.column, mouse.row) {
+                return Some(WmMenuAction::CloseMenu);
+            }
+            if !self.panel.menu_contains_point(mouse.column, mouse.row) {
+                return Some(WmMenuAction::CloseMenu);
+            }
         }
         let Event::Key(key) = event else {
             return None;
