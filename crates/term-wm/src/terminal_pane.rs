@@ -10,6 +10,7 @@ pub struct TerminalPane {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     pending: Arc<Mutex<Vec<u8>>>,
+    history: Vec<u8>,
     parser: vt100::Parser,
     size: PtySize,
     pty_size: PtySize,
@@ -55,6 +56,7 @@ impl TerminalPane {
             master: pair.master,
             writer,
             pending,
+            history: Vec::new(),
             parser,
             size,
             pty_size: size,
@@ -101,6 +103,27 @@ impl TerminalPane {
         if let Some(size) = self.pending_resize.take() {
             self.apply_resize(size);
         }
+        self.history.extend_from_slice(&bytes);
+
+        // Cap history to avoid unbounded memory usage.
+        // We keep enough to likely cover the scrollback + active screen.
+        // 1MB is roughly 5000-10000 lines of typical terminal output.
+        const MAX_HISTORY_CAP: usize = 2 * 1024 * 1024; // 2MB
+        const PRUNE_TARGET: usize = 1024 * 1024; // 1MB
+
+        if self.history.len() > MAX_HISTORY_CAP {
+            let prune_amount = self.history.len() - PRUNE_TARGET;
+            // Try to cut at a newline to preserve line structure
+            let search_end = (prune_amount + 1024).min(self.history.len());
+            let cut_index = self.history[prune_amount..search_end]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map(|i| prune_amount + i + 1)
+                .unwrap_or(prune_amount);
+
+            self.history.drain(0..cut_index);
+        }
+
         self.parser.process(&bytes);
         let added = bytes.iter().filter(|b| **b == b'\n').count();
         if added > 0 && self.scrollback_len > 0 {
@@ -186,7 +209,9 @@ impl TerminalPane {
 
     fn apply_resize(&mut self, size: PtySize) {
         self.size = size;
-        self.parser.screen_mut().set_size(size.rows, size.cols);
+        let mut new_parser = vt100::Parser::new(size.rows, size.cols, self.scrollback_len);
+        new_parser.process(&self.history);
+        self.parser = new_parser;
         self.pending_resize = None;
     }
 

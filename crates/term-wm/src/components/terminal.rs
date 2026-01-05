@@ -13,6 +13,8 @@ use crate::components::scroll_view::ScrollView;
 use crate::terminal_pane::TerminalPane;
 use crate::window::rect_contains;
 
+// This controls the scrollback buffer size in the vt100 parser.
+// It determines how many lines you can scroll up to see.
 const DEFAULT_SCROLLBACK_LEN: usize = 2000;
 
 pub struct TerminalComponent {
