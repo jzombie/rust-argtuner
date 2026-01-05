@@ -9,6 +9,7 @@ use crate::window::{LayoutContract, WindowManager};
 
 pub trait HasWindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     fn windows(&mut self) -> &mut WindowManager<W, R>;
+    fn wm_new_window(&mut self) {}
 }
 
 pub fn run_app<B, A, W, R, FDraw, FDispatch, FQuit, FMap, FFocus, E>(
@@ -59,6 +60,14 @@ where
                         } else {
                             app.windows().open_wm_overlay();
                         }
+                        continue;
+                    }
+                    if app.windows().wm_overlay_visible()
+                        && key.code == KeyCode::Char('n')
+                        && key.modifiers.is_empty()
+                    {
+                        app.wm_new_window();
+                        app.windows().close_wm_overlay();
                         continue;
                     }
                 }

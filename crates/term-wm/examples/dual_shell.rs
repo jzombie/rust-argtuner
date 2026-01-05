@@ -15,14 +15,13 @@ use term_wm::layout::{LayoutNode, TilingLayout};
 use term_wm::runner::{HasWindowManager, run_app};
 use term_wm::window::WindowManager;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum PaneId {
-    Left,
-    Right,
-}
+type PaneId = usize;
+
+const MAX_WINDOWS: usize = 8;
 
 fn main() -> io::Result<()> {
     let mut app = App::new()?;
+    let focus_regions: Vec<PaneId> = (0..MAX_WINDOWS).collect();
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, event::EnableMouseCapture)?;
@@ -32,7 +31,7 @@ fn main() -> io::Result<()> {
     let result = run_app(
         &mut terminal,
         &mut app,
-        &[PaneId::Left, PaneId::Right],
+        &focus_regions,
         |id| id,
         |id| Some(id),
         Duration::from_millis(16),
@@ -41,13 +40,13 @@ fn main() -> io::Result<()> {
             if matches!(event, Event::Mouse(_)) && app.windows.handle_managed_event(event) {
                 return true;
             }
-            match app.windows.focus() {
-                PaneId::Left => app.left.handle_event(event),
-                PaneId::Right => app.right.handle_event(event),
+            if let Some(pane) = app.terminals.get_mut(app.windows.focus()) {
+                return pane.handle_event(event);
             }
+            false
         },
         |event, app| {
-            if app.left.has_exited() && app.right.has_exited() {
+            if app.terminals.iter_mut().all(|pane| pane.has_exited()) {
                 return true;
             }
             matches!(
@@ -72,8 +71,7 @@ fn main() -> io::Result<()> {
 
 struct App {
     windows: WindowManager<PaneId, PaneId>,
-    left: TerminalComponent,
-    right: TerminalComponent,
+    terminals: Vec<TerminalComponent>,
     panes: Vec<PaneId>,
 }
 
@@ -89,14 +87,13 @@ impl App {
             TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other)?;
         let right =
             TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other)?;
-        let mut windows = WindowManager::new_managed(PaneId::Left);
-        windows.set_focus_order(vec![PaneId::Left, PaneId::Right]);
-        let panes = vec![PaneId::Left, PaneId::Right];
+        let mut windows = WindowManager::new_managed(0);
+        windows.set_focus_order(vec![0, 1]);
+        let panes = vec![0, 1];
         windows.set_managed_layout(TilingLayout::new(build_layout(&panes)));
         Ok(Self {
             windows,
-            left,
-            right,
+            terminals: vec![left, right],
             panes,
         })
     }
@@ -106,18 +103,39 @@ impl HasWindowManager<PaneId, PaneId> for App {
     fn windows(&mut self) -> &mut WindowManager<PaneId, PaneId> {
         &mut self.windows
     }
+
+    fn wm_new_window(&mut self) {
+        if self.terminals.len() >= MAX_WINDOWS {
+            return;
+        }
+        let size = PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let pane =
+            TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other);
+        if let Ok(pane) = pane {
+            let id = self.terminals.len();
+            self.terminals.push(pane);
+            self.panes.push(id);
+            self.windows.set_focus(id);
+            self.windows.set_focus_order(self.panes.clone());
+            self.windows
+                .set_managed_layout(TilingLayout::new(build_layout(&self.panes)));
+        }
+    }
 }
 
 fn draw_ui(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
-    let left_exited = app.left.has_exited();
-    let right_exited = app.right.has_exited();
-    let panes = match (left_exited, right_exited) {
-        (false, false) => vec![PaneId::Left, PaneId::Right],
-        (false, true) => vec![PaneId::Left],
-        (true, false) => vec![PaneId::Right],
-        (true, true) => Vec::new(),
-    };
+    let mut panes = Vec::new();
+    for (id, pane) in app.terminals.iter_mut().enumerate() {
+        if !pane.has_exited() {
+            panes.push(id);
+        }
+    }
     app.windows.set_focus_order(panes.clone());
     if panes != app.panes {
         app.windows
@@ -144,19 +162,28 @@ fn draw_ui(frame: &mut Frame, app: &mut App) {
 }
 
 fn build_layout(panes: &[PaneId]) -> LayoutNode<PaneId> {
-    match panes {
-        [PaneId::Left, PaneId::Right] => LayoutNode::split(
+    if panes.len() == 1 {
+        return LayoutNode::leaf(panes[0]);
+    }
+    if panes.len() == 2 {
+        return LayoutNode::split(
             Direction::Horizontal,
             vec![Constraint::Percentage(50), Constraint::Percentage(50)],
-            vec![
-                LayoutNode::leaf(PaneId::Left),
-                LayoutNode::leaf(PaneId::Right),
-            ],
-        ),
-        [PaneId::Left] => LayoutNode::leaf(PaneId::Left),
-        [PaneId::Right] => LayoutNode::leaf(PaneId::Right),
-        _ => LayoutNode::leaf(PaneId::Left),
+            vec![LayoutNode::leaf(panes[0]), LayoutNode::leaf(panes[1])],
+        );
     }
+    let mut constraints = Vec::with_capacity(panes.len());
+    let base = 100 / panes.len() as u16;
+    for i in 0..panes.len() {
+        if i == panes.len() - 1 {
+            let used = base.saturating_mul((panes.len() - 1) as u16);
+            constraints.push(Constraint::Percentage(100u16.saturating_sub(used)));
+        } else {
+            constraints.push(Constraint::Percentage(base));
+        }
+    }
+    let children = panes.iter().map(|id| LayoutNode::leaf(*id)).collect();
+    LayoutNode::split(Direction::Vertical, constraints, children)
 }
 
 fn render_pane(frame: &mut Frame, app: &mut App, id: PaneId, area: Rect) {
@@ -164,10 +191,7 @@ fn render_pane(frame: &mut Frame, app: &mut App, id: PaneId, area: Rect) {
         return;
     }
     let focused = app.windows.focus() == id;
-    let number = match id {
-        PaneId::Left => 1,
-        PaneId::Right => 2,
-    };
+    let number = id + 1;
     let title = if focused {
         format!("Window {number} (focus)")
     } else {
@@ -184,14 +208,8 @@ fn render_pane(frame: &mut Frame, app: &mut App, id: PaneId, area: Rect) {
     };
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    match id {
-        PaneId::Left => {
-            app.left.resize(inner);
-            app.left.render(frame, inner, focused);
-        }
-        PaneId::Right => {
-            app.right.resize(inner);
-            app.right.render(frame, inner, focused);
-        }
+    if let Some(pane) = app.terminals.get_mut(id) {
+        pane.resize(inner);
+        pane.render(frame, inner, focused);
     }
 }

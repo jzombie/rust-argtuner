@@ -526,7 +526,7 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
                 ("inactive".to_string(), "[----------]".to_string())
             };
             let text = format!(
-                "Window manager mode (placeholder)\n\n- Esc: dismiss overlay\n- Esc (quick double): send to app\n- Esc passthrough: {remaining_ms} {bar}\n- Tab/Shift-Tab: cycle focus\n- More commands coming soon"
+                "Window manager mode (placeholder)\n\n- Esc: dismiss overlay\n- n: new window\n- Esc (quick double): send to app\n- Esc passthrough: {remaining_ms} {bar}\n- Tab/Shift-Tab: cycle focus\n- More commands coming soon"
             );
             self.wm_overlay.set_title("Window Manager");
             self.wm_overlay.set_body(text);
