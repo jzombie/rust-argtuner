@@ -5,6 +5,7 @@ pub mod db;
 pub mod lock;
 pub mod project;
 pub mod scheduler;
+pub mod sampler;
 pub mod space;
 pub mod store;
 pub mod trial;

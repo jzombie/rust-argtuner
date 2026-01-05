@@ -332,6 +332,7 @@ Notes:
 - `n_trials` now belongs to the scheduler because the `fixed` and `successive_halving` schedulers manage the evaluation budget.
 - Scheduler type names always match their child tables: `type = "successive_halving"` pairs with `[scheduler.successive_halving]`, so you never need to memorize separate spellings.
 - `[space]` is still a top-level table describing the search space; it intentionally sits alongside the other sections for clarity.
+- When the `random` sampler hits a duplicate in a fully discrete space (choices/ints/stepped floats), it will try unused configs up to the exhaustive cap before continuing with random sampling.
 
 ## CSV behavior
 

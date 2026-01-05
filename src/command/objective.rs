@@ -424,6 +424,10 @@ impl CommandObjective {
         self.space.dims()
     }
 
+    pub fn space(&self) -> &SearchSpace {
+        &self.space
+    }
+
     fn next_trial_id(&self) -> usize {
         let mut guard = self.next_id.lock().expect("trial id lock");
         let id = *guard;

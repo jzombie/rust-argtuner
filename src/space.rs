@@ -1,6 +1,6 @@
 use crate::constants::HP_PREFIX;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SearchSpace {
@@ -352,6 +352,102 @@ impl ParamSpec {
             }
         }
     }
+
+    pub fn discrete_value_count(&self) -> Option<usize> {
+        match self {
+            ParamSpec::Float {
+                min,
+                max,
+                step,
+                ..
+            } => {
+                if let Some(step) = step.filter(|s| *s > 0.0) {
+                    if max < min {
+                        return Some(0);
+                    }
+                    let range = max - min;
+                    let steps = (range / step).ceil() as usize;
+                    steps.checked_add(1)
+                } else if (*max - *min).abs() <= f64::EPSILON {
+                    Some(1)
+                } else {
+                    None
+                }
+            }
+            ParamSpec::Int { min, max, step, .. } => {
+                let step = step.unwrap_or(1);
+                if step <= 0 {
+                    return None;
+                }
+                if max < min {
+                    return Some(0);
+                }
+                let range = (*max as i128) - (*min as i128);
+                let step = step as i128;
+                let steps = (range + step - 1) / step;
+                usize::try_from(steps + 1).ok()
+            }
+            ParamSpec::Choice { values, .. } => Some(values.len()),
+        }
+    }
+
+    pub fn discrete_values(&self) -> Option<Vec<String>> {
+        match self {
+            ParamSpec::Float {
+                min,
+                max,
+                step,
+                format,
+                ..
+            } => {
+                if let Some(step) = step.filter(|s| *s > 0.0) {
+                    if max < min {
+                        return Some(Vec::new());
+                    }
+                    let steps = ((max - min) / step).ceil() as i64;
+                    let mut out = Vec::new();
+                    let mut seen = HashSet::new();
+                    for idx in 0..=steps {
+                        let value = min + (idx as f64) * step;
+                        let value = value.clamp(*min, *max);
+                        let formatted = format_value(value, format.as_deref());
+                        if seen.insert(formatted.clone()) {
+                            out.push(formatted);
+                        }
+                    }
+                    Some(out)
+                } else if (*max - *min).abs() <= f64::EPSILON {
+                    Some(vec![format_value(*min, format.as_deref())])
+                } else {
+                    None
+                }
+            }
+            ParamSpec::Int { min, max, step, .. } => {
+                let step = step.unwrap_or(1);
+                if step <= 0 {
+                    return None;
+                }
+                if max < min {
+                    return Some(Vec::new());
+                }
+                let range = (*max as i128) - (*min as i128);
+                let step = step as i128;
+                let steps = (range + step - 1) / step;
+                let mut out = Vec::new();
+                let mut seen = HashSet::new();
+                for idx in 0..=steps {
+                    let value = (*min as i128) + idx * step;
+                    let value = value.clamp(*min as i128, *max as i128);
+                    let value = value as i64;
+                    if seen.insert(value) {
+                        out.push(value.to_string());
+                    }
+                }
+                Some(out)
+            }
+            ParamSpec::Choice { values, .. } => Some(values.clone()),
+        }
+    }
 }
 
 fn apply_float_step(value: f64, min: f64, max: f64, step: Option<f64>) -> f64 {
@@ -471,5 +567,18 @@ mod tests {
             .expect_err("step + log_scale invalid");
         assert!(err.contains("step"));
         assert!(err.contains("log_scale"));
+    }
+
+    #[test]
+    fn discrete_values_skip_continuous_float() {
+        let spec = ParamSpec::Float {
+            name: "ratio".to_string(),
+            min: 0.0,
+            max: 1.0,
+            log_scale: false,
+            step: None,
+            format: None,
+        };
+        assert!(spec.discrete_values().is_none());
     }
 }
