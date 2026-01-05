@@ -11,7 +11,7 @@ use crate::components::{Component, DialogOverlay};
 use crate::layout::floating::*;
 use crate::layout::{
     FloatingPane, LayoutNode, LayoutPlan, RectSpec, RegionMap, SplitHandle, TilingLayout,
-    rect_contains, render_handles,
+    rect_contains, render_handles_masked,
 };
 use crate::panel::Panel;
 
@@ -654,7 +654,14 @@ where
                 .iter()
                 .find(|handle| rect_contains(handle.rect, column, row))
         });
-        render_handles(frame, &self.handles, hovered);
+        let obscuring: Vec<Rect> = self
+            .managed_draw_order
+            .iter()
+            .filter_map(|&id| self.regions.get(id))
+            .collect();
+        let is_obscured =
+            |x: u16, y: u16| -> bool { obscuring.iter().any(|r| rect_contains(*r, x, y)) };
+        render_handles_masked(frame, &self.handles, hovered, is_obscured);
         let focused = self.focus.current();
 
         for (i, &id) in self.managed_draw_order.iter().enumerate() {

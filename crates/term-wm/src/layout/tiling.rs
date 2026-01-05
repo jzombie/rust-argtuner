@@ -643,6 +643,17 @@ fn split_at_path_mut<'a, Id: Copy + Eq + Ord>(
 }
 
 pub fn render_handles(frame: &mut Frame, handles: &[SplitHandle], hovered: Option<&SplitHandle>) {
+    render_handles_masked(frame, handles, hovered, |_, _| false);
+}
+
+pub fn render_handles_masked<F>(
+    frame: &mut Frame,
+    handles: &[SplitHandle],
+    hovered: Option<&SplitHandle>,
+    is_obscured: F,
+) where
+    F: Fn(u16, u16) -> bool,
+{
     let buffer = frame.buffer_mut();
     let hover_rect = hovered.map(|handle| handle.rect);
     for handle in handles {
@@ -661,6 +672,9 @@ pub fn render_handles(frame: &mut Frame, handles: &[SplitHandle], hovered: Optio
         };
         for y in handle.rect.y..handle.rect.y.saturating_add(handle.rect.height) {
             for x in handle.rect.x..handle.rect.x.saturating_add(handle.rect.width) {
+                if is_obscured(x, y) {
+                    continue;
+                }
                 if let Some(cell) = buffer.cell_mut((x, y)) {
                     cell.set_symbol(".");
                     cell.set_style(style);
@@ -676,6 +690,9 @@ pub fn render_handles(frame: &mut Frame, handles: &[SplitHandle], hovered: Optio
                     if y < handle.rect.y || y >= handle.rect.y.saturating_add(handle.rect.height) {
                         continue;
                     }
+                    if is_obscured(x, y) {
+                        continue;
+                    }
                     if let Some(cell) = buffer.cell_mut((x, y)) {
                         cell.set_symbol(if is_hovered { "O" } else { "o" });
                         cell.set_style(style);
@@ -688,6 +705,9 @@ pub fn render_handles(frame: &mut Frame, handles: &[SplitHandle], hovered: Optio
                 for offset in 0..3 {
                     let x = x_center.saturating_sub(1).saturating_add(offset);
                     if x < handle.rect.x || x >= handle.rect.x.saturating_add(handle.rect.width) {
+                        continue;
+                    }
+                    if is_obscured(x, y) {
                         continue;
                     }
                     if let Some(cell) = buffer.cell_mut((x, y)) {
@@ -710,9 +730,15 @@ pub fn render_handles(frame: &mut Frame, handles: &[SplitHandle], hovered: Optio
                 .y
                 .saturating_add(handle.rect.height.saturating_sub(1));
             for x in handle.rect.x..=max_x {
+                if is_obscured(x, handle.rect.y) {
+                    continue;
+                }
                 if let Some(cell) = buffer.cell_mut((x, handle.rect.y)) {
                     cell.set_symbol("-");
                     cell.set_style(border_style);
+                }
+                if is_obscured(x, max_y) {
+                    continue;
                 }
                 if let Some(cell) = buffer.cell_mut((x, max_y)) {
                     cell.set_symbol("-");
@@ -720,28 +746,42 @@ pub fn render_handles(frame: &mut Frame, handles: &[SplitHandle], hovered: Optio
                 }
             }
             for y in handle.rect.y..=max_y {
+                if is_obscured(handle.rect.x, y) {
+                    continue;
+                }
                 if let Some(cell) = buffer.cell_mut((handle.rect.x, y)) {
                     cell.set_symbol("|");
                     cell.set_style(border_style);
+                }
+                if is_obscured(max_x, y) {
+                    continue;
                 }
                 if let Some(cell) = buffer.cell_mut((max_x, y)) {
                     cell.set_symbol("|");
                     cell.set_style(border_style);
                 }
             }
-            if let Some(cell) = buffer.cell_mut((handle.rect.x, handle.rect.y)) {
+            if !is_obscured(handle.rect.x, handle.rect.y)
+                && let Some(cell) = buffer.cell_mut((handle.rect.x, handle.rect.y))
+            {
                 cell.set_symbol("+");
                 cell.set_style(border_style);
             }
-            if let Some(cell) = buffer.cell_mut((max_x, handle.rect.y)) {
+            if !is_obscured(max_x, handle.rect.y)
+                && let Some(cell) = buffer.cell_mut((max_x, handle.rect.y))
+            {
                 cell.set_symbol("+");
                 cell.set_style(border_style);
             }
-            if let Some(cell) = buffer.cell_mut((handle.rect.x, max_y)) {
+            if !is_obscured(handle.rect.x, max_y)
+                && let Some(cell) = buffer.cell_mut((handle.rect.x, max_y))
+            {
                 cell.set_symbol("+");
                 cell.set_style(border_style);
             }
-            if let Some(cell) = buffer.cell_mut((max_x, max_y)) {
+            if !is_obscured(max_x, max_y)
+                && let Some(cell) = buffer.cell_mut((max_x, max_y))
+            {
                 cell.set_symbol("+");
                 cell.set_style(border_style);
             }
