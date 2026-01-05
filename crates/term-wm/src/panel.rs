@@ -86,6 +86,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
         (panel, managed)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn render<W: Copy + Eq>(
         &mut self,
         frame: &mut Frame,
@@ -94,6 +95,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
         focus_order: &[W],
         managed_draw_order: &[R],
         status_line: Option<&str>,
+        menu_open: bool,
     ) where
         R: PartialEq<W>,
     {
@@ -112,7 +114,12 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
         let menu_icon = format!("≡ {CRATE_NAME}");
         let menu_width = menu_icon.chars().count() as u16;
         if x.saturating_add(menu_width) <= max_x {
-            buffer.set_string(x, y, menu_icon.as_str(), Style::default());
+            let menu_style = if menu_open {
+                Style::default().bg(Color::DarkGray).fg(Color::Black)
+            } else {
+                Style::default()
+            };
+            buffer.set_string(x, y, menu_icon.as_str(), menu_style);
             self.menu_rect = Some(Rect {
                 x,
                 y,

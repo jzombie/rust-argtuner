@@ -799,6 +799,7 @@ where
             &self.focus.order,
             &self.managed_draw_order,
             status_line.as_deref(),
+            self.wm_overlay_visible,
         );
         let menu_labels = wm_menu_items()
             .iter()
