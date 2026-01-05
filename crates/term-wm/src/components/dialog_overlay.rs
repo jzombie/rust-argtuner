@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 #[derive(Debug, Clone)]
@@ -11,6 +11,7 @@ pub struct DialogOverlay {
     width: u16,
     height: u16,
     bg: Color,
+    dim_backdrop: bool,
 }
 
 impl DialogOverlay {
@@ -22,6 +23,7 @@ impl DialogOverlay {
             width: 70,
             height: 9,
             bg: Color::Black,
+            dim_backdrop: false,
         }
     }
 
@@ -45,6 +47,29 @@ impl DialogOverlay {
     pub fn set_bg(&mut self, bg: Color) {
         self.bg = bg;
     }
+
+    pub fn set_dim_backdrop(&mut self, dim: bool) {
+        self.dim_backdrop = dim;
+    }
+
+    pub fn visible(&self) -> bool {
+        self.visible
+    }
+
+    pub fn rect_for(&self, area: Rect) -> Rect {
+        let width = area.width.min(self.width).max(24);
+        let height = area.height.min(self.height).max(5);
+        let x = area.x.saturating_add(area.width.saturating_sub(width) / 2);
+        let y = area
+            .y
+            .saturating_add(area.height.saturating_sub(height) / 2);
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
 }
 
 impl Default for DialogOverlay {
@@ -58,18 +83,18 @@ impl super::Component for DialogOverlay {
         if !self.visible || area.width == 0 || area.height == 0 {
             return;
         }
-        let width = area.width.min(self.width).max(24);
-        let height = area.height.min(self.height).max(5);
-        let x = area.x.saturating_add(area.width.saturating_sub(width) / 2);
-        let y = area
-            .y
-            .saturating_add(area.height.saturating_sub(height) / 2);
-        let rect = Rect {
-            x,
-            y,
-            width,
-            height,
-        };
+        if self.dim_backdrop {
+            let buffer = frame.buffer_mut();
+            let dim_style = Style::default().add_modifier(Modifier::DIM);
+            for y in area.y..area.y.saturating_add(area.height) {
+                for x in area.x..area.x.saturating_add(area.width) {
+                    if let Some(cell) = buffer.cell_mut((x, y)) {
+                        cell.set_style(dim_style);
+                    }
+                }
+            }
+        }
+        let rect = self.rect_for(area);
         frame.render_widget(Clear, rect);
         let block = Block::default()
             .title(self.title.as_str())

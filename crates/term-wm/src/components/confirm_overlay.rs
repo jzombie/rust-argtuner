@@ -1,10 +1,9 @@
 use crossterm::event::{Event, KeyCode};
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::components::Component;
+use crate::components::{Component, DialogOverlay};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
@@ -14,39 +13,42 @@ pub enum ConfirmAction {
 
 #[derive(Debug, Default)]
 pub struct ConfirmOverlay {
+    dialog: DialogOverlay,
     visible: bool,
-    title: String,
-    body: String,
-    width: u16,
-    height: u16,
     selected_confirm: bool,
 }
 
 impl ConfirmOverlay {
     pub fn new() -> Self {
+        let mut dialog = DialogOverlay::new();
+        dialog.set_size(56, 9);
+        dialog.set_dim_backdrop(true);
         Self {
+            dialog,
             visible: false,
-            title: "Confirm".to_string(),
-            body: String::new(),
-            width: 56,
-            height: 9,
             selected_confirm: true,
         }
     }
 
     pub fn open(&mut self, title: &str, body: &str) {
-        self.title = title.to_string();
-        self.body = body.to_string();
+        self.dialog.set_title(title);
+        self.dialog.set_body(body);
+        self.dialog.set_visible(true);
         self.visible = true;
         self.selected_confirm = true;
     }
 
     pub fn close(&mut self) {
+        self.dialog.set_visible(false);
         self.visible = false;
     }
 
     pub fn visible(&self) -> bool {
         self.visible
+    }
+
+    pub fn set_dim_backdrop(&mut self, dim: bool) {
+        self.dialog.set_dim_backdrop(dim);
     }
 }
 
@@ -55,43 +57,20 @@ impl Component for ConfirmOverlay {
         if !self.visible || area.width == 0 || area.height == 0 {
             return;
         }
-        let width = area.width.min(self.width).max(28);
-        let height = area.height.min(self.height).max(7);
-        let x = area.x.saturating_add(area.width.saturating_sub(width) / 2);
-        let y = area
-            .y
-            .saturating_add(area.height.saturating_sub(height) / 2);
-        let rect = Rect {
-            x,
-            y,
-            width,
-            height,
-        };
-        frame.render_widget(Clear, rect);
-
-        let block = Block::default()
-            .title(self.title.as_str())
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Gray));
-        let inner = block.inner(rect);
-        frame.render_widget(block, rect);
-
-        if inner.height < 3 || inner.width == 0 {
+        self.dialog.render(frame, area, false);
+        let rect = self.dialog.rect_for(area);
+        if rect.width < 3 || rect.height < 3 {
             return;
         }
-
-        let body_rect = Rect {
-            x: inner.x,
-            y: inner.y,
-            width: inner.width,
-            height: inner.height.saturating_sub(2),
+        let inner = Rect {
+            x: rect.x.saturating_add(1),
+            y: rect.y.saturating_add(1),
+            width: rect.width.saturating_sub(2),
+            height: rect.height.saturating_sub(2),
         };
-        let paragraph = Paragraph::new(self.body.as_str())
-            .style(Style::default().fg(Color::White))
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true });
-        frame.render_widget(paragraph, body_rect);
-
+        if inner.height == 0 || inner.width == 0 {
+            return;
+        }
         let button_y = inner.y.saturating_add(inner.height.saturating_sub(1));
         let cancel = "[ Cancel ]";
         let confirm = "[ Exit ]";
