@@ -127,7 +127,7 @@ where
                 return Ok(ControlFlow::Quit);
             }
             app.windows().begin_frame();
-                terminal
+            terminal
                 .draw(|frame| {
                     draw(frame, app);
                     app.windows().render_overlays(frame);
