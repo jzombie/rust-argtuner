@@ -7,6 +7,7 @@ use ratatui::backend::Backend;
 
 use crate::drivers::InputDriver;
 use crate::event_loop::{ControlFlow, EventLoop};
+use crate::components::ConfirmAction;
 use crate::window::{LayoutContract, WindowManager, WmMenuAction};
 
 pub trait HasWindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
@@ -45,6 +46,15 @@ where
 
     event_loop.run(|_driver, event| {
         if let Some(evt) = event {
+            if app.windows().exit_confirm_visible() {
+                if let Some(action) = app.windows().handle_exit_confirm_event(&evt) {
+                    match action {
+                        ConfirmAction::Confirm => return Ok(ControlFlow::Quit),
+                        ConfirmAction::Cancel => app.windows().close_exit_confirm(),
+                    }
+                }
+                return Ok(ControlFlow::Continue);
+            }
             let wm_mode = app.windows().layout_contract() == LayoutContract::WindowManaged;
             if wm_mode
                 && let Event::Key(key) = evt
@@ -73,7 +83,9 @@ where
                             app.windows().close_wm_overlay();
                         }
                         WmMenuAction::ExitUi => {
-                            return Ok(ControlFlow::Quit);
+                            app.windows().close_wm_overlay();
+                            app.windows().open_exit_confirm();
+                            return Ok(ControlFlow::Continue);
                         }
                     }
                     return Ok(ControlFlow::Continue);
@@ -91,7 +103,8 @@ where
                 }
             }
             if should_quit(Some(&evt), app) {
-                return Ok(ControlFlow::Quit);
+                app.windows().open_exit_confirm();
+                return Ok(ControlFlow::Continue);
             }
             match &evt {
                 Event::Key(key) if key.code == KeyCode::BackTab => {

@@ -7,7 +7,7 @@ use crossterm::event::{Event, KeyCode, MouseEventKind};
 use ratatui::prelude::Rect;
 
 use self::decorator::{OpenStepDecorator, WindowDecorator};
-use crate::components::DialogOverlay;
+use crate::components::{Component, ConfirmAction, ConfirmOverlay, DialogOverlay};
 use crate::layout::floating::*;
 use crate::layout::{
     FloatingPane, LayoutNode, LayoutPlan, RectSpec, RegionMap, SplitHandle, TilingLayout,
@@ -123,6 +123,7 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     esc_passthrough_window: Duration,
     wm_overlay: DialogOverlay,
     wm_menu_selected: usize,
+    exit_confirm: ConfirmOverlay,
     decorator: Box<dyn WindowDecorator>,
 }
 
@@ -161,6 +162,7 @@ where
             esc_passthrough_window: esc_passthrough_window_default(),
             wm_overlay: DialogOverlay::new(),
             wm_menu_selected: 0,
+            exit_confirm: ConfirmOverlay::new(),
             decorator: Box::new(OpenStepDecorator),
         }
     }
@@ -244,6 +246,21 @@ where
         self.wm_overlay_visible = false;
         self.wm_overlay_opened_at = None;
         self.wm_overlay.set_visible(false);
+    }
+
+    pub fn open_exit_confirm(&mut self) {
+        self.exit_confirm.open(
+            "Exit App",
+            "Exit the application?\n\nUnsaved changes will be lost.\n\nEnter: confirm  Esc: cancel\nTab/Shift-Tab/Arrows: switch",
+        );
+    }
+
+    pub fn close_exit_confirm(&mut self) {
+        self.exit_confirm.close();
+    }
+
+    pub fn exit_confirm_visible(&self) -> bool {
+        self.exit_confirm.visible()
     }
 
     pub fn wm_overlay_visible(&self) -> bool {
@@ -801,6 +818,9 @@ where
             self.managed_area,
             self.panel.area(),
         );
+        if self.exit_confirm.visible() {
+            self.exit_confirm.render(frame, frame.area(), false);
+        }
     }
 
     pub fn set_regions_from_plan(&mut self, plan: &LayoutPlan<R>, area: Rect) {
@@ -955,6 +975,13 @@ where
                 .map(|item| item.action),
             _ => None,
         }
+    }
+
+    pub fn handle_exit_confirm_event(&mut self, event: &Event) -> Option<ConfirmAction> {
+        if !self.exit_confirm.visible() {
+            return None;
+        }
+        self.exit_confirm.handle_confirm_event(event)
     }
 
     pub fn wm_menu_consumes_event(&self, event: &Event) -> bool {

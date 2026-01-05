@@ -2,6 +2,7 @@ use crossterm::event::Event;
 use ratatui::{Frame, layout::Rect};
 
 pub mod ascii_image;
+pub mod confirm_overlay;
 pub mod dialog_overlay;
 pub mod list;
 pub mod scroll_view;
@@ -10,6 +11,7 @@ pub mod terminal;
 pub mod toggle_list;
 
 pub use ascii_image::AsciiImage;
+pub use confirm_overlay::{ConfirmAction, ConfirmOverlay};
 pub use dialog_overlay::DialogOverlay;
 pub use list::ListComponent;
 pub use scroll_view::ScrollView;
