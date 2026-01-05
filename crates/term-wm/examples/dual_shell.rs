@@ -164,15 +164,23 @@ fn render_pane(frame: &mut Frame, app: &mut App, id: PaneId, area: Rect) {
         return;
     }
     let focused = app.windows.focus() == id;
-    let title = if focused { "Shell (focus)" } else { "Shell" };
+    let number = match id {
+        PaneId::Left => 1,
+        PaneId::Right => 2,
+    };
+    let title = if focused {
+        format!("Window {number} (focus)")
+    } else {
+        format!("Window {number}")
+    };
     frame.render_widget(Clear, area);
     let block = if focused {
         Block::default()
             .borders(Borders::ALL)
-            .title(title)
+            .title(title.as_str())
             .border_style(ratatui::style::Style::default().fg(ratatui::style::Color::Green))
     } else {
-        Block::default().borders(Borders::ALL).title(title)
+        Block::default().borders(Borders::ALL).title(title.as_str())
     };
     let inner = block.inner(area);
     frame.render_widget(block, area);
