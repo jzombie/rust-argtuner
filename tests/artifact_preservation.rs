@@ -8,11 +8,7 @@ use argtuner::{
 };
 
 fn emit_result_command() -> String {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_emit_result") {
-        path
-    } else {
-        "cargo run -q -p argtuner --bin emit_result --".to_string()
-    }
+    argtuner::test_support::bin_command("emit_result")
 }
 
 #[test]

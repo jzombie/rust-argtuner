@@ -33,7 +33,7 @@ Reserved placeholders injected automatically:
 ```text
 my-train --lr {lr} --steps {steps} --output {trial_dir}
 ```
- The execution flow is:
+The execution flow is:
  - Render command template with sampled hyperparameters (and optional trial
    placeholders).
  - Spawn the command directly (program + args) with stdout/stderr streamed.
@@ -273,6 +273,11 @@ The execution flow is:
   - `metric.*` fields from the last `model.epoch_end` event
   - `trial.*` fields (budget/rung/bracket, trial_dir, etc.)
   - `hp.*` fields from the search space
+
+Windows note:
+- Command templates are split into program + args without a shell, so use
+  explicit arguments and quote paths with spaces. To run shell built-ins, wrap
+  them in `cmd /C ...` or `powershell -Command ...`.
 
 If the app exits non‑zero or emits an invalid config payload, the trial is
 marked `error` and the tuner may retry based on scheduler policy.

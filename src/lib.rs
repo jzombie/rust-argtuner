@@ -15,6 +15,8 @@ pub mod validate;
 pub use constants::*;
 pub mod workspace;
 pub use workspace::workspace_root;
+#[doc(hidden)]
+pub mod test_support;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
