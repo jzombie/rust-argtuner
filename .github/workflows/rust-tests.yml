@@ -23,9 +23,7 @@ jobs:
         os: [
             ubuntu-latest,
             macos-latest,
-
-            # TODO: Re-enable
-            # windows-latest
+            windows-latest
         ]
         include:
           - name: "All Features"
