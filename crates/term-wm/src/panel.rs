@@ -1,5 +1,9 @@
 use crossterm::event::{Event, MouseEventKind};
-use ratatui::{Frame, layout::Rect, style::{Color, Modifier, Style}};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Color, Modifier, Style},
+};
 
 use crate::layout::rect_contains;
 
@@ -312,13 +316,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             .map(|hit| hit.index)
     }
 
-    pub fn render_menu_backdrop(
-        &self,
-        frame: &mut Frame,
-        open: bool,
-        bounds: Rect,
-        exclude: Rect,
-    ) {
+    pub fn render_menu_backdrop(&self, frame: &mut Frame, open: bool, bounds: Rect, exclude: Rect) {
         if !open {
             return;
         }

@@ -46,19 +46,21 @@ where
     event_loop.run(|_driver, event| {
         if let Some(evt) = event {
             let wm_mode = app.windows().layout_contract() == LayoutContract::WindowManaged;
-            if wm_mode && let Event::Key(key) = evt {
-                if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
-                    if app.windows().wm_overlay_visible() {
-                        let passthrough = app.windows().esc_passthrough_active();
-                        app.windows().close_wm_overlay();
-                        if passthrough {
-                            let _ = dispatch(&Event::Key(key), app);
-                        }
-                    } else {
-                        app.windows().open_wm_overlay();
+            if wm_mode
+                && let Event::Key(key) = evt
+                && key.code == KeyCode::Esc
+                && key.kind == KeyEventKind::Press
+            {
+                if app.windows().wm_overlay_visible() {
+                    let passthrough = app.windows().esc_passthrough_active();
+                    app.windows().close_wm_overlay();
+                    if passthrough {
+                        let _ = dispatch(&Event::Key(key), app);
                     }
-                    return Ok(ControlFlow::Continue);
+                } else {
+                    app.windows().open_wm_overlay();
                 }
+                return Ok(ControlFlow::Continue);
             }
             if wm_mode && app.windows().wm_overlay_visible() {
                 if let Some(action) = app.windows().handle_wm_menu_event(&evt) {

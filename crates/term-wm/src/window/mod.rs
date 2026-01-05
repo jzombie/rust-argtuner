@@ -7,7 +7,7 @@ use crossterm::event::{Event, KeyCode, MouseEventKind};
 use ratatui::prelude::Rect;
 
 use self::decorator::{OpenStepDecorator, WindowDecorator};
-use crate::components::{Component, DialogOverlay};
+use crate::components::DialogOverlay;
 use crate::layout::floating::*;
 use crate::layout::{
     FloatingPane, LayoutNode, LayoutPlan, RectSpec, RegionMap, SplitHandle, TilingLayout,
@@ -723,9 +723,7 @@ where
             } else {
                 "Esc passthrough: inactive".to_string()
             };
-            Some(format!(
-                "{esc_state} · Tab/Shift-Tab: cycle windows"
-            ))
+            Some(format!("{esc_state} · Tab/Shift-Tab: cycle windows"))
         } else {
             None
         };
