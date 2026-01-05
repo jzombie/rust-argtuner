@@ -374,6 +374,7 @@ where
     pub fn register_managed_layout(&mut self, area: Rect) {
         let (_, managed_area) = self.panel.split_area(self.panel_active(), area);
         self.managed_area = managed_area;
+        self.clamp_floating_to_bounds();
         if let Some(layout) = self.managed_layout.as_ref() {
             let (regions, handles) = layout.root().layout_with_handles(self.managed_area);
             for (id, rect) in &regions {
@@ -656,6 +657,53 @@ where
         if let Some(index) = self.floating_index(id) {
             let pane = self.managed_floating.remove(index);
             self.managed_floating.push(pane);
+        }
+    }
+
+    fn clamp_floating_to_bounds(&mut self) {
+        let bounds = self.managed_area;
+        if bounds.width == 0 || bounds.height == 0 {
+            return;
+        }
+        for pane in &mut self.managed_floating {
+            let RectSpec::Absolute(rect) = pane.rect else {
+                continue;
+            };
+            if rects_intersect(rect, bounds) {
+                continue;
+            }
+            // Only recover panes that are fully off-screen; keep normal dragging untouched.
+            let rect_right = rect.x.saturating_add(rect.width);
+            let rect_bottom = rect.y.saturating_add(rect.height);
+            let bounds_right = bounds.x.saturating_add(bounds.width);
+            let bounds_bottom = bounds.y.saturating_add(bounds.height);
+            // Clamp only the axis that is fully outside the viewport.
+            let out_x = rect_right <= bounds.x || rect.x >= bounds_right;
+            let out_y = rect_bottom <= bounds.y || rect.y >= bounds_bottom;
+            let min_w = FLOATING_MIN_WIDTH.min(bounds.width.max(1));
+            let min_h = FLOATING_MIN_HEIGHT.min(bounds.height.max(1));
+            let width = rect.width.max(min_w).min(bounds.width);
+            let height = rect.height.max(min_h).min(bounds.height);
+            let max_x = bounds.x.saturating_add(bounds.width.saturating_sub(width));
+            let max_y = bounds
+                .y
+                .saturating_add(bounds.height.saturating_sub(height));
+            let x = if out_x {
+                rect.x.clamp(bounds.x, max_x)
+            } else {
+                rect.x
+            };
+            let y = if out_y {
+                rect.y.clamp(bounds.y, max_y)
+            } else {
+                rect.y
+            };
+            pane.rect = RectSpec::Absolute(Rect {
+                x,
+                y,
+                width,
+                height,
+            });
         }
     }
 
@@ -981,4 +1029,15 @@ fn clamp_rect(area: Rect, bounds: Rect) -> Rect {
         width: x1 - x0,
         height: y1 - y0,
     }
+}
+
+fn rects_intersect(a: Rect, b: Rect) -> bool {
+    if a.width == 0 || a.height == 0 || b.width == 0 || b.height == 0 {
+        return false;
+    }
+    let a_right = a.x.saturating_add(a.width);
+    let a_bottom = a.y.saturating_add(a.height);
+    let b_right = b.x.saturating_add(b.width);
+    let b_bottom = b.y.saturating_add(b.height);
+    a.x < b_right && a_right > b.x && a.y < b_bottom && a_bottom > b.y
 }
