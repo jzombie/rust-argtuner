@@ -726,7 +726,7 @@ where
         );
         let menu_labels = wm_menu_items()
             .iter()
-            .map(|item| item.label)
+            .map(|item| (item.icon, item.label))
             .collect::<Vec<_>>();
         let bounds = frame.area();
         self.panel.render_menu(
@@ -902,6 +902,7 @@ where
 #[derive(Debug, Clone, Copy)]
 struct WmMenuItem {
     label: &'static str,
+    icon: Option<&'static str>,
     action: WmMenuAction,
 }
 
@@ -909,14 +910,17 @@ fn wm_menu_items() -> [WmMenuItem; 3] {
     [
         WmMenuItem {
             label: "Resume",
+            icon: None,
             action: WmMenuAction::CloseMenu,
         },
         WmMenuItem {
             label: "New Window",
+            icon: Some("+"),
             action: WmMenuAction::NewWindow,
         },
         WmMenuItem {
             label: "Exit UI",
+            icon: Some("⏻"),
             action: WmMenuAction::ExitUi,
         },
     ]

@@ -103,7 +103,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
         let mut x = area.x;
         let y = area.y;
         let max_x = area.x.saturating_add(area.width);
-        let menu_icon = "[*]";
+        let menu_icon = "≡";
         let menu_width = menu_icon.chars().count() as u16;
         if x.saturating_add(menu_width) <= max_x {
             buffer.set_string(x, y, menu_icon, Style::default());
@@ -195,7 +195,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
         frame: &mut Frame,
         open: bool,
         bounds: Rect,
-        items: &[&str],
+        items: &[(Option<&str>, &str)],
         selected: usize,
     ) {
         if !open {
@@ -218,10 +218,15 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             .max(1);
         let label_width = items
             .iter()
-            .map(|item| item.chars().count() as u16)
+            .map(|(_, label)| label.chars().count() as u16)
             .max()
             .unwrap_or(1);
-        let width = (label_width + 4).min(max_width);
+        let icon_width = items
+            .iter()
+            .map(|(icon, _)| icon.map(|v| v.chars().count() as u16).unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+        let width = (label_width + icon_width + 6).min(max_width);
         let max_height = bounds
             .height
             .saturating_sub(start_y.saturating_sub(bounds.y))
@@ -255,20 +260,26 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
                 }
             }
         }
-        for (idx, label) in items.iter().enumerate() {
+        let inner_x = start_x.saturating_add(1);
+        let inner_width = width.saturating_sub(2).max(1);
+        for (idx, (icon, label)) in items.iter().enumerate() {
             let y = start_y.saturating_add(idx as u16 + 1);
             if y < bounds.y || y >= bounds.y.saturating_add(bounds.height) {
                 break;
             }
             let marker = if idx == selected { ">" } else { " " };
-            let line = format!("{marker} {label}");
-            let text = truncate_to_width(&line, width as usize);
+            let line = if let Some(icon) = icon {
+                format!("{marker} {icon} {label}")
+            } else {
+                format!("{marker}   {label}")
+            };
+            let text = truncate_to_width(&line, inner_width as usize);
             let style = if idx == selected {
                 selected_style
             } else {
                 menu_style
             };
-            buffer.set_string(start_x + 1, y, text, style);
+            buffer.set_string(inner_x, y, text, style);
             self.menu_item_hits.push(PanelMenuHit {
                 index: idx,
                 rect: Rect {
