@@ -1,10 +1,11 @@
 use std::io;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 
+use crate::user_input::{InputNormalizer, normalize_event};
 use crate::window::{LayoutContract, WindowManager};
 
 pub trait HasWindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
@@ -37,6 +38,7 @@ where
     E: From<io::Error> + From<<B as Backend>::Error>,
 {
     let capture_timeout = Duration::from_millis(500);
+    let mut normalizer = InputNormalizer::default();
     loop {
         if should_quit(None, app) {
             return Ok(());
@@ -48,9 +50,11 @@ where
             app.windows().render_overlays(frame);
         })?;
         if event::poll(poll_interval)? {
-            let evt = normalize_event(event::read()?);
+            let Some(evt) = normalize_event(event::read()?, &mut normalizer) else {
+                continue;
+            };
             if wm_mode && let Event::Key(key) = evt {
-                if key.code == KeyCode::Esc {
+                if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
                     if app.windows().wm_overlay_visible() {
                         let passthrough = app.windows().esc_passthrough_active();
                         app.windows().close_wm_overlay();
@@ -126,18 +130,5 @@ where
                 }
             }
         }
-    }
-}
-
-fn normalize_event(evt: Event) -> Event {
-    match evt {
-        Event::Key(mut key)
-            if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT) =>
-        {
-            key.code = KeyCode::BackTab;
-            key.modifiers.remove(KeyModifiers::SHIFT);
-            Event::Key(key)
-        }
-        _ => evt,
     }
 }
