@@ -5,9 +5,9 @@ use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 
+use crate::components::ConfirmAction;
 use crate::drivers::InputDriver;
 use crate::event_loop::{ControlFlow, EventLoop};
-use crate::components::ConfirmAction;
 use crate::window::{LayoutContract, WindowManager, WmMenuAction};
 
 pub trait HasWindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {

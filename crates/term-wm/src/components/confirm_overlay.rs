@@ -1,8 +1,8 @@
 use crossterm::event::{Event, KeyCode, MouseEventKind};
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Paragraph, Wrap};
-use ratatui::Frame;
 
 use crate::components::{Component, DialogOverlay};
 use crate::layout::rect_contains;
@@ -137,12 +137,7 @@ impl Component for ConfirmOverlay {
             .saturating_add(content.width.saturating_sub(total_width as u16));
         buffer.set_string(start_x, button_y, cancel, cancel_style);
         let confirm_x = start_x.saturating_add(cancel.len() as u16 + 1);
-        buffer.set_string(
-            confirm_x,
-            button_y,
-            confirm,
-            confirm_style,
-        );
+        buffer.set_string(confirm_x, button_y, confirm, confirm_style);
         self.cancel_rect = Some(Rect {
             x: start_x,
             y: button_y,
@@ -161,12 +156,17 @@ impl Component for ConfirmOverlay {
         let Event::Key(key) = event else {
             return false;
         };
-        match key.code {
-            KeyCode::Enter | KeyCode::Char('y') => true,
-            KeyCode::Esc | KeyCode::Char('n') => true,
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => true,
-            _ => false,
-        }
+        matches!(
+            key.code,
+            KeyCode::Enter
+                | KeyCode::Char('y')
+                | KeyCode::Esc
+                | KeyCode::Char('n')
+                | KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Left
+                | KeyCode::Right
+        )
     }
 }
 
@@ -218,11 +218,4 @@ impl ConfirmOverlay {
             _ => None,
         }
     }
-}
-
-fn truncate_to_width(value: &str, width: usize) -> String {
-    if value.chars().count() <= width {
-        return value.to_string();
-    }
-    value.chars().take(width).collect()
 }
