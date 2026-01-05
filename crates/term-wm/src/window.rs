@@ -134,7 +134,7 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
             layout_contract: LayoutContract::AppManaged,
             wm_overlay_visible: false,
             wm_overlay_opened_at: None,
-            esc_passthrough_window: Duration::from_millis(600),
+            esc_passthrough_window: esc_passthrough_window_default(),
             wm_overlay: DialogOverlay::new(),
         }
     }
@@ -586,6 +586,17 @@ impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord> WindowManager<W, R> {
             }
             _ => false,
         }
+    }
+}
+
+fn esc_passthrough_window_default() -> Duration {
+    #[cfg(windows)]
+    {
+        Duration::from_millis(1200)
+    }
+    #[cfg(not(windows))]
+    {
+        Duration::from_millis(600)
     }
 }
 

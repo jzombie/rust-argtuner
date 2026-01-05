@@ -1,5 +1,5 @@
 use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use portable_pty::{CommandBuilder, PtySize};
 use ratatui::{
@@ -41,6 +41,14 @@ impl TerminalComponent {
 
     pub fn has_exited(&mut self) -> bool {
         self.pane.has_exited()
+    }
+
+    pub fn bytes_received(&self) -> usize {
+        self.pane.bytes_received()
+    }
+
+    pub fn last_bytes_text(&self) -> String {
+        self.pane.last_bytes_text()
     }
 
     fn render_screen(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
@@ -161,6 +169,9 @@ impl super::Component for TerminalComponent {
     fn handle_event(&mut self, event: &Event) -> bool {
         match event {
             Event::Key(key) => {
+                if key.kind == KeyEventKind::Release {
+                    return false;
+                }
                 if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
                     && key.modifiers.contains(KeyModifiers::SHIFT)
                     && !self.pane.alternate_screen()
@@ -180,7 +191,10 @@ impl super::Component for TerminalComponent {
                 if self.pane.scrollback() > 0 {
                     self.pane.set_scrollback(0);
                 }
-                let _ = self.pane.write_bytes(&bytes);
+                if let Err(err) = self.pane.write_bytes(&bytes) {
+                    #[cfg(windows)]
+                    eprintln!("terminal input write failed: {err}");
+                }
                 true
             }
             Event::Mouse(mouse) => {
@@ -224,7 +238,10 @@ impl super::Component for TerminalComponent {
                 if bytes.is_empty() {
                     return false;
                 }
-                let _ = self.pane.write_bytes(&bytes);
+                if let Err(err) = self.pane.write_bytes(&bytes) {
+                    #[cfg(windows)]
+                    eprintln!("terminal mouse write failed: {err}");
+                }
                 true
             }
             _ => false,

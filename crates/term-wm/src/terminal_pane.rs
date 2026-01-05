@@ -1,5 +1,9 @@
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc,
+    Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use std::thread::{self, JoinHandle};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -10,6 +14,9 @@ pub struct TerminalPane {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     pending: Arc<Mutex<Vec<u8>>>,
+    bytes_received: Arc<AtomicUsize>,
+    last_bytes: Arc<Mutex<Vec<u8>>>,
+    dsr_requested: Arc<AtomicBool>,
     history: Vec<u8>,
     parser: vt100::Parser,
     size: PtySize,
@@ -49,13 +56,30 @@ impl TerminalPane {
             .take_writer()
             .map_err(|err| wrap_err("take_writer", err))?;
         let pending = Arc::new(Mutex::new(Vec::new()));
+        let bytes_received = Arc::new(AtomicUsize::new(0));
+        let last_bytes = Arc::new(Mutex::new(Vec::new()));
+        let dsr_requested = Arc::new(AtomicBool::new(false));
         let reader_pending = Arc::clone(&pending);
-        let reader_handle = thread::spawn(move || read_loop(reader, reader_pending));
+        let reader_bytes = Arc::clone(&bytes_received);
+        let reader_last = Arc::clone(&last_bytes);
+        let reader_dsr = Arc::clone(&dsr_requested);
+        let reader_handle = thread::spawn(move || {
+            read_loop(
+                reader,
+                reader_pending,
+                reader_bytes,
+                reader_last,
+                reader_dsr,
+            )
+        });
         let parser = vt100::Parser::new(size.rows, size.cols, scrollback_len);
         Ok(Self {
             master: pair.master,
             writer,
             pending,
+            bytes_received,
+            last_bytes,
+            dsr_requested,
             history: Vec::new(),
             parser,
             size,
@@ -85,7 +109,8 @@ impl TerminalPane {
     }
 
     pub fn write_bytes(&mut self, input: &[u8]) -> std::io::Result<()> {
-        self.writer.write_all(input)
+        self.writer.write_all(input)?;
+        self.writer.flush()
     }
 
     pub fn write_str(&mut self, input: &str) -> std::io::Result<()> {
@@ -125,6 +150,11 @@ impl TerminalPane {
         }
 
         self.parser.process(&bytes);
+        if self.dsr_requested.swap(false, Ordering::Relaxed) {
+            let (row, col) = self.parser.screen().cursor_position();
+            let response = format!("\x1b[{};{}R", row.saturating_add(1), col.saturating_add(1));
+            let _ = self.write_bytes(response.as_bytes());
+        }
         let added = bytes.iter().filter(|b| **b == b'\n').count();
         if added > 0 && self.scrollback_len > 0 {
             self.scrollback_used = (self.scrollback_used + added).min(self.scrollback_len);
@@ -166,6 +196,19 @@ impl TerminalPane {
     pub fn screen(&mut self) -> &vt100::Screen {
         self.update();
         self.parser.screen()
+    }
+
+    pub fn bytes_received(&self) -> usize {
+        self.bytes_received.load(Ordering::Relaxed)
+    }
+
+    pub fn last_bytes_text(&self) -> String {
+        let bytes = self
+            .last_bytes
+            .lock()
+            .map(|buf| buf.clone())
+            .unwrap_or_default();
+        bytes_to_debug_text(&bytes, 32)
     }
 
     pub fn screen_mut(&mut self) -> &mut vt100::Screen {
@@ -229,12 +272,39 @@ impl TerminalPane {
     }
 }
 
-fn read_loop(mut reader: Box<dyn Read + Send>, pending: Arc<Mutex<Vec<u8>>>) {
+fn read_loop(
+    mut reader: Box<dyn Read + Send>,
+    pending: Arc<Mutex<Vec<u8>>>,
+    bytes_received: Arc<AtomicUsize>,
+    last_bytes: Arc<Mutex<Vec<u8>>>,
+    dsr_requested: Arc<AtomicBool>,
+) {
+    let mut tail: Vec<u8> = Vec::new();
     let mut buf = [0u8; 4096];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                bytes_received.fetch_add(n, Ordering::Relaxed);
+                let combined = if tail.is_empty() {
+                    buf[..n].to_vec()
+                } else {
+                    let mut tmp = tail.clone();
+                    tmp.extend_from_slice(&buf[..n]);
+                    tmp
+                };
+                if combined.windows(4).any(|w| w == b"\x1b[6n") {
+                    dsr_requested.store(true, Ordering::Relaxed);
+                }
+                if combined.len() > 3 {
+                    tail = combined[combined.len() - 3..].to_vec();
+                } else {
+                    tail = combined;
+                }
+                if let Ok(mut last) = last_bytes.lock() {
+                    last.clear();
+                    last.extend_from_slice(&buf[..n]);
+                }
                 if let Ok(mut pending) = pending.lock() {
                     pending.extend_from_slice(&buf[..n]);
                 }
@@ -249,4 +319,18 @@ fn wrap_err<E: std::fmt::Display>(
     err: E,
 ) -> Box<dyn std::error::Error + Send + Sync> {
     Box::new(std::io::Error::other(format!("pty {stage} failed: {err}")))
+}
+
+fn bytes_to_debug_text(bytes: &[u8], max_len: usize) -> String {
+    let mut out = String::new();
+    for &b in bytes.iter().take(max_len) {
+        match b {
+            b'\r' => out.push_str("\\r"),
+            b'\n' => out.push_str("\\n"),
+            b'\t' => out.push_str("\\t"),
+            0x20..=0x7e => out.push(b as char),
+            _ => out.push_str(&format!("\\x{:02x}", b)),
+        }
+    }
+    out
 }

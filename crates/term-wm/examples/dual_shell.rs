@@ -22,9 +22,9 @@ const MAX_WINDOWS: usize = 8;
 fn main() -> io::Result<()> {
     let mut app = App::new()?;
     let focus_regions: Vec<PaneId> = (0..MAX_WINDOWS).collect();
-    terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, event::EnableMouseCapture)?;
+    terminal::enable_raw_mode()?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -97,10 +97,15 @@ impl App {
             pixel_width: 0,
             pixel_height: 0,
         };
-        let left =
+        let mut left =
             TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other)?;
-        let right =
+        let mut right =
             TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other)?;
+        #[cfg(windows)]
+        {
+            let _ = left.write_bytes(b"\r");
+            let _ = right.write_bytes(b"\r");
+        }
         let mut windows = WindowManager::new_managed(0);
         windows.set_focus_order(vec![0, 1]);
         let panes = vec![0, 1];
