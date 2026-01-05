@@ -39,6 +39,10 @@ impl DialogOverlay {
         self.body = body.into();
     }
 
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+
     pub fn set_size(&mut self, width: u16, height: u16) {
         self.width = width;
         self.height = height;

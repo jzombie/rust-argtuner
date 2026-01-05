@@ -251,7 +251,7 @@ where
     pub fn open_exit_confirm(&mut self) {
         self.exit_confirm.open(
             "Exit App",
-            "Exit the application?\n\nUnsaved changes will be lost.\n\nEnter: confirm  Esc: cancel\nTab/Shift-Tab/Arrows: switch",
+            "Exit the application?\nUnsaved changes will be lost.",
         );
     }
 

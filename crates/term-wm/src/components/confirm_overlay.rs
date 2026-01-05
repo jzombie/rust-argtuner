@@ -1,9 +1,11 @@
-use crossterm::event::{Event, KeyCode};
-use ratatui::layout::Rect;
+use crossterm::event::{Event, KeyCode, MouseEventKind};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::components::{Component, DialogOverlay};
+use crate::layout::rect_contains;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
@@ -15,26 +17,34 @@ pub enum ConfirmAction {
 pub struct ConfirmOverlay {
     dialog: DialogOverlay,
     visible: bool,
+    body: String,
     selected_confirm: bool,
+    cancel_rect: Option<Rect>,
+    confirm_rect: Option<Rect>,
 }
 
 impl ConfirmOverlay {
     pub fn new() -> Self {
         let mut dialog = DialogOverlay::new();
-        dialog.set_size(56, 9);
+        dialog.set_size(60, 9);
         dialog.set_dim_backdrop(true);
+        dialog.set_bg(Color::Black);
         Self {
             dialog,
             visible: false,
+            body: String::new(),
             selected_confirm: true,
+            cancel_rect: None,
+            confirm_rect: None,
         }
     }
 
     pub fn open(&mut self, title: &str, body: &str) {
         self.dialog.set_title(title);
-        self.dialog.set_body(body);
+        self.dialog.set_body("");
         self.dialog.set_visible(true);
         self.visible = true;
+        self.body = body.to_string();
         self.selected_confirm = true;
     }
 
@@ -62,6 +72,8 @@ impl Component for ConfirmOverlay {
         if rect.width < 3 || rect.height < 3 {
             return;
         }
+        self.cancel_rect = None;
+        self.confirm_rect = None;
         let inner = Rect {
             x: rect.x.saturating_add(1),
             y: rect.y.saturating_add(1),
@@ -71,7 +83,36 @@ impl Component for ConfirmOverlay {
         if inner.height == 0 || inner.width == 0 {
             return;
         }
-        let button_y = inner.y.saturating_add(inner.height.saturating_sub(1));
+        let content = Rect {
+            x: inner.x.saturating_add(1),
+            y: inner.y,
+            width: inner.width.saturating_sub(2),
+            height: inner.height,
+        };
+        if content.height < 4 || content.width == 0 {
+            return;
+        }
+        let separator_y = content.y.saturating_add(content.height.saturating_sub(2));
+        let button_y = content.y.saturating_add(content.height.saturating_sub(1));
+        let body_rect = Rect {
+            x: content.x,
+            y: content.y,
+            width: content.width,
+            height: content.height.saturating_sub(3),
+        };
+        let paragraph = Paragraph::new(self.body.as_str())
+            .alignment(Alignment::Left)
+            .style(Style::default().fg(Color::White))
+            .wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, body_rect);
+        let separator_style = Style::default().fg(Color::DarkGray);
+        let buffer = frame.buffer_mut();
+        for x in content.x..content.x.saturating_add(content.width) {
+            if let Some(cell) = buffer.cell_mut((x, separator_y)) {
+                cell.set_symbol("─");
+                cell.set_style(separator_style);
+            }
+        }
         let cancel = "[ Cancel ]";
         let confirm = "[ Exit ]";
         let cancel_style = if self.selected_confirm {
@@ -90,18 +131,30 @@ impl Component for ConfirmOverlay {
         } else {
             Style::default().fg(Color::White).bg(Color::DarkGray)
         };
-        let total_width = cancel.len() + 2 + confirm.len();
-        let start_x = inner
+        let total_width = cancel.len() + 1 + confirm.len();
+        let start_x = content
             .x
-            .saturating_add(inner.width.saturating_sub(total_width as u16) / 2);
-        let buffer = frame.buffer_mut();
+            .saturating_add(content.width.saturating_sub(total_width as u16));
         buffer.set_string(start_x, button_y, cancel, cancel_style);
+        let confirm_x = start_x.saturating_add(cancel.len() as u16 + 1);
         buffer.set_string(
-            start_x.saturating_add(cancel.len() as u16 + 2),
+            confirm_x,
             button_y,
             confirm,
             confirm_style,
         );
+        self.cancel_rect = Some(Rect {
+            x: start_x,
+            y: button_y,
+            width: cancel.len() as u16,
+            height: 1,
+        });
+        self.confirm_rect = Some(Rect {
+            x: confirm_x,
+            y: button_y,
+            width: confirm.len() as u16,
+            height: 1,
+        });
     }
 
     fn handle_event(&mut self, event: &Event) -> bool {
@@ -119,35 +172,57 @@ impl Component for ConfirmOverlay {
 
 impl ConfirmOverlay {
     pub fn handle_confirm_event(&mut self, event: &Event) -> Option<ConfirmAction> {
-        let Event::Key(key) = event else {
-            return None;
-        };
-        match key.code {
-            KeyCode::Tab => {
-                self.selected_confirm = !self.selected_confirm;
-                None
-            }
-            KeyCode::BackTab => {
-                self.selected_confirm = !self.selected_confirm;
-                None
-            }
-            KeyCode::Left => {
-                self.selected_confirm = false;
-                None
-            }
-            KeyCode::Right => {
-                self.selected_confirm = true;
-                None
-            }
-            KeyCode::Enter | KeyCode::Char('y') => {
-                if self.selected_confirm {
-                    Some(ConfirmAction::Confirm)
-                } else {
-                    Some(ConfirmAction::Cancel)
+        match event {
+            Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)) => {
+                if self
+                    .confirm_rect
+                    .is_some_and(|rect| rect_contains(rect, mouse.column, mouse.row))
+                {
+                    return Some(ConfirmAction::Confirm);
                 }
+                if self
+                    .cancel_rect
+                    .is_some_and(|rect| rect_contains(rect, mouse.column, mouse.row))
+                {
+                    return Some(ConfirmAction::Cancel);
+                }
+                None
             }
-            KeyCode::Esc | KeyCode::Char('n') => Some(ConfirmAction::Cancel),
+            Event::Key(key) => match key.code {
+                KeyCode::Tab => {
+                    self.selected_confirm = !self.selected_confirm;
+                    None
+                }
+                KeyCode::BackTab => {
+                    self.selected_confirm = !self.selected_confirm;
+                    None
+                }
+                KeyCode::Left => {
+                    self.selected_confirm = false;
+                    None
+                }
+                KeyCode::Right => {
+                    self.selected_confirm = true;
+                    None
+                }
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    if self.selected_confirm {
+                        Some(ConfirmAction::Confirm)
+                    } else {
+                        Some(ConfirmAction::Cancel)
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('n') => Some(ConfirmAction::Cancel),
+                _ => None,
+            },
             _ => None,
         }
     }
+}
+
+fn truncate_to_width(value: &str, width: usize) -> String {
+    if value.chars().count() <= width {
+        return value.to_string();
+    }
+    value.chars().take(width).collect()
 }
