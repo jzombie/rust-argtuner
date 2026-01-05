@@ -7,7 +7,7 @@ use ratatui::backend::Backend;
 
 use crate::drivers::InputDriver;
 use crate::event_loop::{ControlFlow, EventLoop};
-use crate::window::{LayoutContract, WindowManager};
+use crate::window::{LayoutContract, WindowManager, WmMenuAction};
 
 pub trait HasWindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     fn windows(&mut self) -> &mut WindowManager<W, R>;
@@ -59,7 +59,27 @@ where
                     }
                     return Ok(ControlFlow::Continue);
                 }
-                if app.windows().wm_overlay_visible()
+            }
+            if wm_mode && app.windows().wm_overlay_visible() {
+                if let Some(action) = app.windows().handle_wm_menu_event(&evt) {
+                    match action {
+                        WmMenuAction::CloseMenu => {
+                            app.windows().close_wm_overlay();
+                        }
+                        WmMenuAction::NewWindow => {
+                            app.wm_new_window();
+                            app.windows().close_wm_overlay();
+                        }
+                        WmMenuAction::ExitUi => {
+                            return Ok(ControlFlow::Quit);
+                        }
+                    }
+                    return Ok(ControlFlow::Continue);
+                }
+                if matches!(evt, Event::Key(_)) {
+                    return Ok(ControlFlow::Continue);
+                }
+                if let Event::Key(key) = evt
                     && key.code == KeyCode::Char('n')
                     && key.modifiers.is_empty()
                 {

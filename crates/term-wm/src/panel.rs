@@ -1,5 +1,5 @@
 use crossterm::event::{Event, MouseEventKind};
-use ratatui::{Frame, layout::Rect, style::Style};
+use ratatui::{Frame, layout::Rect, style::{Color, Modifier, Style}};
 
 use crate::layout::rect_contains;
 
@@ -15,6 +15,8 @@ pub struct Panel<R: Copy + Eq + Ord> {
     height: u16,
     area: Rect,
     window_hits: Vec<PanelWindowHit<R>>,
+    menu_rect: Option<Rect>,
+    menu_item_hits: Vec<PanelMenuHit>,
 }
 
 impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
@@ -24,11 +26,15 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             height: 1,
             area: Rect::default(),
             window_hits: Vec::new(),
+            menu_rect: None,
+            menu_item_hits: Vec::new(),
         }
     }
 
     pub fn begin_frame(&mut self) {
         self.window_hits.clear();
+        self.menu_rect = None;
+        self.menu_item_hits.clear();
     }
 
     pub fn visible(&self) -> bool {
@@ -93,9 +99,25 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
         let buffer = frame.buffer_mut();
         let mut x = area.x;
         let y = area.y;
+        let max_x = area.x.saturating_add(area.width);
+        let menu_icon = "[*]";
+        let menu_width = menu_icon.chars().count() as u16;
+        if x.saturating_add(menu_width) <= max_x {
+            buffer.set_string(x, y, menu_icon, Style::default());
+            self.menu_rect = Some(Rect {
+                x,
+                y,
+                width: menu_width,
+                height: 1,
+            });
+            x = x.saturating_add(menu_width);
+        }
+        if x < max_x {
+            buffer.set_string(x, y, " ", Style::default());
+            x = x.saturating_add(1);
+        }
         let prefix = "Windows:";
         let prefix_width = prefix.chars().count() as u16;
-        let max_x = area.x.saturating_add(area.width);
         if x.saturating_add(prefix_width) <= max_x {
             buffer.set_string(x, y, prefix, Style::default());
             x = x.saturating_add(prefix_width);
@@ -125,7 +147,20 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
         }
     }
 
-    pub fn hit_test(&self, event: &Event) -> Option<R> {
+    pub fn hit_test_menu(&self, event: &Event) -> bool {
+        let Event::Mouse(mouse) = event else {
+            return false;
+        };
+        if !matches!(mouse.kind, MouseEventKind::Down(_)) {
+            return false;
+        }
+        if let Some(rect) = self.menu_rect {
+            return rect_contains(rect, mouse.column, mouse.row);
+        }
+        false
+    }
+
+    pub fn hit_test_window(&self, event: &Event) -> Option<R> {
         let Event::Mouse(mouse) = event else {
             return None;
         };
@@ -137,12 +172,112 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             .find(|hit| rect_contains(hit.rect, mouse.column, mouse.row))
             .map(|hit| hit.id)
     }
+
+    pub fn render_menu(
+        &mut self,
+        frame: &mut Frame,
+        open: bool,
+        bounds: Rect,
+        items: &[&str],
+        selected: usize,
+    ) {
+        if !open {
+            return;
+        }
+        let Some(anchor) = self.menu_rect else {
+            return;
+        };
+        if items.is_empty() {
+            return;
+        }
+        let start_x = anchor.x;
+        let start_y = anchor.y.saturating_add(1);
+        if start_x < bounds.x || start_x >= bounds.x.saturating_add(bounds.width) {
+            return;
+        }
+        let max_width = bounds
+            .width
+            .saturating_sub(start_x.saturating_sub(bounds.x))
+            .max(1);
+        let label_width = items
+            .iter()
+            .map(|item| item.chars().count() as u16)
+            .max()
+            .unwrap_or(1);
+        let width = (label_width + 4).min(max_width);
+        let height = (items.len() as u16).saturating_add(2);
+        let buffer = frame.buffer_mut();
+        let menu_style = Style::default().bg(Color::DarkGray).fg(Color::White);
+        let selected_style = Style::default()
+            .bg(Color::Gray)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD);
+        for row in 0..height {
+            let y = start_y.saturating_add(row);
+            if y < bounds.y || y >= bounds.y.saturating_add(bounds.height) {
+                continue;
+            }
+            for col in 0..width {
+                let x = start_x.saturating_add(col);
+                if x >= bounds.x.saturating_add(bounds.width) {
+                    break;
+                }
+                if let Some(cell) = buffer.cell_mut((x, y)) {
+                    cell.set_symbol(" ");
+                    cell.set_style(menu_style);
+                }
+            }
+        }
+        for (idx, label) in items.iter().enumerate() {
+            let y = start_y.saturating_add(idx as u16 + 1);
+            if y < bounds.y || y >= bounds.y.saturating_add(bounds.height) {
+                break;
+            }
+            let marker = if idx == selected { ">" } else { " " };
+            let line = format!("{marker} {label}");
+            let text = truncate_to_width(&line, width as usize);
+            let style = if idx == selected {
+                selected_style
+            } else {
+                menu_style
+            };
+            buffer.set_string(start_x + 1, y, text, style);
+            self.menu_item_hits.push(PanelMenuHit {
+                index: idx,
+                rect: Rect {
+                    x: start_x,
+                    y,
+                    width,
+                    height: 1,
+                },
+            });
+        }
+    }
+
+    pub fn hit_test_menu_item(&self, event: &Event) -> Option<usize> {
+        let Event::Mouse(mouse) = event else {
+            return None;
+        };
+        if !matches!(mouse.kind, MouseEventKind::Down(_)) {
+            return None;
+        }
+        self.menu_item_hits
+            .iter()
+            .find(|hit| rect_contains(hit.rect, mouse.column, mouse.row))
+            .map(|hit| hit.index)
+    }
 }
 
 impl<R: Copy + Eq + Ord + std::fmt::Debug> Default for Panel<R> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PanelMenuHit {
+    index: usize,
+    rect: Rect,
 }
 
 fn panel_order<W: Copy + Eq, R: Copy + Eq + Ord + PartialEq<W>>(
@@ -164,4 +299,11 @@ fn panel_order<W: Copy + Eq, R: Copy + Eq + Ord + PartialEq<W>>(
         }
     }
     ordered
+}
+
+fn truncate_to_width(value: &str, width: usize) -> String {
+    if value.chars().count() <= width {
+        return value.to_string();
+    }
+    value.chars().take(width).collect()
 }

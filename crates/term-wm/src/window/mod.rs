@@ -122,7 +122,15 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     wm_overlay_opened_at: Option<Instant>,
     esc_passthrough_window: Duration,
     wm_overlay: DialogOverlay,
+    wm_menu_selected: usize,
     decorator: Box<dyn WindowDecorator>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WmMenuAction {
+    CloseMenu,
+    NewWindow,
+    ExitUi,
 }
 
 impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord + std::fmt::Debug> WindowManager<W, R>
@@ -152,6 +160,7 @@ where
             wm_overlay_opened_at: None,
             esc_passthrough_window: esc_passthrough_window_default(),
             wm_overlay: DialogOverlay::new(),
+            wm_menu_selected: 0,
             decorator: Box::new(OpenStepDecorator),
         }
     }
@@ -228,6 +237,7 @@ where
         self.wm_overlay_visible = true;
         self.wm_overlay_opened_at = Some(Instant::now());
         self.wm_overlay.set_visible(true);
+        self.wm_menu_selected = 0;
     }
 
     pub fn close_wm_overlay(&mut self) {
@@ -422,7 +432,13 @@ where
             && self.panel_active()
             && rect_contains(self.panel.area(), mouse.column, mouse.row)
         {
-            if let Some(id) = self.panel.hit_test(event)
+            if self.panel.hit_test_menu(event) {
+                if self.wm_overlay_visible {
+                    self.close_wm_overlay();
+                } else {
+                    self.open_wm_overlay();
+                }
+            } else if let Some(id) = self.panel.hit_test_window(event)
                 && let Some(target) = self.focus_for_region(id)
             {
                 self.set_focus(target);
@@ -708,24 +724,17 @@ where
             &self.focus.order,
             &self.managed_draw_order,
         );
-        if self.layout_contract == LayoutContract::WindowManaged && self.wm_overlay_visible {
-            let (remaining_ms, bar) = if let Some(remaining) = self.esc_passthrough_remaining() {
-                let total = self.esc_passthrough_window.as_millis().max(1);
-                let remaining_ms = remaining.as_millis();
-                let filled = ((remaining_ms * 10) / total) as usize;
-                let filled = filled.min(10);
-                let bar = format!("[{}{}]", "#".repeat(filled), "-".repeat(10 - filled));
-                (format!("{remaining_ms}ms"), bar)
-            } else {
-                ("inactive".to_string(), "[----------]".to_string())
-            };
-            let text = format!(
-                "Window manager mode (placeholder)\n\n- Esc: dismiss overlay\n- n: new window\n- Esc (quick double): send to app\n- Esc passthrough: {remaining_ms} {bar}\n- Tab/Shift-Tab: cycle focus\n- More commands coming soon"
-            );
-            self.wm_overlay.set_title("Window Manager");
-            self.wm_overlay.set_body(text);
-            self.wm_overlay.render(frame, frame.area(), false);
-        }
+        let menu_labels = wm_menu_items()
+            .iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>();
+        self.panel.render_menu(
+            frame,
+            self.wm_overlay_visible,
+            frame.area(),
+            &menu_labels,
+            self.wm_menu_selected,
+        );
     }
 
     pub fn set_regions_from_plan(&mut self, plan: &LayoutPlan<R>, area: Rect) {
@@ -814,6 +823,86 @@ where
             self.focus.order.iter().copied().find(|focus| id == *focus)
         }
     }
+
+    pub fn handle_wm_menu_event(&mut self, event: &Event) -> Option<WmMenuAction> {
+        if !self.wm_overlay_visible {
+            return None;
+        }
+        if let Some(index) = self.panel.hit_test_menu_item(event) {
+            self.wm_menu_selected = index.min(wm_menu_items().len().saturating_sub(1));
+            return wm_menu_items()
+                .get(self.wm_menu_selected)
+                .map(|item| item.action);
+        }
+        let Event::Key(key) = event else {
+            return None;
+        };
+        match key.code {
+            KeyCode::Up => {
+                let total = wm_menu_items().len();
+                if total > 0 {
+                    if self.wm_menu_selected == 0 {
+                        self.wm_menu_selected = total - 1;
+                    } else {
+                        self.wm_menu_selected -= 1;
+                    }
+                }
+                None
+            }
+            KeyCode::Down => {
+                let total = wm_menu_items().len();
+                if total > 0 {
+                    self.wm_menu_selected = (self.wm_menu_selected + 1) % total;
+                }
+                None
+            }
+            KeyCode::Char('k') => {
+                let total = wm_menu_items().len();
+                if total > 0 {
+                    if self.wm_menu_selected == 0 {
+                        self.wm_menu_selected = total - 1;
+                    } else {
+                        self.wm_menu_selected -= 1;
+                    }
+                }
+                None
+            }
+            KeyCode::Char('j') => {
+                let total = wm_menu_items().len();
+                if total > 0 {
+                    self.wm_menu_selected = (self.wm_menu_selected + 1) % total;
+                }
+                None
+            }
+            KeyCode::Enter => wm_menu_items()
+                .get(self.wm_menu_selected)
+                .map(|item| item.action),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WmMenuItem {
+    label: &'static str,
+    action: WmMenuAction,
+}
+
+fn wm_menu_items() -> [WmMenuItem; 3] {
+    [
+        WmMenuItem {
+            label: "Resume",
+            action: WmMenuAction::CloseMenu,
+        },
+        WmMenuItem {
+            label: "New Window",
+            action: WmMenuAction::NewWindow,
+        },
+        WmMenuItem {
+            label: "Exit UI",
+            action: WmMenuAction::ExitUi,
+        },
+    ]
 }
 
 fn esc_passthrough_window_default() -> Duration {
