@@ -48,16 +48,16 @@ portable-pty = "0.9.0"
 rand = "0.8"
 ratatui = "0.30.0"
 resvg = "0.45.1"
-term-wm = { path = "crates/term-wm" }
-vt100 = "0.16.2"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.148"
 shell-words = "1.1.1"
 similar = "2.7.0"
 tempfile = "3.10"
+term-wm = { path = "crates/term-wm" }
 thiserror = "2.0.17"
 toml = "0.9.10"
+vt100 = "0.16.2"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [dependencies]
@@ -74,16 +74,16 @@ libc.workspace = true
 portable-pty.workspace = true
 rand.workspace = true
 ratatui.workspace = true
-term-wm.workspace = true
-vt100.workspace = true
 rusqlite = { workspace = true, features = ["bundled"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 shell-words.workspace = true
 similar.workspace = true
 tempfile.workspace = true
+term-wm.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+vt100.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [dev-dependencies]
