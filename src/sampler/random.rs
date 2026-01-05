@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 
+use crate::TrialOverrides;
 use crate::command::CommandObjective;
 use crate::constants::{
     DUPLICATE_CONFIG_PREFIX, FIELD_SCORE, FIELD_TRIAL_BRACKET, FIELD_TRIAL_CONFIG_ID,
@@ -10,7 +11,6 @@ use crate::constants::{
 use crate::scheduler::TrialScheduler;
 use crate::space::SearchSpace;
 use crate::store::{TrialStatus, TrialStore};
-use crate::TrialOverrides;
 
 #[derive(Clone, Copy)]
 struct CompletedTrial {
@@ -37,10 +37,7 @@ struct DiscreteConfigPool {
 }
 
 impl DiscreteConfigPool {
-    fn new(
-        space: &SearchSpace,
-        store: &TrialStore,
-    ) -> Result<Option<Self>, Box<dyn Error>> {
+    fn new(space: &SearchSpace, store: &TrialStore) -> Result<Option<Self>, Box<dyn Error>> {
         // Build the pool lazily only after a duplicate is observed.
         // The cap applies to the total discrete space size, not attempts per trial.
         let mut total = 1usize;
@@ -303,7 +300,7 @@ fn build_available_configs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CommandTemplate, ParamSpec, TrialRecord, TRIALS_CSV_FILENAME};
+    use crate::{CommandTemplate, ParamSpec, TRIALS_CSV_FILENAME, TrialRecord};
 
     #[test]
     fn discrete_pool_returns_remaining_config() {

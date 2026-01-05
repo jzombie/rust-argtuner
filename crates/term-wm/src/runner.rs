@@ -2,8 +2,8 @@ use std::io;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use ratatui::backend::Backend;
 use ratatui::Terminal;
+use ratatui::backend::Backend;
 
 use crate::window::{LayoutContract, WindowManager};
 
@@ -132,7 +132,9 @@ where
 
 fn normalize_event(evt: Event) -> Event {
     match evt {
-        Event::Key(mut key) if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT) => {
+        Event::Key(mut key)
+            if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
             key.code = KeyCode::BackTab;
             key.modifiers.remove(KeyModifiers::SHIFT);
             Event::Key(key)

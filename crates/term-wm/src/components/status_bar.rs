@@ -1,6 +1,6 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::Frame;
 
 pub struct StatusBar {
     left: String,

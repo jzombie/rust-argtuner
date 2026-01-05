@@ -1,8 +1,8 @@
 use crossterm::event::{Event, KeyCode};
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
-use ratatui::Frame;
 
 use crate::components::scroll_view::ScrollView;
 
@@ -128,7 +128,9 @@ impl super::Component for ToggleListComponent {
                 .title(format!("{} (focus)", self.title))
                 .border_style(Style::default().fg(Color::Green))
         } else {
-            Block::default().borders(Borders::ALL).title(self.title.as_str())
+            Block::default()
+                .borders(Borders::ALL)
+                .title(self.title.as_str())
         };
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -158,7 +160,8 @@ impl super::Component for ToggleListComponent {
             state.select(Some(self.selected - offset));
         }
 
-        let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let list =
+            List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
         frame.render_stateful_widget(list, inner, &mut state);
         self.scroll_view.render(frame);
     }

@@ -355,12 +355,7 @@ impl ParamSpec {
 
     pub fn discrete_value_count(&self) -> Option<usize> {
         match self {
-            ParamSpec::Float {
-                min,
-                max,
-                step,
-                ..
-            } => {
+            ParamSpec::Float { min, max, step, .. } => {
                 if let Some(step) = step.filter(|s| *s > 0.0) {
                     if max < min {
                         return Some(0);

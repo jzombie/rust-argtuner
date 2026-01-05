@@ -12,7 +12,7 @@ use ratatui::{Frame, Terminal};
 
 use term_wm::components::{AsciiImage, Component};
 use term_wm::layout::{LayoutNode, TilingLayout};
-use term_wm::runner::{run_app, HasWindowManager};
+use term_wm::runner::{HasWindowManager, run_app};
 use term_wm::window::WindowManager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -94,7 +94,10 @@ impl App {
         let layout = LayoutNode::split(
             Direction::Horizontal,
             vec![Constraint::Percentage(50), Constraint::Percentage(50)],
-            vec![LayoutNode::leaf(PaneId::Left), LayoutNode::leaf(PaneId::Right)],
+            vec![
+                LayoutNode::leaf(PaneId::Left),
+                LayoutNode::leaf(PaneId::Right),
+            ],
         );
         windows.set_managed_layout(TilingLayout::new(layout));
         Ok(Self {
@@ -141,15 +144,31 @@ fn load_into(component: &mut AsciiImage, path: &str) -> io::Result<()> {
     let image = decode_pnm(&bytes)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unsupported image"))?;
     match image {
-        Pnm::Luma { width, height, data } => component.set_luma8(width, height, data),
-        Pnm::Rgba { width, height, data } => component.set_rgba8(width, height, data),
+        Pnm::Luma {
+            width,
+            height,
+            data,
+        } => component.set_luma8(width, height, data),
+        Pnm::Rgba {
+            width,
+            height,
+            data,
+        } => component.set_rgba8(width, height, data),
     }
     Ok(())
 }
 
 enum Pnm {
-    Luma { width: u32, height: u32, data: Vec<u8> },
-    Rgba { width: u32, height: u32, data: Vec<u8> },
+    Luma {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
+    Rgba {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
 }
 
 fn decode_pnm(bytes: &[u8]) -> Option<Pnm> {

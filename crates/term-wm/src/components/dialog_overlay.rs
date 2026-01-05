@@ -1,7 +1,7 @@
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
-use ratatui::Frame;
 
 #[derive(Debug, Clone)]
 pub struct DialogOverlay {
@@ -54,15 +54,20 @@ impl super::Component for DialogOverlay {
         }
         let width = area.width.min(self.width).max(24);
         let height = area.height.min(self.height).max(5);
-        let x = area
-            .x
-            .saturating_add(area.width.saturating_sub(width) / 2);
+        let x = area.x.saturating_add(area.width.saturating_sub(width) / 2);
         let y = area
             .y
             .saturating_add(area.height.saturating_sub(height) / 2);
-        let rect = Rect { x, y, width, height };
+        let rect = Rect {
+            x,
+            y,
+            width,
+            height,
+        };
         frame.render_widget(Clear, rect);
-        let block = Block::default().title(self.title.as_str()).borders(Borders::ALL);
+        let block = Block::default()
+            .title(self.title.as_str())
+            .borders(Borders::ALL);
         let paragraph = Paragraph::new(self.body.as_str())
             .style(Style::default().bg(self.bg))
             .block(block)

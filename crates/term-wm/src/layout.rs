@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::prelude::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::Frame;
 
-use crate::window::{rect_contains, RegionMap};
+use crate::window::{RegionMap, rect_contains};
 
 const HANDLE_THICKNESS: u16 = 3;
 
@@ -264,8 +264,7 @@ impl<Id: Copy + Eq + Ord> LayoutNode<Id> {
                     children.len(),
                     *resizable,
                 );
-                for (idx, (child, rect)) in children.iter().zip(rects.iter().copied()).enumerate()
-                {
+                for (idx, (child, rect)) in children.iter().zip(rects.iter().copied()).enumerate() {
                     path.push(idx);
                     child.layout_recursive(rect, regions, handles, path);
                     path.pop();
@@ -373,9 +372,13 @@ impl<Id: Copy + Eq + Ord> TilingLayout<Id> {
                     };
                     state.last_col = mouse.column;
                     state.last_row = mouse.row;
-                    return self
-                        .root
-                        .apply_drag(area, &state.path, state.index, state.direction, delta);
+                    return self.root.apply_drag(
+                        area,
+                        &state.path,
+                        state.index,
+                        state.direction,
+                        delta,
+                    );
                 }
             }
             MouseEventKind::Moved => {}
@@ -586,8 +589,14 @@ fn split_sizes(
     child_count: usize,
     resizable: bool,
 ) -> Vec<u16> {
-    let (rects, _) =
-        split_rects_with_gaps(direction, area, weights, constraints, child_count, resizable);
+    let (rects, _) = split_rects_with_gaps(
+        direction,
+        area,
+        weights,
+        constraints,
+        child_count,
+        resizable,
+    );
     rects
         .iter()
         .map(|rect| match direction {
@@ -676,11 +685,7 @@ fn split_at_path_mut<'a, Id: Copy + Eq + Ord>(
     Some(current)
 }
 
-pub fn render_handles(
-    frame: &mut Frame,
-    handles: &[SplitHandle],
-    hovered: Option<&SplitHandle>,
-) {
+pub fn render_handles(frame: &mut Frame, handles: &[SplitHandle], hovered: Option<&SplitHandle>) {
     let buffer = frame.buffer_mut();
     let hover_rect = hovered.map(|handle| handle.rect);
     for handle in handles {

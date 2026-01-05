@@ -1,7 +1,7 @@
 use crossterm::event::{Event, MouseEvent, MouseEventKind};
+use ratatui::Frame;
 use ratatui::prelude::Rect;
 use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
-use ratatui::Frame;
 
 use crate::window::ScrollState;
 
@@ -35,7 +35,8 @@ impl ScrollbarDrag {
             };
         }
         let scrollbar_x = area.x.saturating_add(area.width.saturating_sub(1));
-        let on_scrollbar = rect_contains(area, mouse.column, mouse.row) && mouse.column == scrollbar_x;
+        let on_scrollbar =
+            rect_contains(area, mouse.column, mouse.row) && mouse.column == scrollbar_x;
         match mouse.kind {
             MouseEventKind::Down(_) if on_scrollbar => {
                 self.dragging = true;
@@ -166,13 +167,7 @@ impl ScrollView {
     }
 }
 
-pub fn render_scrollbar(
-    frame: &mut Frame,
-    area: Rect,
-    total: usize,
-    view: usize,
-    offset: usize,
-) {
+pub fn render_scrollbar(frame: &mut Frame, area: Rect, total: usize, view: usize, offset: usize) {
     if total <= view || view == 0 || area.height == 0 {
         return;
     }
@@ -190,7 +185,9 @@ fn scrollbar_offset_from_row(row: u16, area: Rect, total: usize, view: usize) ->
     if max_offset == 0 || area.height <= 1 {
         return 0;
     }
-    let rel = row.saturating_sub(area.y).min(area.height.saturating_sub(1));
+    let rel = row
+        .saturating_sub(area.y)
+        .min(area.height.saturating_sub(1));
     let ratio = rel as f64 / (area.height.saturating_sub(1)) as f64;
     (ratio * max_offset as f64).round() as usize
 }

@@ -1,4 +1,3 @@
-use std::error::Error;
 use crate::analysis::{print_hparam_impact, print_top_trials};
 use crate::command::CommandObjective;
 use crate::project::{Project, Sampler};
@@ -7,6 +6,7 @@ use crate::scheduler::Scheduler;
 use crate::scheduler::{SchedulerBinding, TrialScheduler};
 use crate::store::TrialStore;
 use crate::validate::validate_project_config;
+use std::error::Error;
 
 pub struct Tuner {
     project: Project,

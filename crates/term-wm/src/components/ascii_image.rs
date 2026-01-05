@@ -1,8 +1,8 @@
 use std::path::Path;
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
-use ratatui::Frame;
 use resvg::{tiny_skia, usvg};
 
 const DEFAULT_RAMP: &[char] = &[' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'];
@@ -104,10 +104,7 @@ impl AsciiImage {
             self.clear();
             return;
         }
-        let capacity = width
-            .checked_mul(height)
-            .map(|v| v as usize)
-            .unwrap_or(0);
+        let capacity = width.checked_mul(height).map(|v| v as usize).unwrap_or(0);
         self.rgba = Some(rgba.clone());
         let mut alpha = Vec::with_capacity(capacity);
         let mut luma = Vec::with_capacity(capacity);
@@ -132,11 +129,7 @@ impl AsciiImage {
         self.width = width;
         self.height = height;
         self.alpha = Some(alpha);
-        self.luma_avg = if count == 0 {
-            0
-        } else {
-            (sum / count) as u8
-        };
+        self.luma_avg = if count == 0 { 0 } else { (sum / count) as u8 };
         self.luma = luma;
         self.dirty = true;
     }
@@ -161,8 +154,7 @@ impl AsciiImage {
         };
         let target_w = ((size.width() as f32 * scale).round() as u32).max(1);
         let target_h = ((size.height() as f32 * scale).round() as u32).max(1);
-        let mut pixmap =
-            tiny_skia::Pixmap::new(target_w, target_h).ok_or("pixmap alloc failed")?;
+        let mut pixmap = tiny_skia::Pixmap::new(target_w, target_h).ok_or("pixmap alloc failed")?;
         let transform = tiny_skia::Transform::from_scale(scale, scale);
         resvg::render(&tree, transform, &mut pixmap.as_mut());
         let data = pixmap.data().to_vec();
@@ -223,15 +215,13 @@ impl AsciiImage {
                 }
                 let (cell_ch, cell_fg, cell_bg) = match self.render_mode {
                     RenderMode::Ascii => {
-                        let sy0 = (py0.saturating_sub(offset_y))
-                            .saturating_mul(self.height)
-                            / target_h;
+                        let sy0 =
+                            (py0.saturating_sub(offset_y)).saturating_mul(self.height) / target_h;
                         let sy1 = (py0.saturating_add(1).saturating_sub(offset_y))
                             .saturating_mul(self.height)
                             / target_h;
-                        let sx = (px0.saturating_sub(offset_x))
-                            .saturating_mul(self.width)
-                            / target_w;
+                        let sx =
+                            (px0.saturating_sub(offset_x)).saturating_mul(self.width) / target_w;
                         let alpha0 = self.sample_alpha(sx, sy0);
                         let alpha1 = self.sample_alpha(sx, sy1);
                         if alpha0 == 0 && alpha1 == 0 {
@@ -272,11 +262,9 @@ impl AsciiImage {
                                 {
                                     continue;
                                 }
-                                let sx = (px.saturating_sub(offset_x))
-                                    .saturating_mul(self.width)
+                                let sx = (px.saturating_sub(offset_x)).saturating_mul(self.width)
                                     / target_w;
-                                let sy = (py.saturating_sub(offset_y))
-                                    .saturating_mul(self.height)
+                                let sy = (py.saturating_sub(offset_y)).saturating_mul(self.height)
                                     / target_h;
                                 let alpha = self.sample_alpha(sx, sy);
                                 dot_alpha[dot_index] = alpha;

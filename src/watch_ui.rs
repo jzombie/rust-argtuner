@@ -16,8 +16,8 @@ use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    canvas::{Canvas, Line as CanvasLine},
     Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph,
+    canvas::{Canvas, Line as CanvasLine},
 };
 use ratatui::{Frame, Terminal};
 use rusqlite::{Connection, OpenFlags};
@@ -25,8 +25,8 @@ use term_wm::components::{
     Component, ListComponent, ScrollView, StatusBar, ToggleItem, ToggleListComponent,
 };
 use term_wm::layout::{LayoutNode, TilingLayout};
-use term_wm::runner::{run_app, HasWindowManager};
-use term_wm::window::{rect_contains, WindowManager};
+use term_wm::runner::{HasWindowManager, run_app};
+use term_wm::window::{WindowManager, rect_contains};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let mut app = AppState {
@@ -239,127 +239,113 @@ fn map_focus_from_region(region: RegionId) -> FocusTarget {
 
 fn handle_event(app: &mut AppState, event: &Event) -> bool {
     match event {
-        Event::Key(key) => {
-            match key.code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    apply_focus_delta(app, -1);
-                    true
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    apply_focus_delta(app, 1);
-                    true
-                }
-                KeyCode::Char('h') => {
-                    if pane_focus(app) == PaneFocus::Charts {
-                        app.chart_mode = match app.chart_mode {
-                            ChartMode::Metrics => ChartMode::HyperParams,
-                            ChartMode::HyperParams => ChartMode::Metrics,
-                        };
-                        if app.chart_mode == ChartMode::HyperParams
-                            && pane_focus(app) == PaneFocus::Details
-                        {
-                            app.windows.set_focus(FocusTarget::DetailsParams);
-                        } else if app.chart_mode == ChartMode::Metrics
-                            && matches!(
-                                app.windows.focus(),
-                                FocusTarget::DetailsParams | FocusTarget::DetailsMetrics
-                            )
-                        {
-                            app.windows.set_focus(FocusTarget::Details);
-                        }
-                    }
-                    true
-                }
-                KeyCode::Char('f') => {
-                    if pane_focus(app) == PaneFocus::Charts
-                        && app.chart_mode == ChartMode::Metrics
-                    {
-                        toggle_chart_view(app);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                KeyCode::Enter | KeyCode::Char(' ') => {
-                    if pane_focus(app) == PaneFocus::Charts
-                        && app.chart_mode == ChartMode::Metrics
-                    {
-                        toggle_chart_view(app);
-                        true
-                    } else if pane_focus(app) == PaneFocus::Details
-                        && app.chart_mode == ChartMode::HyperParams
-                    {
-                        match app.windows.focus() {
-                            FocusTarget::DetailsParams => toggle_param_selected(app),
-                            FocusTarget::DetailsMetrics => toggle_metric_selected(app),
-                            _ => toggle_param_selected(app),
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                }
-                KeyCode::Char('+') | KeyCode::Char('=') => {
-                    if pane_focus(app) == PaneFocus::Charts
-                        && app.chart_mode == ChartMode::Metrics
-                    {
-                        zoom_charts(app, 0.8);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                KeyCode::Char('-') => {
-                    if pane_focus(app) == PaneFocus::Charts
-                        && app.chart_mode == ChartMode::Metrics
-                    {
-                        zoom_charts(app, 1.25);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                KeyCode::Char('0') => {
-                    if pane_focus(app) == PaneFocus::Charts
-                        && app.chart_mode == ChartMode::Metrics
-                    {
-                        reset_chart_zoom(app);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                KeyCode::PageDown | KeyCode::Char(']') => {
-                    apply_focus_delta(app, 5);
-                    true
-                }
-                KeyCode::PageUp | KeyCode::Char('[') => {
-                    apply_focus_delta(app, -5);
-                    true
-                }
-                KeyCode::Right => {
-                    if app.chart_mode == ChartMode::HyperParams
-                        && pane_focus(app) == PaneFocus::Charts
-                    {
-                        pan_params(app, 1);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                KeyCode::Left => {
-                    if app.chart_mode == ChartMode::HyperParams
-                        && pane_focus(app) == PaneFocus::Charts
-                    {
-                        pan_params(app, -1);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                _ => false,
+        Event::Key(key) => match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                apply_focus_delta(app, -1);
+                true
             }
-        }
+            KeyCode::Down | KeyCode::Char('j') => {
+                apply_focus_delta(app, 1);
+                true
+            }
+            KeyCode::Char('h') => {
+                if pane_focus(app) == PaneFocus::Charts {
+                    app.chart_mode = match app.chart_mode {
+                        ChartMode::Metrics => ChartMode::HyperParams,
+                        ChartMode::HyperParams => ChartMode::Metrics,
+                    };
+                    if app.chart_mode == ChartMode::HyperParams
+                        && pane_focus(app) == PaneFocus::Details
+                    {
+                        app.windows.set_focus(FocusTarget::DetailsParams);
+                    } else if app.chart_mode == ChartMode::Metrics
+                        && matches!(
+                            app.windows.focus(),
+                            FocusTarget::DetailsParams | FocusTarget::DetailsMetrics
+                        )
+                    {
+                        app.windows.set_focus(FocusTarget::Details);
+                    }
+                }
+                true
+            }
+            KeyCode::Char('f') => {
+                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
+                    toggle_chart_view(app);
+                    true
+                } else {
+                    false
+                }
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
+                    toggle_chart_view(app);
+                    true
+                } else if pane_focus(app) == PaneFocus::Details
+                    && app.chart_mode == ChartMode::HyperParams
+                {
+                    match app.windows.focus() {
+                        FocusTarget::DetailsParams => toggle_param_selected(app),
+                        FocusTarget::DetailsMetrics => toggle_metric_selected(app),
+                        _ => toggle_param_selected(app),
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
+                    zoom_charts(app, 0.8);
+                    true
+                } else {
+                    false
+                }
+            }
+            KeyCode::Char('-') => {
+                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
+                    zoom_charts(app, 1.25);
+                    true
+                } else {
+                    false
+                }
+            }
+            KeyCode::Char('0') => {
+                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
+                    reset_chart_zoom(app);
+                    true
+                } else {
+                    false
+                }
+            }
+            KeyCode::PageDown | KeyCode::Char(']') => {
+                apply_focus_delta(app, 5);
+                true
+            }
+            KeyCode::PageUp | KeyCode::Char('[') => {
+                apply_focus_delta(app, -5);
+                true
+            }
+            KeyCode::Right => {
+                if app.chart_mode == ChartMode::HyperParams && pane_focus(app) == PaneFocus::Charts
+                {
+                    pan_params(app, 1);
+                    true
+                } else {
+                    false
+                }
+            }
+            KeyCode::Left => {
+                if app.chart_mode == ChartMode::HyperParams && pane_focus(app) == PaneFocus::Charts
+                {
+                    pan_params(app, -1);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        },
         Event::Mouse(mouse) => {
             if app.details_layout.handle_event(event, app.details_area)
                 || app.charts_layout.handle_event(event, app.charts_area)
@@ -381,83 +367,88 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
                 return true;
             }
             match mouse.kind {
-            MouseEventKind::ScrollUp => {
-                let delta = -1;
-                if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
-                    if mouse.modifiers.contains(KeyModifiers::CONTROL)
-                        && pane == PaneFocus::Charts
-                        && app.chart_mode == ChartMode::Metrics
-                    {
-                        zoom_charts(app, 0.8);
+                MouseEventKind::ScrollUp => {
+                    let delta = -1;
+                    if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
+                        if mouse.modifiers.contains(KeyModifiers::CONTROL)
+                            && pane == PaneFocus::Charts
+                            && app.chart_mode == ChartMode::Metrics
+                        {
+                            zoom_charts(app, 0.8);
+                        } else {
+                            if pane == PaneFocus::Details
+                                && app.chart_mode == ChartMode::HyperParams
+                            {
+                                update_details_focus_for_mouse(app, mouse.column, mouse.row);
+                            }
+                            apply_delta_for_pane(app, pane, delta);
+                        }
                     } else {
-                        if pane == PaneFocus::Details && app.chart_mode == ChartMode::HyperParams {
-                            update_details_focus_for_mouse(app, mouse.column, mouse.row);
-                        }
-                        apply_delta_for_pane(app, pane, delta);
+                        apply_focus_delta(app, delta);
                     }
-                } else {
-                    apply_focus_delta(app, delta);
+                    true
                 }
-                true
-            }
-            MouseEventKind::ScrollDown => {
-                let delta = 1;
-                if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
-                    if mouse.modifiers.contains(KeyModifiers::CONTROL)
-                        && pane == PaneFocus::Charts
-                        && app.chart_mode == ChartMode::Metrics
-                    {
-                        zoom_charts(app, 1.25);
+                MouseEventKind::ScrollDown => {
+                    let delta = 1;
+                    if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
+                        if mouse.modifiers.contains(KeyModifiers::CONTROL)
+                            && pane == PaneFocus::Charts
+                            && app.chart_mode == ChartMode::Metrics
+                        {
+                            zoom_charts(app, 1.25);
+                        } else {
+                            if pane == PaneFocus::Details
+                                && app.chart_mode == ChartMode::HyperParams
+                            {
+                                update_details_focus_for_mouse(app, mouse.column, mouse.row);
+                            }
+                            apply_delta_for_pane(app, pane, delta);
+                        }
                     } else {
-                        if pane == PaneFocus::Details && app.chart_mode == ChartMode::HyperParams {
-                            update_details_focus_for_mouse(app, mouse.column, mouse.row);
-                        }
-                        apply_delta_for_pane(app, pane, delta);
+                        apply_focus_delta(app, delta);
                     }
-                } else {
-                    apply_focus_delta(app, delta);
-                }
-                true
-            }
-            MouseEventKind::ScrollLeft => {
-                if app.chart_mode == ChartMode::HyperParams
-                    && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts)
-                {
-                    pan_params(app, -1);
                     true
-                } else {
-                    false
                 }
-            }
-            MouseEventKind::ScrollRight => {
-                if app.chart_mode == ChartMode::HyperParams
-                    && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts)
-                {
-                    pan_params(app, 1);
-                    true
-                } else {
-                    false
-                }
-            }
-            MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
-                    if pane == PaneFocus::Trials {
-                        handle_trial_click(app, mouse.column, mouse.row);
-                    } else if pane == PaneFocus::Charts {
-                        if app.chart_mode == ChartMode::Metrics {
-                            handle_chart_click(app, mouse.column, mouse.row);
-                        }
-                    } else if pane == PaneFocus::Details && app.chart_mode == ChartMode::HyperParams
+                MouseEventKind::ScrollLeft => {
+                    if app.chart_mode == ChartMode::HyperParams
+                        && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts)
                     {
-                        update_details_focus_for_mouse(app, mouse.column, mouse.row);
-                        handle_details_click(app, mouse.column, mouse.row);
+                        pan_params(app, -1);
+                        true
+                    } else {
+                        false
                     }
-                    true
-                } else {
-                    false
                 }
-            }
-            _ => false,
+                MouseEventKind::ScrollRight => {
+                    if app.chart_mode == ChartMode::HyperParams
+                        && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts)
+                    {
+                        pan_params(app, 1);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
+                        if pane == PaneFocus::Trials {
+                            handle_trial_click(app, mouse.column, mouse.row);
+                        } else if pane == PaneFocus::Charts {
+                            if app.chart_mode == ChartMode::Metrics {
+                                handle_chart_click(app, mouse.column, mouse.row);
+                            }
+                        } else if pane == PaneFocus::Details
+                            && app.chart_mode == ChartMode::HyperParams
+                        {
+                            update_details_focus_for_mouse(app, mouse.column, mouse.row);
+                            handle_details_click(app, mouse.column, mouse.row);
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
             }
         }
         _ => false,
@@ -614,10 +605,7 @@ fn handle_trial_click(app: &mut AppState, column: u16, row: u16) {
         return;
     }
     let offset_row = row.saturating_sub(inner.y) as usize;
-    let index = app
-        .trials_list
-        .scroll_offset()
-        .saturating_add(offset_row);
+    let index = app.trials_list.scroll_offset().saturating_add(offset_row);
     if index >= app.trials.len() {
         return;
     }
@@ -638,10 +626,7 @@ fn handle_chart_click(app: &mut AppState, column: u16, row: u16) {
     }
     let offset_row = row.saturating_sub(inner.y) as usize;
     let index_in_view = offset_row / CHART_ITEM_HEIGHT as usize;
-    let index = app
-        .charts_scroll
-        .offset()
-        .saturating_add(index_in_view);
+    let index = app.charts_scroll.offset().saturating_add(index_in_view);
     if index >= app.metrics_len {
         return;
     }
@@ -656,10 +641,7 @@ fn handle_details_click(app: &mut AppState, column: u16, row: u16) {
             return;
         }
         let offset_row = row.saturating_sub(inner.y) as usize;
-        let index = app
-            .params_list
-            .scroll_offset()
-            .saturating_add(offset_row);
+        let index = app.params_list.scroll_offset().saturating_add(offset_row);
         if index >= app.params_list.items().len() {
             return;
         }
@@ -671,10 +653,7 @@ fn handle_details_click(app: &mut AppState, column: u16, row: u16) {
             return;
         }
         let offset_row = row.saturating_sub(inner.y) as usize;
-        let index = app
-            .metrics_list
-            .scroll_offset()
-            .saturating_add(offset_row);
+        let index = app.metrics_list.scroll_offset().saturating_add(offset_row);
         if index >= app.metrics_list.items().len() {
             return;
         }
@@ -894,8 +873,7 @@ fn draw_ui(frame: &mut Frame, app: &mut AppState) {
     let area = frame.area();
     app.main_area = area;
     app.windows.set_focus_order(focus_targets(app));
-    app.windows
-        .register_tiling_layout(&app.main_layout, area);
+    app.windows.register_tiling_layout(&app.main_layout, area);
     let trials_area = app.windows.region(RegionId::Trials);
     let charts_area = app.windows.region(RegionId::Charts);
     draw_trial_list(frame, app, trials_area);
@@ -981,10 +959,14 @@ fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
 
     app.windows
         .register_tiling_layout(&app.charts_layout, inner);
-    app.windows.set_region(RegionId::ChartsInner, Rect::default());
-    app.windows.set_region(RegionId::DetailsInner, Rect::default());
-    app.windows.set_region(RegionId::ParamsInner, Rect::default());
-    app.windows.set_region(RegionId::MetricsInner, Rect::default());
+    app.windows
+        .set_region(RegionId::ChartsInner, Rect::default());
+    app.windows
+        .set_region(RegionId::DetailsInner, Rect::default());
+    app.windows
+        .set_region(RegionId::ParamsInner, Rect::default());
+    app.windows
+        .set_region(RegionId::MetricsInner, Rect::default());
     app.metrics_len = 0;
 
     if let Some(err) = app.last_error.as_ref() {
@@ -1260,8 +1242,7 @@ fn draw_trial_details(
     let total_lines = text.len();
     let visible_lines = inner.height as usize;
     app.details_scroll.update(inner, total_lines, visible_lines);
-    let paragraph = Paragraph::new(text)
-        .scroll((app.details_scroll.offset() as u16, 0));
+    let paragraph = Paragraph::new(text).scroll((app.details_scroll.offset() as u16, 0));
     frame.render_widget(paragraph, inner);
 
     app.details_scroll.render(frame);
@@ -1275,10 +1256,14 @@ fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
     let metrics_area = app.windows.region(RegionId::MetricsInner);
 
     app.windows.set_region(RegionId::DetailsInner, area);
-    app.windows
-        .set_region(RegionId::ParamsInner, Block::default().borders(Borders::ALL).inner(params_area));
-    app.windows
-        .set_region(RegionId::MetricsInner, Block::default().borders(Borders::ALL).inner(metrics_area));
+    app.windows.set_region(
+        RegionId::ParamsInner,
+        Block::default().borders(Borders::ALL).inner(params_area),
+    );
+    app.windows.set_region(
+        RegionId::MetricsInner,
+        Block::default().borders(Borders::ALL).inner(metrics_area),
+    );
 
     let params_focused = pane_focus(app) == PaneFocus::Details
         && matches!(app.windows.focus(), FocusTarget::DetailsParams);
@@ -1286,7 +1271,8 @@ fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
         && matches!(app.windows.focus(), FocusTarget::DetailsMetrics);
 
     app.params_list.render(frame, params_area, params_focused);
-    app.metrics_list.render(frame, metrics_area, metrics_focused);
+    app.metrics_list
+        .render(frame, metrics_area, metrics_focused);
 }
 
 fn styled_block<T: Into<Line<'static>>>(title: T, focused: bool) -> Block<'static> {
@@ -1713,7 +1699,12 @@ fn enabled_axes(app: &AppState) -> Vec<AxisKey> {
 
 fn enabled_axis_count(app: &AppState) -> usize {
     app.params_list.items().iter().filter(|p| p.checked).count()
-        + app.metrics_list.items().iter().filter(|m| m.checked).count()
+        + app
+            .metrics_list
+            .items()
+            .iter()
+            .filter(|m| m.checked)
+            .count()
 }
 
 fn trial_detail_lines(trial: &TrialRow, epochs: &[TrialRow]) -> Vec<Line<'static>> {
