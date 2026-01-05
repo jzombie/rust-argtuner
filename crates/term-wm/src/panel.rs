@@ -139,13 +139,16 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
     }
 }
 
-fn panel_order<W: Copy + Eq, R: Copy + Eq + Ord>(
+impl<R: Copy + Eq + Ord + std::fmt::Debug> Default for Panel<R> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn panel_order<W: Copy + Eq, R: Copy + Eq + Ord + PartialEq<W>>(
     focus_order: &[W],
     managed_draw_order: &[R],
-) -> Vec<R>
-where
-    R: PartialEq<W>,
-{
+) -> Vec<R> {
     if focus_order.is_empty() {
         return managed_draw_order.to_vec();
     }

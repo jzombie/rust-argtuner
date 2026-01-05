@@ -418,16 +418,17 @@ where
         if self.layout_contract != LayoutContract::WindowManaged {
             return false;
         }
-        if let Event::Mouse(mouse) = event {
-            if self.panel_active() && rect_contains(self.panel.area(), mouse.column, mouse.row) {
-                if let Some(id) = self.panel.hit_test(event) {
-                    if let Some(target) = self.focus_for_region(id) {
-                        self.set_focus(target);
-                        self.bring_floating_to_front(id);
-                    }
-                }
-                return true;
+        if let Event::Mouse(mouse) = event
+            && self.panel_active()
+            && rect_contains(self.panel.area(), mouse.column, mouse.row)
+        {
+            if let Some(id) = self.panel.hit_test(event)
+                && let Some(target) = self.focus_for_region(id)
+            {
+                self.set_focus(target);
+                self.bring_floating_to_front(id);
             }
+            return true;
         }
         if let Event::Mouse(mouse) = event {
             self.hover = Some((mouse.column, mouse.row));
