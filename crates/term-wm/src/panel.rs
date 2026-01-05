@@ -108,10 +108,11 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
         let mut x = area.x;
         let y = area.y;
         let max_x = area.x.saturating_add(area.width);
-        let menu_icon = "≡";
+        const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
+        let menu_icon = format!("≡ {CRATE_NAME}");
         let menu_width = menu_icon.chars().count() as u16;
         if x.saturating_add(menu_width) <= max_x {
-            buffer.set_string(x, y, menu_icon, Style::default());
+            buffer.set_string(x, y, menu_icon.as_str(), Style::default());
             self.menu_rect = Some(Rect {
                 x,
                 y,
@@ -124,12 +125,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             buffer.set_string(x, y, " ", Style::default());
             x = x.saturating_add(1);
         }
-        let prefix = "Windows:";
-        let prefix_width = prefix.chars().count() as u16;
-        if x.saturating_add(prefix_width) <= max_x {
-            buffer.set_string(x, y, prefix, Style::default());
-            x = x.saturating_add(prefix_width);
-        }
+        // Window list follows the menu button label.
         if let Some(status) = status_line {
             let available = max_x.saturating_sub(x).max(1);
             let text = truncate_to_width(status, available as usize);
