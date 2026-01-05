@@ -37,6 +37,19 @@ fn main() -> io::Result<()> {
         Duration::from_millis(16),
         |frame, app| draw_ui(frame, app),
         |event, app| {
+            if let Event::Key(key) = event {
+                if key.code == KeyCode::F(9) {
+                    app.mouse_captured = !app.mouse_captured;
+                    let mut stdout = io::stdout();
+                    if app.mouse_captured {
+                        let _ = execute!(stdout, event::EnableMouseCapture);
+                    } else {
+                        let _ = execute!(stdout, event::DisableMouseCapture);
+                    }
+                    return true;
+                }
+            }
+
             if matches!(event, Event::Mouse(_)) && app.windows.handle_managed_event(event) {
                 return true;
             }
@@ -73,6 +86,7 @@ struct App {
     windows: WindowManager<PaneId, PaneId>,
     terminals: Vec<TerminalComponent>,
     panes: Vec<PaneId>,
+    mouse_captured: bool,
 }
 
 impl App {
@@ -95,6 +109,7 @@ impl App {
             windows,
             terminals: vec![left, right],
             panes,
+            mouse_captured: true,
         })
     }
 }
