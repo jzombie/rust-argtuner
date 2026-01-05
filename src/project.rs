@@ -1,4 +1,6 @@
-use crate::constants::{ENV_TRIAL_DIR, ENV_TRIAL_ID, FIELD_METRIC, TRIALS_CSV_FILENAME};
+use crate::constants::{
+    CONFIG_FILENAME, ENV_TRIAL_DIR, ENV_TRIAL_ID, FIELD_METRIC, TRIALS_CSV_FILENAME,
+};
 use crate::scheduler::Scheduler;
 use std::path::{Path, PathBuf};
 
@@ -300,7 +302,7 @@ impl Project {
     }
 
     pub fn unified_config_path(&self) -> PathBuf {
-        self.root.join("argtuner.toml")
+        self.root.join(CONFIG_FILENAME)
     }
 
     pub fn acquire_lock(&self) -> std::io::Result<ProjectLock> {
@@ -342,6 +344,10 @@ impl Project {
             config.sampler,
             config.scheduler,
         ))
+    }
+
+    pub fn read_unified_config_text(&self) -> std::io::Result<String> {
+        std::fs::read_to_string(self.unified_config_path())
     }
 
     pub fn save_unified_config(&self, config: &UnifiedConfig) -> std::io::Result<()> {

@@ -2,14 +2,9 @@ use argtuner::{
     Goal, Project, ProjectSettings, Pruner, Sampler, SamplerConfig, Scheduler, SchedulerConfig,
     SuccessiveHalvingSchedulerConfig, Tuner,
 };
-use std::env;
 
 fn emit_result_command() -> String {
-    if let Ok(path) = env::var("CARGO_BIN_EXE_emit_result") {
-        path
-    } else {
-        "cargo run -q -p argtuner --bin emit_result --".to_string()
-    }
+    argtuner::test_support::bin_command("emit_result")
 }
 
 #[test]

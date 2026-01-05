@@ -7,7 +7,14 @@ use std::path::PathBuf;
 mod watch_ui;
 
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(
+    author,
+    version,
+    about = concat!("Repository: ", env!("CARGO_PKG_REPOSITORY")),
+    long_about = None,
+    arg_required_else_help = true,
+    help_template = "{name} {version}\n{about}\n\n{usage-heading} {usage}\n\n{all-args}\n"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -23,6 +30,9 @@ enum Commands {
         /// Run without writing to the project store (uses a temp dir)
         #[arg(long)]
         dry_run: bool,
+        /// Allow resuming even if the config changed (not recommended; use at your own risk)
+        #[arg(long)]
+        allow_config_change: bool,
     },
     /// Rebuild trials.csv from trials.sqlite
     RebuildCsv {
@@ -57,11 +67,18 @@ fn main() {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Run { path, dry_run } => {
+        Commands::Run {
+            path,
+            dry_run,
+            allow_config_change,
+        } => {
             let project = Project::new(path);
             let tuner = Tuner::new(project);
 
-            let options = argtuner::tuner::RunOptions { dry_run: *dry_run };
+            let options = argtuner::tuner::RunOptions {
+                dry_run: *dry_run,
+                allow_config_change: *allow_config_change,
+            };
             if let Err(e) = tuner.run_with_options(options) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);

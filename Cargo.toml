@@ -3,6 +3,7 @@
 name = "argtuner"
 version.workspace = true
 edition.workspace = true
+repository.workspace = true
 license.workspace = true
 default-run = "argtuner"
 
@@ -15,6 +16,8 @@ members = [
     "bindings/talkback-derive",
     "crates/common",
     "crates/interactive-probe",
+    "crates/loss-generator",
+    "crates/term-wm",
 ]
 resolver = "2"
 
@@ -22,41 +25,66 @@ resolver = "2"
 authors = ["Jeremy Harris <jeremy.harris@zenosmosis.com>"]
 version = "0.1.0-alpha"
 edition = "2024"
+repository = "https://github.com/jzombie/argtuner-rs"
 license = "MIT OR Apache-2.0"
 
 # Don't publish yet
 publish = false
 
 [workspace.dependencies]
+argmin = "0.11"
+argmin-math = { version = "0.5.1", features = ["vec"] }
 argtuner-common = { path = "crates/common" }
 argtuner-talkback = { path = "bindings/rust" }
 argtuner-talkback-derive = { path = "bindings/talkback-derive" }
-clap = "4.5.53"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.148"
-
-[dependencies]
-argmin = "0.11"
-argmin-math = { version = "0.5.1", features = ["vec"] }
-argtuner-common = { workspace = true }
-argtuner-talkback = { workspace = true, features = ["clap"] }
-argtuner-talkback-derive = { workspace = true }
 chrono = { version = "0.4.42", features = ["serde", "alloc"] }
-clap = { workspace = true, features = ["derive"] }
+clap = "4.5.53"
 crossterm = "0.29.0"
 csv = "1.3"
+indicatif = "0.18.3"
+indoc = "2.0.7"
 libc = "0.2.176"
 portable-pty = "0.9.0"
 rand = "0.8"
 ratatui = "0.30.0"
+resvg = "0.45.1"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.148"
 shell-words = "1.1.1"
+similar = "2.7.0"
 tempfile = "3.10"
-thiserror = "1.0"
+term-wm = { path = "crates/term-wm" }
+thiserror = "2.0.17"
 toml = "0.9.10"
+vt100 = "0.16.2"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
+[dependencies]
+argmin.workspace = true
+argmin-math = { workspace = true, features = ["vec"] }
+argtuner-common.workspace = true
+argtuner-talkback = { workspace = true, features = ["clap"] }
+argtuner-talkback-derive.workspace = true
+chrono = { workspace = true, features = ["serde", "alloc"] }
+clap = { workspace = true, features = ["derive"] }
+crossterm.workspace = true
+csv.workspace = true
+libc.workspace = true
+portable-pty.workspace = true
+rand.workspace = true
+ratatui.workspace = true
+rusqlite = { workspace = true, features = ["bundled"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+shell-words.workspace = true
+similar.workspace = true
+tempfile.workspace = true
+term-wm.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+vt100.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+
 [dev-dependencies]
-indoc = "2.0.7"
+indoc.workspace = true

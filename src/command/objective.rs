@@ -424,6 +424,10 @@ impl CommandObjective {
         self.space.dims()
     }
 
+    pub fn space(&self) -> &SearchSpace {
+        &self.space
+    }
+
     fn next_trial_id(&self) -> usize {
         let mut guard = self.next_id.lock().expect("trial id lock");
         let id = *guard;
@@ -450,19 +454,15 @@ mod tests {
     use crate::TRIALS_CSV_FILENAME;
 
     fn emit_result_command() -> String {
-        if let Ok(path) = std::env::var("CARGO_BIN_EXE_emit_result") {
-            path
-        } else {
-            "cargo run -q -p argtuner --bin emit_result --".to_string()
-        }
+        crate::test_support::bin_command("emit_result")
     }
 
     fn emit_invalid_result_command() -> String {
-        if let Ok(path) = std::env::var("CARGO_BIN_EXE_emit_invalid_result") {
-            path
-        } else {
-            "cargo run -q -p argtuner --bin emit_invalid_result --".to_string()
-        }
+        crate::test_support::bin_command("emit_invalid_result")
+    }
+
+    fn emit_x_used_command() -> String {
+        crate::test_support::bin_command("emit_x_used")
     }
 
     #[test]
@@ -646,15 +646,7 @@ mod tests {
     }
 
     fn emit_env_result_command() -> String {
-        if let Ok(path) = std::env::var("CARGO_BIN_EXE_emit_env_result") {
-            path
-        } else {
-            let manifest = crate::workspace_root().join("Cargo.toml");
-            format!(
-                "cargo run -q --manifest-path \"{}\" -p argtuner --bin emit_env_result --",
-                manifest.to_string_lossy()
-            )
-        }
+        crate::test_support::bin_command("emit_env_result")
     }
 
     #[test]
@@ -711,18 +703,7 @@ mod tests {
     #[test]
     fn csv_parameter_conflict_is_resolved_by_using_existing_value() {
         let dir = tempfile::tempdir().expect("tempdir");
-        // Template uses {x}
-        let event = json_event(
-            "model.epoch_end",
-            serde_json::json!({
-                "metric": "0.0",
-                "x_used": "PLACEHOLDER_X",
-                "epoch": "1"
-            }),
-        )
-        .replace("PLACEHOLDER_X", "{x}");
-        let template =
-            crate::CommandTemplate::new(format!("echo '{}{}'", crate::RESULT_PREFIX, event));
+        let template = crate::CommandTemplate::new(format!("{} --x {{x}}", emit_x_used_command()));
         let store = crate::TrialStore::new(
             dir.path().join(crate::TRIALS_CSV_FILENAME),
             template.clone(),

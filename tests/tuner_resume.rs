@@ -1,15 +1,13 @@
+use argtuner::RunOptions;
 use argtuner::{
-    CommandTemplate, FIELD_SCORE, Project, ProjectSettings, Sampler, SamplerConfig, Scheduler,
-    SchedulerConfig, SearchSpace, TRIAL_PREFIX, TrialRecord, TrialStatus, Tuner,
+    CONFIG_FILENAME, CommandTemplate, FIELD_SCORE, Project, ProjectSettings, Sampler,
+    SamplerConfig, Scheduler, SchedulerConfig, SearchSpace, TRIAL_PREFIX, TrialRecord, TrialStatus,
+    Tuner,
 };
 use std::collections::BTreeMap;
 
 fn emit_result_command() -> String {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_emit_result") {
-        path
-    } else {
-        "cargo run -q -p argtuner --bin emit_result --".to_string()
-    }
+    argtuner::test_support::bin_command("emit_result")
 }
 
 #[test]
@@ -94,4 +92,138 @@ fn tuner_skips_completed_trials() {
         .filter(|row| row.get("status").map(String::as_str) == Some("ok"))
         .count();
     assert_eq!(ok_rows, 2);
+}
+
+#[test]
+fn resume_aborts_on_config_change() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("argtuner").join("resume-change");
+    let project = Project::new(&root);
+    project.ensure_dirs().expect("dirs");
+
+    let template = CommandTemplate::new(format!(
+        "{} --checkpoint-dir {{trial_dir}}",
+        emit_result_command()
+    ));
+    let space = SearchSpace {
+        params: vec![argtuner::ParamSpec::Float {
+            name: "lr".to_string(),
+            min: 0.0,
+            max: 1.0,
+            log_scale: false,
+            step: None,
+            format: None,
+        }],
+    };
+
+    let project_settings = ProjectSettings {
+        metric_key: "metric".to_string(),
+        goal: argtuner::Goal::Min,
+        pruner: argtuner::Pruner::None,
+        inject_trial_placeholders: true,
+        checkpoint_arg: None,
+    };
+    let sampler = SamplerConfig {
+        kind: Sampler::Random,
+        ..SamplerConfig::default()
+    };
+    let mut scheduler = SchedulerConfig {
+        kind: Scheduler::Fixed,
+        n_trials: 1,
+        seed: 42,
+        ..SchedulerConfig::default()
+    };
+    let mut unified_config = argtuner::UnifiedConfig {
+        project: project_settings,
+        sampler,
+        scheduler: scheduler.clone(),
+        space,
+        template: template.as_str().to_string(),
+    };
+    project
+        .save_unified_config(&unified_config)
+        .expect("save config");
+
+    let tuner = Tuner::new(project.clone());
+    tuner.run().expect("run");
+
+    // Modify the config
+    scheduler.n_trials = 2;
+    unified_config.scheduler = scheduler;
+    project
+        .save_unified_config(&unified_config)
+        .expect("save updated config");
+
+    let err = tuner.run().expect_err("resume should fail");
+    let message = err.to_string();
+    assert!(message.contains(&format!("{CONFIG_FILENAME} changed")));
+    assert!(message.contains("-n_trials = 1"));
+    assert!(message.contains("+n_trials = 2"));
+}
+
+#[test]
+fn resume_allows_config_override_with_flag() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("argtuner").join("resume-override");
+    let project = Project::new(&root);
+    project.ensure_dirs().expect("dirs");
+
+    let template = CommandTemplate::new(format!(
+        "{} --checkpoint-dir {{trial_dir}}",
+        emit_result_command()
+    ));
+    let space = SearchSpace {
+        params: vec![argtuner::ParamSpec::Float {
+            name: "lr".to_string(),
+            min: 0.0,
+            max: 1.0,
+            log_scale: false,
+            step: None,
+            format: None,
+        }],
+    };
+
+    let project_settings = ProjectSettings {
+        metric_key: "metric".to_string(),
+        goal: argtuner::Goal::Min,
+        pruner: argtuner::Pruner::None,
+        inject_trial_placeholders: true,
+        checkpoint_arg: None,
+    };
+    let sampler = SamplerConfig {
+        kind: Sampler::Random,
+        ..SamplerConfig::default()
+    };
+    let mut scheduler = SchedulerConfig {
+        kind: Scheduler::Fixed,
+        n_trials: 1,
+        seed: 42,
+        ..SchedulerConfig::default()
+    };
+    let mut unified_config = argtuner::UnifiedConfig {
+        project: project_settings,
+        sampler,
+        scheduler: scheduler.clone(),
+        space,
+        template: template.as_str().to_string(),
+    };
+    project
+        .save_unified_config(&unified_config)
+        .expect("save config");
+
+    let tuner = Tuner::new(project.clone());
+    tuner.run().expect("run");
+
+    scheduler.seed = 99;
+    unified_config.scheduler = scheduler;
+    project
+        .save_unified_config(&unified_config)
+        .expect("save updated config");
+
+    tuner
+        .run_with_options(RunOptions {
+            dry_run: false,
+            allow_config_change: true,
+        })
+        .expect("override config");
 }

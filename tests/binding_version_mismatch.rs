@@ -1,3 +1,4 @@
+use argtuner::CONFIG_FILENAME;
 use indoc::indoc;
 use std::process::Command;
 
@@ -61,7 +62,7 @@ fn binding_version_mismatch_exits_with_message() {
         "#},
         space = "[space]\nparams = []"
     );
-    std::fs::write(project_root.join("argtuner.toml"), toml).expect("write config");
+    std::fs::write(project_root.join(CONFIG_FILENAME), toml).expect("write config");
 
     let output = Command::new(argtuner_bin)
         .arg("run")

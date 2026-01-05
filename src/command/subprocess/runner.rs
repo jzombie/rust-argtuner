@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
+#[cfg(not(windows))]
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -9,6 +10,7 @@ use std::thread;
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 
+#[cfg(not(windows))]
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use super::talkback::{ParsedItem, parse_prefix_lines};
@@ -161,9 +163,56 @@ fn payload_fields_from(data: &BTreeMap<String, String>) -> BTreeMap<String, Stri
 pub struct CommandRunner;
 
 impl CommandRunner {
+    #[cfg(windows)]
     pub fn run(command: &str, envs: &BTreeMap<String, String>) -> Result<CommandOutput, String> {
-        let parts =
-            shell_words::split(command).map_err(|err| format!("command parse failed: {err}"))?;
+        use std::process::Stdio;
+
+        let parts = split_command(command).map_err(|err| format!("command parse failed: {err}"))?;
+        if parts.is_empty() {
+            return Err("command is empty".to_string());
+        }
+        let cwd = std::env::current_dir().map_err(|err| format!("command cwd failed: {err}"))?;
+        let mut cmd = std::process::Command::new(&parts[0]);
+        cmd.current_dir(cwd)
+            .args(&parts[1..])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (key, value) in envs {
+            cmd.env(key, value);
+        }
+        let mut child = cmd
+            .spawn()
+            .map_err(|err| format!("command failed: {err}"))?;
+        let child_stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "command stdout unavailable".to_string())?;
+        let child_stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "command stderr unavailable".to_string())?;
+        let stdout_handle = spawn_reader(child_stdout, false);
+        let stderr_handle = spawn_reader(child_stderr, true);
+        let status = child
+            .wait()
+            .map_err(|err| format!("command wait failed: {err}"))?;
+        let stdout = stdout_handle
+            .join()
+            .map_err(|_| "stdout reader thread panicked".to_string())?;
+        let stderr = stderr_handle
+            .join()
+            .map_err(|_| "stderr reader thread panicked".to_string())?;
+        Ok(CommandOutput {
+            stdout,
+            _stderr: stderr,
+            exit_code: status.code().unwrap_or(-1),
+        })
+    }
+
+    #[cfg(not(windows))]
+    pub fn run(command: &str, envs: &BTreeMap<String, String>) -> Result<CommandOutput, String> {
+        let parts = split_command(command).map_err(|err| format!("command parse failed: {err}"))?;
         if parts.is_empty() {
             return Err("command is empty".to_string());
         }
@@ -190,50 +239,16 @@ impl CommandRunner {
             .spawn_command(cmd)
             .map_err(|err| format!("command failed: {err}"))?;
         drop(pair.slave);
-        let mut reader = pair
+        let reader = pair
             .master
             .try_clone_reader()
             .map_err(|err| format!("pty reader failed: {err}"))?;
-        #[cfg(any(unix, windows))]
+        #[cfg(unix)]
         let mut writer = pair
             .master
             .take_writer()
             .map_err(|err| format!("pty writer failed: {err}"))?;
-        let output = thread::spawn(move || {
-            let mut buf = [0u8; 8192];
-            let mut stdout = std::io::stdout();
-            let mut out = String::new();
-            loop {
-                let read = reader.read(&mut buf).unwrap_or(0);
-                if read == 0 {
-                    break;
-                }
-                let chunk = String::from_utf8_lossy(&buf[..read]);
-                let _ = stdout.write_all(chunk.as_bytes());
-                let _ = stdout.flush();
-                out.push_str(&chunk);
-            }
-            out
-        });
-        #[cfg(windows)]
-        let input_guard = {
-            let handle = thread::spawn(move || {
-                let mut stdin = std::io::stdin();
-                let mut buf = [0u8; 1024];
-                loop {
-                    let read = stdin.read(&mut buf).unwrap_or(0);
-                    if read == 0 {
-                        break;
-                    }
-                    let _ = writer.write_all(&buf[..read]);
-                    let _ = writer.flush();
-                }
-            });
-            Some(InputGuard {
-                handle: Some(handle),
-                stop: None,
-            })
-        };
+        let output = spawn_reader(reader, false);
 
         #[cfg(unix)]
         let input_guard = {
@@ -297,11 +312,96 @@ impl CommandRunner {
     }
 }
 
+fn spawn_reader<R: Read + Send + 'static>(
+    mut reader: R,
+    to_stderr: bool,
+) -> thread::JoinHandle<String> {
+    thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        let mut out = String::new();
+        if to_stderr {
+            let mut stderr = std::io::stderr();
+            loop {
+                let read = reader.read(&mut buf).unwrap_or(0);
+                if read == 0 {
+                    break;
+                }
+                let chunk = String::from_utf8_lossy(&buf[..read]);
+                let _ = stderr.write_all(chunk.as_bytes());
+                let _ = stderr.flush();
+                out.push_str(&chunk);
+            }
+        } else {
+            let mut stdout = std::io::stdout();
+            loop {
+                let read = reader.read(&mut buf).unwrap_or(0);
+                if read == 0 {
+                    break;
+                }
+                let chunk = String::from_utf8_lossy(&buf[..read]);
+                let _ = stdout.write_all(chunk.as_bytes());
+                let _ = stdout.flush();
+                out.push_str(&chunk);
+            }
+        }
+        out
+    })
+}
+
+fn split_command(command: &str) -> Result<Vec<String>, String> {
+    #[cfg(windows)]
+    {
+        split_command_windows(command)
+    }
+    #[cfg(not(windows))]
+    {
+        shell_words::split(command).map_err(|err| err.to_string())
+    }
+}
+
+#[cfg(not(windows))]
 struct InputGuard {
     handle: Option<thread::JoinHandle<()>>,
     stop: Option<Arc<AtomicBool>>,
 }
 
+#[cfg(windows)]
+fn split_command_windows(command: &str) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut chars = command.chars().peekable();
+    let mut in_quotes: Option<char> = None;
+    while let Some(ch) = chars.next() {
+        if let Some(q) = in_quotes {
+            if ch == q {
+                in_quotes = None;
+            } else {
+                current.push(ch);
+            }
+        } else if ch == '"' || ch == '\'' {
+            in_quotes = Some(ch);
+        } else if ch.is_whitespace() {
+            if !current.is_empty() {
+                args.push(current);
+                current = String::new();
+            }
+            while matches!(chars.peek(), Some(next) if next.is_whitespace()) {
+                chars.next();
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if in_quotes.is_some() {
+        return Err("unterminated quote".to_string());
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    Ok(args)
+}
+
+#[cfg(not(windows))]
 impl InputGuard {
     fn stop(&mut self) {
         if let Some(stop) = &self.stop {

@@ -3,10 +3,11 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use similar::TextDiff;
 
 use crate::command::CommandTemplate;
 use crate::constants::{
-    FIELD_METRIC, FIELD_SCORE, FIELD_TRIAL_BUDGET_STEP, FIELD_TRIAL_BUDGET_TOTAL,
+    CONFIG_FILENAME, FIELD_METRIC, FIELD_SCORE, FIELD_TRIAL_BUDGET_STEP, FIELD_TRIAL_BUDGET_TOTAL,
     FIELD_TRIAL_CONFIG_ID, FIELD_TRIAL_ELAPSED_MS, FIELD_TRIAL_ERROR, FIELD_TRIAL_ID,
     FIELD_TRIAL_STATUS, FIELD_TRIAL_TIME, HP_PREFIX, METRIC_NAMESPACE, MODEL_NAMESPACE,
     TRIAL_PREFIX,
@@ -102,6 +103,36 @@ impl TrialStore {
 
     pub fn rebuild_csv(&self) -> std::io::Result<()> {
         self.sync_csv()
+    }
+
+    pub fn ensure_project_config(
+        &self,
+        config_text: &str,
+        allow_override: bool,
+    ) -> std::io::Result<()> {
+        let stored = self.db.load_project_config()?;
+        match stored {
+            None => self.db.save_project_config(config_text),
+            Some(existing) => {
+                if existing == config_text {
+                    return Ok(());
+                }
+                if allow_override {
+                    return self.db.save_project_config(config_text);
+                }
+                if !self.db.has_any_trials()? {
+                    return self.db.save_project_config(config_text);
+                }
+                let diff = diff_lines(&existing, config_text);
+                let message = format!(
+                    "{CONFIG_FILENAME} changed since the last run; refusing to resume.\n{diff}"
+                );
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    message,
+                ))
+            }
+        }
     }
 
     pub fn command_for_trial(&self, trial_id: usize) -> std::io::Result<Option<String>> {
@@ -217,6 +248,15 @@ impl TrialStore {
         let (headers, rows) = rows_with_headers(&records);
         write_csv_snapshot(&self.csv_path, &headers, &rows)
     }
+}
+
+fn diff_lines(old: &str, new: &str) -> String {
+    let diff = TextDiff::from_lines(old, new);
+    let stored_label = format!("stored/{CONFIG_FILENAME}");
+    let current_label = format!("current/{CONFIG_FILENAME}");
+    diff.unified_diff()
+        .header(&stored_label, &current_label)
+        .to_string()
 }
 
 fn record_with_time(record: &TrialRecord) -> TrialRecord {

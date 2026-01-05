@@ -1,5 +1,6 @@
 use argtuner::{
-    CommandTemplate, HP_PREFIX, TRIALS_CSV_FILENAME, TrialRecord, TrialStatus, TrialStore,
+    CONFIG_FILENAME, CommandTemplate, HP_PREFIX, TRIALS_CSV_FILENAME, TrialRecord, TrialStatus,
+    TrialStore,
 };
 use indoc::indoc;
 use std::collections::BTreeMap;
@@ -35,7 +36,7 @@ fn rebuild_csv_from_db_command() {
         max = 1.0
         log = false
     "#};
-    std::fs::write(project_root.join("argtuner.toml"), toml).expect("write config");
+    std::fs::write(project_root.join(CONFIG_FILENAME), toml).expect("write config");
 
     let trials_path = project_root.join(TRIALS_CSV_FILENAME);
     let template = CommandTemplate::new("echo ok".to_string());
