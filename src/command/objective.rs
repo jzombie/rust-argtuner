@@ -703,8 +703,7 @@ mod tests {
     #[test]
     fn csv_parameter_conflict_is_resolved_by_using_existing_value() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let template =
-            crate::CommandTemplate::new(format!("{} --x {{x}}", emit_x_used_command()));
+        let template = crate::CommandTemplate::new(format!("{} --x {{x}}", emit_x_used_command()));
         let store = crate::TrialStore::new(
             dir.path().join(crate::TRIALS_CSV_FILENAME),
             template.clone(),

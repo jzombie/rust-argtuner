@@ -191,9 +191,9 @@ impl super::Component for TerminalComponent {
                 if self.pane.scrollback() > 0 {
                     self.pane.set_scrollback(0);
                 }
-                if let Err(err) = self.pane.write_bytes(&bytes) {
+                if let Err(_err) = self.pane.write_bytes(&bytes) {
                     #[cfg(windows)]
-                    eprintln!("terminal input write failed: {err}");
+                    eprintln!("terminal input write failed: {_err}");
                 }
                 true
             }
@@ -238,9 +238,9 @@ impl super::Component for TerminalComponent {
                 if bytes.is_empty() {
                     return false;
                 }
-                if let Err(err) = self.pane.write_bytes(&bytes) {
+                if let Err(_err) = self.pane.write_bytes(&bytes) {
                     #[cfg(windows)]
-                    eprintln!("terminal mouse write failed: {err}");
+                    eprintln!("terminal mouse write failed: {_err}");
                 }
                 true
             }

@@ -1,7 +1,6 @@
 use std::io::{Read, Write};
 use std::sync::{
-    Arc,
-    Mutex,
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::thread::{self, JoinHandle};

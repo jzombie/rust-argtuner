@@ -30,7 +30,5 @@ pub fn bin_command(bin: &str) -> String {
     let manifest = crate::workspace_root().join("Cargo.toml");
     let manifest_text = manifest.to_string_lossy();
     let manifest_arg = shell_words::quote(&manifest_text);
-    format!(
-        "cargo run -q --manifest-path {manifest_arg} -p argtuner --bin {bin} --"
-    )
+    format!("cargo run -q --manifest-path {manifest_arg} -p argtuner --bin {bin} --")
 }

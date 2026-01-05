@@ -97,9 +97,9 @@ impl App {
             pixel_width: 0,
             pixel_height: 0,
         };
-        let mut left =
+        let left =
             TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other)?;
-        let mut right =
+        let right =
             TerminalComponent::spawn(default_shell_command(), size).map_err(io::Error::other)?;
         #[cfg(windows)]
         {

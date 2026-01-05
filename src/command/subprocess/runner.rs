@@ -181,7 +181,9 @@ impl CommandRunner {
         for (key, value) in envs {
             cmd.env(key, value);
         }
-        let mut child = cmd.spawn().map_err(|err| format!("command failed: {err}"))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|err| format!("command failed: {err}"))?;
         let child_stdout = child
             .stdout
             .take()
@@ -237,7 +239,7 @@ impl CommandRunner {
             .spawn_command(cmd)
             .map_err(|err| format!("command failed: {err}"))?;
         drop(pair.slave);
-        let mut reader = pair
+        let reader = pair
             .master
             .try_clone_reader()
             .map_err(|err| format!("pty reader failed: {err}"))?;
@@ -353,7 +355,7 @@ fn split_command(command: &str) -> Result<Vec<String>, String> {
     }
     #[cfg(not(windows))]
     {
-        shell_words::split(command)
+        shell_words::split(command).map_err(|err| err.to_string())
     }
 }
 
