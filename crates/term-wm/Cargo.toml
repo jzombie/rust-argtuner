@@ -7,4 +7,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+crossterm.workspace = true
+portable-pty.workspace = true
 ratatui.workspace = true
+resvg.workspace = true
+vt100.workspace = true

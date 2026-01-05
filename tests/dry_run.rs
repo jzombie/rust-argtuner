@@ -6,18 +6,11 @@ fn dry_run_avoids_project_store() {
     let project_root = dir.path().join("probe-project");
     std::fs::create_dir_all(&project_root).expect("project dir");
 
-    let event = argtuner::CommandTemplate::embed_json_for_toml(&serde_json::json!({
-        "type": "event",
-        "name": "model.epoch_end",
-        "fields": {
-            "metric": "1.0",
-            "epoch": "1"
-        }
-    }));
+    let emit = argtuner::test_support::bin_command("emit_result");
 
     let toml = format!(
         r#"
-        template = "bash -c 'echo {}{}' --checkpoint-dir {{trial_dir}} --lr {{lr}}"
+        template = "{emit} --checkpoint-dir {{trial_dir}} --lr {{lr}}"
 
         [project]
         metric_key = "metric"
@@ -41,8 +34,7 @@ fn dry_run_avoids_project_store() {
         max = 1.0
         log = false
     "#,
-        argtuner_common::RESULT_PREFIX,
-        event
+        emit = emit.replace('\\', "\\\\")
     );
     std::fs::write(project_root.join(CONFIG_FILENAME), toml).expect("write config");
 

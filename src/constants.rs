@@ -4,6 +4,8 @@ pub const MAX_DUPLICATE_RETRIES: usize = 50;
 pub const INVALID_CONFIG_PREFIX: &str = "invalid_config:";
 pub const DUPLICATE_CONFIG_REASON: &str = "duplicate_config";
 pub const DUPLICATE_CONFIG_PREFIX: &str = "invalid_config: duplicate_config";
+// Max number of discrete configs the random sampler will enumerate when resolving duplicates.
+pub const MAX_RANDOM_EXHAUSTIVE_CONFIGS: usize = 100_000;
 
 // Command stdout parser (for communication from trial back to tuner)
 pub use argtuner_common::RESULT_PREFIX;

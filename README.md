@@ -33,7 +33,7 @@ Reserved placeholders injected automatically:
 ```text
 my-train --lr {lr} --steps {steps} --output {trial_dir}
 ```
- The execution flow is:
+The execution flow is:
  - Render command template with sampled hyperparameters (and optional trial
    placeholders).
  - Spawn the command directly (program + args) with stdout/stderr streamed.
@@ -274,6 +274,11 @@ The execution flow is:
   - `trial.*` fields (budget/rung/bracket, trial_dir, etc.)
   - `hp.*` fields from the search space
 
+Windows note:
+- Command templates are split into program + args without a shell, so use
+  explicit arguments and quote paths with spaces. To run shell built-ins, wrap
+  them in `cmd /C ...` or `powershell -Command ...`.
+
 If the app exits non‑zero or emits an invalid config payload, the trial is
 marked `error` and the tuner may retry based on scheduler policy.
 
@@ -332,6 +337,7 @@ Notes:
 - `n_trials` now belongs to the scheduler because the `fixed` and `successive_halving` schedulers manage the evaluation budget.
 - Scheduler type names always match their child tables: `type = "successive_halving"` pairs with `[scheduler.successive_halving]`, so you never need to memorize separate spellings.
 - `[space]` is still a top-level table describing the search space; it intentionally sits alongside the other sections for clarity.
+- When the `random` sampler hits a duplicate in a fully discrete space (choices/ints/stepped floats), it will try unused configs up to the exhaustive cap before continuing with random sampling.
 
 ## CSV behavior
 

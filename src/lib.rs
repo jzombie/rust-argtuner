@@ -4,6 +4,7 @@ pub mod constants;
 pub mod db;
 pub mod lock;
 pub mod project;
+pub mod sampler;
 pub mod scheduler;
 pub mod space;
 pub mod store;
@@ -14,6 +15,8 @@ pub mod validate;
 pub use constants::*;
 pub mod workspace;
 pub use workspace::workspace_root;
+#[doc(hidden)]
+pub mod test_support;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
