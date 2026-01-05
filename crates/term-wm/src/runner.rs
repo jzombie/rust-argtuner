@@ -76,7 +76,7 @@ where
                     }
                     return Ok(ControlFlow::Continue);
                 }
-                if matches!(evt, Event::Key(_)) {
+                if app.windows().wm_menu_consumes_event(&evt) {
                     return Ok(ControlFlow::Continue);
                 }
                 if let Event::Key(key) = evt

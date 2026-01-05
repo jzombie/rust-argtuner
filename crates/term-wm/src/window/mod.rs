@@ -717,12 +717,25 @@ where
             &self.managed_floating,
             &self.managed_draw_order,
         );
+        let status_line = if self.wm_overlay_visible {
+            let esc_state = if let Some(remaining) = self.esc_passthrough_remaining() {
+                format!("Esc passthrough: active ({}ms)", remaining.as_millis())
+            } else {
+                "Esc passthrough: inactive".to_string()
+            };
+            Some(format!(
+                "{esc_state} · Tab/Shift-Tab: cycle windows"
+            ))
+        } else {
+            None
+        };
         self.panel.render(
             frame,
             self.panel_active(),
             self.focus.current,
             &self.focus.order,
             &self.managed_draw_order,
+            status_line.as_deref(),
         );
         let menu_labels = wm_menu_items()
             .iter()
@@ -896,6 +909,19 @@ where
                 .map(|item| item.action),
             _ => None,
         }
+    }
+
+    pub fn wm_menu_consumes_event(&self, event: &Event) -> bool {
+        if !self.wm_overlay_visible {
+            return false;
+        }
+        let Event::Key(key) = event else {
+            return false;
+        };
+        matches!(
+            key.code,
+            KeyCode::Up | KeyCode::Down | KeyCode::Enter | KeyCode::Char('j') | KeyCode::Char('k')
+        )
     }
 }
 

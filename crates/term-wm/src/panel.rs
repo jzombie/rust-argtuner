@@ -89,6 +89,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
         focus_current: W,
         focus_order: &[W],
         managed_draw_order: &[R],
+        status_line: Option<&str>,
     ) where
         R: PartialEq<W>,
     {
@@ -125,28 +126,34 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             buffer.set_string(x, y, prefix, Style::default());
             x = x.saturating_add(prefix_width);
         }
-        for id in panel_order(focus_order, managed_draw_order) {
-            let focused = id == focus_current;
-            let chunk = if focused {
-                format!(" [*{:?}]", id)
-            } else {
-                format!(" [{:?}]", id)
-            };
-            let chunk_width = chunk.chars().count() as u16;
-            if x.saturating_add(chunk_width) > max_x {
-                break;
+        if let Some(status) = status_line {
+            let available = max_x.saturating_sub(x).max(1);
+            let text = truncate_to_width(status, available as usize);
+            buffer.set_string(x, y, text, Style::default());
+        } else {
+            for id in panel_order(focus_order, managed_draw_order) {
+                let focused = id == focus_current;
+                let chunk = if focused {
+                    format!(" [*{:?}]", id)
+                } else {
+                    format!(" [{:?}]", id)
+                };
+                let chunk_width = chunk.chars().count() as u16;
+                if x.saturating_add(chunk_width) > max_x {
+                    break;
+                }
+                buffer.set_string(x, y, &chunk, Style::default());
+                self.window_hits.push(PanelWindowHit {
+                    id,
+                    rect: Rect {
+                        x,
+                        y,
+                        width: chunk_width,
+                        height: 1,
+                    },
+                });
+                x = x.saturating_add(chunk_width);
             }
-            buffer.set_string(x, y, &chunk, Style::default());
-            self.window_hits.push(PanelWindowHit {
-                id,
-                rect: Rect {
-                    x,
-                    y,
-                    width: chunk_width,
-                    height: 1,
-                },
-            });
-            x = x.saturating_add(chunk_width);
         }
     }
 
