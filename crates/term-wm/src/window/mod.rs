@@ -804,24 +804,8 @@ where
             let sens_y = (h / 10).clamp(1, 4);
 
             // Check if the closest edge is within its sensitivity limit
-            let snap = if d_left == min_dist && d_left < sens_x {
-                Some((
-                    InsertPosition::Left,
-                    Rect {
-                        width: w / 2,
-                        ..rect
-                    },
-                ))
-            } else if d_right == min_dist && d_right < sens_x {
-                Some((
-                    InsertPosition::Right,
-                    Rect {
-                        x: rect.x + w / 2,
-                        width: w / 2,
-                        ..rect
-                    },
-                ))
-            } else if d_top == min_dist && d_top < sens_y {
+            // Only allow snapping on horizontal seams (top/bottom of tiled panes).
+            let snap = if d_top < sens_y && d_top <= d_bottom {
                 Some((
                     InsertPosition::Top,
                     Rect {
@@ -829,7 +813,7 @@ where
                         ..rect
                     },
                 ))
-            } else if d_bottom == min_dist && d_bottom < sens_y {
+            } else if d_bottom < sens_y {
                 Some((
                     InsertPosition::Bottom,
                     Rect {
