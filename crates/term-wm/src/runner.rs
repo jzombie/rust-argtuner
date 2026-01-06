@@ -82,6 +82,10 @@ where
                             app.wm_new_window();
                             app.windows().close_wm_overlay();
                         }
+                        WmMenuAction::BringFloatingFront => {
+                            app.windows().bring_all_floating_to_front();
+                            app.windows().close_wm_overlay();
+                        }
                         WmMenuAction::ExitUi => {
                             app.windows().close_wm_overlay();
                             app.windows().open_exit_confirm();

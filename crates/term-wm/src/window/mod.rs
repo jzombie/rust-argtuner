@@ -126,6 +126,7 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     exit_confirm: ConfirmOverlay,
     decorator: Box<dyn WindowDecorator>,
     floating_resize_offscreen: bool,
+    z_order: Vec<R>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +134,7 @@ pub enum WmMenuAction {
     CloseMenu,
     NewWindow,
     ExitUi,
+    BringFloatingFront,
 }
 
 impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord + std::fmt::Debug> WindowManager<W, R>
@@ -166,6 +168,7 @@ where
             exit_confirm: ConfirmOverlay::new(),
             decorator: Box::new(OpenStepDecorator),
             floating_resize_offscreen: true,
+            z_order: Vec::new(),
         }
     }
 
@@ -409,6 +412,8 @@ where
         let (_, managed_area) = self.panel.split_area(self.panel_active(), area);
         self.managed_area = managed_area;
         self.clamp_floating_to_bounds();
+        let mut active_ids = Vec::new();
+
         if let Some(layout) = self.managed_layout.as_ref() {
             let (regions, handles) = layout.root().layout_with_handles(self.managed_area);
             for (id, rect) in &regions {
@@ -419,7 +424,7 @@ where
                 if let Some(header) = floating_header_for_region(*id, *rect, self.managed_area) {
                     self.floating_headers.push(header);
                 }
-                self.managed_draw_order.push(*id);
+                active_ids.push(*id);
             }
             let filtered_handles: Vec<SplitHandle> = handles
                 .into_iter()
@@ -451,8 +456,16 @@ where
             if let Some(header) = floating_header_for_region(floating.id, rect, self.managed_area) {
                 self.floating_headers.push(header);
             }
-            self.managed_draw_order.push(floating.id);
+            active_ids.push(floating.id);
         }
+
+        self.z_order.retain(|id| active_ids.contains(id));
+        for id in active_ids {
+            if !self.z_order.contains(&id) {
+                self.z_order.push(id);
+            }
+        }
+        self.managed_draw_order = self.z_order.clone();
     }
 
     pub fn managed_draw_order(&self) -> &[R] {
@@ -659,6 +672,7 @@ where
                 height,
             }),
         });
+        self.bring_to_front(id);
         true
     }
 
@@ -688,11 +702,26 @@ where
         });
     }
 
+    pub fn bring_to_front(&mut self, id: R) {
+        if let Some(pos) = self.z_order.iter().position(|&x| x == id) {
+            let item = self.z_order.remove(pos);
+            self.z_order.push(item);
+        }
+    }
+
+    pub fn bring_all_floating_to_front(&mut self) {
+        let floating_ids: Vec<R> = self.managed_floating.iter().map(|f| f.id).collect();
+        for id in floating_ids {
+            self.bring_to_front(id);
+        }
+    }
+
     fn bring_floating_to_front(&mut self, id: R) {
         if let Some(index) = self.floating_index(id) {
             let pane = self.managed_floating.remove(index);
             self.managed_floating.push(pane);
         }
+        self.bring_to_front(id);
     }
 
     fn clamp_floating_to_bounds(&mut self) {
@@ -1052,12 +1081,17 @@ struct WmMenuItem {
     action: WmMenuAction,
 }
 
-fn wm_menu_items() -> [WmMenuItem; 3] {
+fn wm_menu_items() -> [WmMenuItem; 4] {
     [
         WmMenuItem {
             label: "Resume",
             icon: None,
             action: WmMenuAction::CloseMenu,
+        },
+        WmMenuItem {
+            label: "Floating Front",
+            icon: Some("↑"),
+            action: WmMenuAction::BringFloatingFront,
         },
         WmMenuItem {
             label: "New Window",
