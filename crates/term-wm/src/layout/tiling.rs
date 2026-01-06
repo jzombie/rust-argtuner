@@ -676,7 +676,10 @@ pub fn render_handles_masked<F>(
                     continue;
                 }
                 if let Some(cell) = buffer.cell_mut((x, y)) {
-                    cell.set_symbol(".");
+                    // Reset the cell to ensure no background color bleeds through from underlying layers
+                    cell.reset();
+
+                    cell.set_symbol("·");
                     cell.set_style(style);
                 }
             }

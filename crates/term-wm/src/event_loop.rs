@@ -66,9 +66,17 @@ impl<D: InputDriver> EventLoop<D> {
             }
 
             if self.driver.poll(self.poll_interval)? {
-                let event = self.driver.read()?;
-                if let ControlFlow::Quit = handler(&mut self.driver, Some(event))? {
-                    break;
+                // Drain the event queue to prevent input lag during high-frequency event bursts
+                // (e.g. mouse drags, scrolling). If we only processed one event per poll,
+                // the rendering loop would fall behind the input stream.
+                loop {
+                    let event = self.driver.read()?;
+                    if let ControlFlow::Quit = handler(&mut self.driver, Some(event))? {
+                        return Ok(());
+                    }
+                    if !self.driver.poll(Duration::from_millis(0))? {
+                        break;
+                    }
                 }
             }
         }
