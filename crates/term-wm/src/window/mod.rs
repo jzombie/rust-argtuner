@@ -875,7 +875,6 @@ where
             }
 
             self.drag_snap = Some((None, pos, preview));
-            return;
         }
     }
 
@@ -902,43 +901,43 @@ where
                 self.managed_floating.remove(index);
             }
 
-            if self.layout_contains(id) {
-                if let Some(layout) = &mut self.managed_layout {
-                    let should_retile = match target {
-                        Some(target_id) => target_id != id,
-                        None => true,
-                    };
-                    if should_retile {
-                        layout.root_mut().remove_leaf(id);
-                    } else {
-                        self.bring_to_front(id);
-                        return;
-                    }
+            if self.layout_contains(id)
+                && let Some(layout) = &mut self.managed_layout
+            {
+                let should_retile = match target {
+                    Some(target_id) => target_id != id,
+                    None => true,
+                };
+                if should_retile {
+                    layout.root_mut().remove_leaf(id);
+                } else {
+                    self.bring_to_front(id);
+                    return;
                 }
             }
 
             // Handle case where target is floating (and thus not in layout yet)
-            if let Some(target_id) = target {
-                if let Some(idx) = self.floating_index(target_id) {
-                    // Target is floating. We must initialize layout with it.
-                    self.managed_floating.remove(idx);
-                    if self.managed_layout.is_none() {
-                        self.managed_layout = Some(TilingLayout::new(LayoutNode::leaf(target_id)));
-                    } else {
-                        // This case is tricky: managed_layout exists (implied other windows), but target is floating.
-                        // We need to tile 'id' based on 'target'.
-                        // However, 'target' itself isn't in the tree.
-                        // This implies we want to perform a "Merge" of two floating windows into a new tiled group?
-                        // But we only support one root.
-                        // If managed_layout exists, we probably shouldn't be here if target is floating?
-                        // Actually, if we have {C} tiled, and {B} floating. Snap A to B.
-                        // We want {A, B} tiled?
-                        // Current logic: If managed_layout is Some, we try insert_leaf.
-                        // If insert_leaf fails, we fallback to split_root.
-                        // If we fall back to split_root, A is added to root. B remains floating.
-                        // This is acceptable/safe.
-                        // The critical case is when managed_layout is None (the 2-window case).
-                    }
+            if let Some(target_id) = target
+                && let Some(idx) = self.floating_index(target_id)
+            {
+                // Target is floating. We must initialize layout with it.
+                self.managed_floating.remove(idx);
+                if self.managed_layout.is_none() {
+                    self.managed_layout = Some(TilingLayout::new(LayoutNode::leaf(target_id)));
+                } else {
+                    // This case is tricky: managed_layout exists (implied other windows), but target is floating.
+                    // We need to tile 'id' based on 'target'.
+                    // However, 'target' itself isn't in the tree.
+                    // This implies we want to perform a "Merge" of two floating windows into a new tiled group?
+                    // But we only support one root.
+                    // If managed_layout exists, we probably shouldn't be here if target is floating?
+                    // Actually, if we have {C} tiled, and {B} floating. Snap A to B.
+                    // We want {A, B} tiled?
+                    // Current logic: If managed_layout is Some, we try insert_leaf.
+                    // If insert_leaf fails, we fallback to split_root.
+                    // If we fall back to split_root, A is added to root. B remains floating.
+                    // This is acceptable/safe.
+                    // The critical case is when managed_layout is None (the 2-window case).
                 }
             }
 
@@ -992,11 +991,11 @@ where
 
         let mut target_r = None;
         for r_id in self.regions.ids() {
-            if let Some(w_id) = self.focus_for_region(r_id) {
-                if w_id == current_focus {
-                    target_r = Some(r_id);
-                    break;
-                }
+            if let Some(w_id) = self.focus_for_region(r_id)
+                && w_id == current_focus
+            {
+                target_r = Some(r_id);
+                break;
             }
         }
 

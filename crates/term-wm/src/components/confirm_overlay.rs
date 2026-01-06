@@ -6,7 +6,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::components::{Component, DialogOverlay};
 use crate::layout::rect_contains;
-use crate::ui::{safe_set_string, truncate_to_width};
+use crate::ui::safe_set_string;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {

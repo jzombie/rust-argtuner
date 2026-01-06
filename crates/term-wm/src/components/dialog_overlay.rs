@@ -60,6 +60,8 @@ impl DialogOverlay {
         self.visible
     }
 
+    /// Clamp dialog size to the available area to avoid drawing outside the buffer
+    /// when the terminal is smaller than the preferred minimums.
     pub fn rect_for(&self, area: Rect) -> Rect {
         let mut width = area.width.min(self.width).max(1);
         let mut height = area.height.min(self.height).max(1);
