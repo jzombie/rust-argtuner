@@ -6,6 +6,7 @@ use ratatui::{
 };
 
 use crate::layout::rect_contains;
+use crate::ui::{safe_set_string, truncate_to_width};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PanelWindowHit<R: Copy + Eq + Ord> {
@@ -107,6 +108,10 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             return;
         }
         let buffer = frame.buffer_mut();
+        let bounds = area.intersection(buffer.area);
+        if bounds.width == 0 || bounds.height == 0 {
+            return;
+        }
         let mut x = area.x;
         let y = area.y;
         let max_x = area.x.saturating_add(area.width);
@@ -119,7 +124,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             } else {
                 Style::default()
             };
-            buffer.set_string(x, y, menu_icon.as_str(), menu_style);
+            safe_set_string(buffer, bounds, x, y, menu_icon.as_str(), menu_style);
             self.menu_rect = Some(Rect {
                 x,
                 y,
@@ -129,14 +134,14 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             x = x.saturating_add(menu_width);
         }
         if x < max_x {
-            buffer.set_string(x, y, " ", Style::default());
+            safe_set_string(buffer, bounds, x, y, " ", Style::default());
             x = x.saturating_add(1);
         }
         // Window list follows the menu button label.
         if let Some(status) = status_line {
             let available = max_x.saturating_sub(x).max(1);
             let text = truncate_to_width(status, available as usize);
-            buffer.set_string(x, y, text, Style::default());
+            safe_set_string(buffer, bounds, x, y, &text, Style::default());
         } else {
             for id in panel_order(focus_order, managed_draw_order) {
                 let focused = id == focus_current;
@@ -149,7 +154,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
                 if x.saturating_add(chunk_width) > max_x {
                     break;
                 }
-                buffer.set_string(x, y, &chunk, Style::default());
+                safe_set_string(buffer, bounds, x, y, &chunk, Style::default());
                 self.window_hits.push(PanelWindowHit {
                     id,
                     rect: Rect {
@@ -247,6 +252,10 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             .max(1);
         let height = (items.len() as u16).saturating_add(2).min(max_height);
         let buffer = frame.buffer_mut();
+        let bounds = bounds.intersection(buffer.area);
+        if bounds.width == 0 || bounds.height == 0 {
+            return;
+        }
         let menu_style = Style::default().bg(Color::DarkGray).fg(Color::White);
         let selected_style = Style::default()
             .bg(Color::Gray)
@@ -296,7 +305,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             } else {
                 menu_style
             };
-            buffer.set_string(inner_x, y, text, style);
+            safe_set_string(buffer, bounds, inner_x, y, &text, style);
             self.menu_item_hits.push(PanelMenuHit {
                 index: idx,
                 rect: Rect {
@@ -375,11 +384,4 @@ fn panel_order<W: Copy + Eq, R: Copy + Eq + Ord + PartialEq<W>>(
         }
     }
     ordered
-}
-
-fn truncate_to_width(value: &str, width: usize) -> String {
-    if value.chars().count() <= width {
-        return value.to_string();
-    }
-    value.chars().take(width).collect()
 }

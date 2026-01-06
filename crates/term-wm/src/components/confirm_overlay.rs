@@ -6,6 +6,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::components::{Component, DialogOverlay};
 use crate::layout::rect_contains;
+use crate::ui::{safe_set_string, truncate_to_width};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
@@ -107,6 +108,10 @@ impl Component for ConfirmOverlay {
         frame.render_widget(paragraph, body_rect);
         let separator_style = Style::default().fg(Color::DarkGray);
         let buffer = frame.buffer_mut();
+        let bounds = area.intersection(buffer.area);
+        if bounds.width == 0 || bounds.height == 0 {
+            return;
+        }
         for x in content.x..content.x.saturating_add(content.width) {
             if let Some(cell) = buffer.cell_mut((x, separator_y)) {
                 cell.set_symbol("─");
@@ -135,9 +140,9 @@ impl Component for ConfirmOverlay {
         let start_x = content
             .x
             .saturating_add(content.width.saturating_sub(total_width as u16));
-        buffer.set_string(start_x, button_y, cancel, cancel_style);
+        safe_set_string(buffer, bounds, start_x, button_y, cancel, cancel_style);
         let confirm_x = start_x.saturating_add(cancel.len() as u16 + 1);
-        buffer.set_string(confirm_x, button_y, confirm, confirm_style);
+        safe_set_string(buffer, bounds, confirm_x, button_y, confirm, confirm_style);
         self.cancel_rect = Some(Rect {
             x: start_x,
             y: button_y,

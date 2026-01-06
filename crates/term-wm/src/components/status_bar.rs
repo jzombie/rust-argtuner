@@ -2,6 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
+use crate::ui::{safe_set_string, truncate_to_width};
 pub struct StatusBar {
     left: String,
     right: String,
@@ -45,24 +46,21 @@ impl super::Component for StatusBar {
         let x = area.x;
         let width = area.width as usize;
         let buffer = frame.buffer_mut();
+        let bounds = area.intersection(buffer.area);
+        if bounds.width == 0 || bounds.height == 0 {
+            return;
+        }
 
         let left = truncate_to_width(&self.left, width);
-        buffer.set_string(x, y, left, self.style);
+        safe_set_string(buffer, bounds, x, y, &left, self.style);
 
         if !self.right.is_empty() && width > 0 {
             let right = truncate_to_width(&self.right, width);
             let right_width = right.chars().count();
             if right_width < width {
                 let start_x = x.saturating_add((width - right_width) as u16);
-                buffer.set_string(start_x, y, right, self.style);
+                safe_set_string(buffer, bounds, start_x, y, &right, self.style);
             }
         }
     }
-}
-
-fn truncate_to_width(value: &str, width: usize) -> String {
-    if value.chars().count() <= width {
-        return value.to_string();
-    }
-    value.chars().take(width).collect()
 }
