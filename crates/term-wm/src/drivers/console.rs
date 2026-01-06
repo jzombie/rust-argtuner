@@ -103,4 +103,12 @@ impl InputDriver for ConsoleDriver {
         }
         self.read_internal()
     }
+
+    fn set_mouse_capture(&mut self, enabled: bool) -> io::Result<()> {
+        if enabled {
+            crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)
+        } else {
+            crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)
+        }
+    }
 }

@@ -43,12 +43,14 @@ where
 {
     let capture_timeout = Duration::from_millis(500);
     let mut event_loop = EventLoop::new(driver, poll_interval);
-    apply_mouse_capture(app.windows().mouse_capture_enabled())?;
+    event_loop
+        .driver()
+        .set_mouse_capture(app.windows().mouse_capture_enabled())?;
 
-    event_loop.run(|_driver, event| {
-        let flush_mouse_capture = |app: &mut A, flow: ControlFlow| {
+    event_loop.run(|driver, event| {
+        let mut flush_mouse_capture = |app: &mut A, flow: ControlFlow| {
             if let Some(enabled) = app.windows().take_mouse_capture_change() {
-                let _ = apply_mouse_capture(enabled);
+                let _ = driver.set_mouse_capture(enabled);
             }
             Ok(flow)
         };
@@ -190,13 +192,4 @@ where
     })?;
 
     Ok(())
-}
-
-fn apply_mouse_capture(enabled: bool) -> io::Result<()> {
-    let mut stdout = io::stdout();
-    if enabled {
-        crossterm::execute!(stdout, crossterm::event::EnableMouseCapture)
-    } else {
-        crossterm::execute!(stdout, crossterm::event::DisableMouseCapture)
-    }
 }

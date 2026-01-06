@@ -12,7 +12,6 @@ use ratatui::{Frame, Terminal};
 
 use term_wm::components::{AsciiImage, Component};
 use term_wm::drivers::console::ConsoleDriver;
-use term_wm::drivers::mouse::MouseDriver;
 use term_wm::layout::{LayoutNode, TilingLayout};
 use term_wm::runner::{HasWindowManager, run_app};
 use term_wm::window::WindowManager;
@@ -31,7 +30,6 @@ fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let mut driver = ConsoleDriver::new();
-    driver.enable()?;
 
     let result = run_app(
         &mut terminal,
