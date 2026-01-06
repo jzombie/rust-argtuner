@@ -299,12 +299,10 @@ fn draw_window_app<A, W, R, FMap>(
         return;
     }
 
-    if windows_changed {
-        if let Some(layout) = app.layout_for_windows(&windows) {
-            app.windows().set_managed_layout(layout);
-        }
+    if windows_changed && let Some(layout) = app.layout_for_windows(&windows) {
+        app.windows().set_managed_layout(layout);
     }
-    let focus_order: Vec<W> = windows.iter().copied().map(|id| map_region(id)).collect();
+    let focus_order: Vec<W> = windows.iter().copied().map(map_region).collect();
     if !focus_order.is_empty() {
         app.windows().set_focus_order(focus_order);
     }

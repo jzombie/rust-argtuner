@@ -8,8 +8,8 @@ use ratatui::prelude::Rect;
 
 use self::decorator::{OpenStepDecorator, WindowDecorator};
 use crate::components::{
-    Component, ConfirmAction, ConfirmOverlay, DebugLogComponent, DialogOverlay,
-    install_panic_hook, set_global_debug_log,
+    Component, ConfirmAction, ConfirmOverlay, DebugLogComponent, DialogOverlay, install_panic_hook,
+    set_global_debug_log,
 };
 use crate::layout::floating::*;
 use crate::layout::{
@@ -466,8 +466,7 @@ where
 
     pub fn set_wm_focus_order(&mut self, order: Vec<WindowId<R>>) {
         self.wm_focus.set_order(order);
-        if !self.wm_focus.order.is_empty()
-            && !self.wm_focus.order.contains(&self.wm_focus.current)
+        if !self.wm_focus.order.is_empty() && !self.wm_focus.order.contains(&self.wm_focus.current)
         {
             self.wm_focus.current = self.wm_focus.order[0];
         }
@@ -699,10 +698,10 @@ where
                         if self.debug_log.handle_event(event) {
                             return true;
                         }
-                    } else if matches!(mouse.kind, MouseEventKind::Down(_)) {
-                        if self.wm_focus.current() == self.debug_log_id {
-                            self.select_fallback_focus();
-                        }
+                    } else if matches!(mouse.kind, MouseEventKind::Down(_))
+                        && self.wm_focus.current() == self.debug_log_id
+                    {
+                        self.select_fallback_focus();
                     }
                 }
                 Event::Key(_) if self.wm_focus.current() == self.debug_log_id => {
@@ -762,7 +761,7 @@ where
                     let rect = self.full_region_for_id(header.id);
                     // Standard floating drag start
                     if self.floating_index(header.id).is_some() {
-                    self.bring_floating_to_front_id(header.id);
+                        self.bring_floating_to_front_id(header.id);
                     }
                     // If Tiled: We detach immediately to floating (responsive drag).
                     // Keep the tiling slot reserved so the sibling doesn't expand to full screen.
@@ -924,14 +923,7 @@ where
             .is_some_and(|layout| layout.root().subtree_any(|node_id| node_id == id))
     }
 
-    fn move_floating(
-        &mut self,
-        index: usize,
-        column: u16,
-        row: u16,
-        offset_x: u16,
-        offset_y: u16,
-    ) {
+    fn move_floating(&mut self, index: usize, column: u16, row: u16, offset_x: u16, offset_y: u16) {
         let panel_active = self.panel_active();
         let bounds = self.managed_area;
         let pane = &mut self.managed_floating[index];
@@ -1239,8 +1231,7 @@ where
     }
 
     pub fn bring_all_floating_to_front(&mut self) {
-        let floating_ids: Vec<WindowId<R>> =
-            self.managed_floating.iter().map(|f| f.id).collect();
+        let floating_ids: Vec<WindowId<R>> = self.managed_floating.iter().map(|f| f.id).collect();
         for id in floating_ids {
             self.bring_to_front_id(id);
         }
