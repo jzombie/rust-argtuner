@@ -61,8 +61,14 @@ impl DialogOverlay {
     }
 
     pub fn rect_for(&self, area: Rect) -> Rect {
-        let width = area.width.min(self.width).max(24);
-        let height = area.height.min(self.height).max(5);
+        let mut width = area.width.min(self.width).max(1);
+        let mut height = area.height.min(self.height).max(1);
+        if area.width >= 24 {
+            width = width.max(24);
+        }
+        if area.height >= 5 {
+            height = height.max(5);
+        }
         let x = area.x.saturating_add(area.width.saturating_sub(width) / 2);
         let y = area
             .y
