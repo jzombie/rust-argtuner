@@ -2,41 +2,7 @@ use ratatui::Frame;
 use ratatui::prelude::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 
-use crate::window::{RegionMap, rect_contains};
-
-const HANDLE_THICKNESS: u16 = 3;
-
-fn handle_thickness(direction: Direction, area: Rect) -> u16 {
-    let base = match direction {
-        Direction::Horizontal => 1,
-        Direction::Vertical => (HANDLE_THICKNESS.saturating_add(3)) / 8,
-    };
-    let max = match direction {
-        Direction::Horizontal => area.width,
-        Direction::Vertical => area.height,
-    };
-    base.clamp(1, max.max(1))
-}
-
-fn gap_size(direction: Direction, area: Rect, child_count: usize, resizable: bool) -> u16 {
-    if !resizable || child_count < 2 {
-        return 0;
-    }
-    let total = match direction {
-        Direction::Horizontal => area.width,
-        Direction::Vertical => area.height,
-    };
-    if total == 0 {
-        return 0;
-    }
-    let min_content = child_count as u16;
-    if total <= min_content {
-        return 0;
-    }
-    let max_gap = total.saturating_sub(min_content);
-    let per_gap = max_gap / (child_count as u16 - 1);
-    handle_thickness(direction, area).min(per_gap)
-}
+use super::{FloatingPane, RegionMap, gap_size, rect_contains};
 
 #[derive(Debug, Clone)]
 pub enum LayoutNode<Id: Copy + Eq + Ord> {
@@ -48,6 +14,14 @@ pub enum LayoutNode<Id: Copy + Eq + Ord> {
         constraints: Vec<Constraint>,
         resizable: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertPosition {
+    Left,
+    Right,
+    Top,
+    Bottom,
 }
 
 impl<Id: Copy + Eq + Ord> LayoutNode<Id> {
@@ -84,6 +58,13 @@ impl<Id: Copy + Eq + Ord> LayoutNode<Id> {
         }
     }
 
+    pub fn unwrap_leaf(&self) -> Option<Id> {
+        match self {
+            LayoutNode::Leaf(id) => Some(*id),
+            _ => None,
+        }
+    }
+
     pub fn layout(&self, area: Rect) -> Vec<(Id, Rect)> {
         let (regions, _) = self.layout_with_handles(area);
         regions
@@ -94,6 +75,36 @@ impl<Id: Copy + Eq + Ord> LayoutNode<Id> {
         let mut handles = Vec::new();
         self.layout_recursive(area, &mut regions, &mut handles, &mut Vec::new());
         (regions, handles)
+    }
+
+    pub fn node_at_path(&self, path: &[usize]) -> Option<&LayoutNode<Id>> {
+        let mut current = self;
+        for &idx in path {
+            let LayoutNode::Split { children, .. } = current else {
+                return None;
+            };
+            current = children.get(idx)?;
+        }
+        Some(current)
+    }
+
+    pub fn subtree_any<F>(&self, mut predicate: F) -> bool
+    where
+        F: FnMut(Id) -> bool,
+    {
+        fn walk<Id: Copy + Eq + Ord, F: FnMut(Id) -> bool>(
+            node: &LayoutNode<Id>,
+            predicate: &mut F,
+        ) -> bool {
+            match node {
+                LayoutNode::Leaf(id) => predicate(*id),
+                LayoutNode::Split { children, .. } => {
+                    children.iter().any(|child| walk(child, predicate))
+                }
+            }
+        }
+
+        walk(self, &mut predicate)
     }
 
     pub fn hit_test_handle(&self, area: Rect, column: u16, row: u16) -> Option<SplitHandle> {
@@ -167,22 +178,42 @@ impl<Id: Copy + Eq + Ord> LayoutNode<Id> {
                 let mut removed = false;
                 let mut index = 0;
                 while index < children.len() {
-                    let child_removed = match &mut children[index] {
-                        LayoutNode::Leaf(child_id) if *child_id == id => true,
-                        child => child.remove_leaf(id),
+                    let is_target = match &children[index] {
+                        LayoutNode::Leaf(i) => *i == id,
+                        _ => false,
                     };
-                    if child_removed {
-                        let prev_len = children.len();
+
+                    if is_target {
                         children.remove(index);
-                        if constraints.len() == prev_len {
-                            constraints.remove(index);
-                        }
-                        if weights.len() == prev_len {
+                        if index < weights.len() {
                             weights.remove(index);
+                        }
+                        if index < constraints.len() {
+                            constraints.remove(index);
                         }
                         removed = true;
                         break;
                     }
+
+                    if children[index].remove_leaf(id) {
+                        removed = true;
+                        // If the child split created an empty split, remove it
+                        let is_empty_split = match &children[index] {
+                            LayoutNode::Split { children: s, .. } => s.is_empty(),
+                            _ => false,
+                        };
+                        if is_empty_split {
+                            children.remove(index);
+                            if index < weights.len() {
+                                weights.remove(index);
+                            }
+                            if index < constraints.len() {
+                                constraints.remove(index);
+                            }
+                        }
+                        break;
+                    }
+
                     index += 1;
                 }
                 if removed && children.len() == 1 {
@@ -325,6 +356,34 @@ impl<Id: Copy + Eq + Ord> TilingLayout<Id> {
         &mut self.root
     }
 
+    pub fn split_root(&mut self, insert: Id, position: InsertPosition) {
+        let (direction, children) = match position {
+            InsertPosition::Left => (
+                Direction::Horizontal,
+                vec![LayoutNode::leaf(insert), self.root.clone()],
+            ),
+            InsertPosition::Right => (
+                Direction::Horizontal,
+                vec![self.root.clone(), LayoutNode::leaf(insert)],
+            ),
+            InsertPosition::Top => (
+                Direction::Vertical,
+                vec![LayoutNode::leaf(insert), self.root.clone()],
+            ),
+            InsertPosition::Bottom => (
+                Direction::Vertical,
+                vec![self.root.clone(), LayoutNode::leaf(insert)],
+            ),
+        };
+        self.root = LayoutNode::Split {
+            direction,
+            children,
+            weights: vec![1.0, 1.0],
+            constraints: Vec::new(),
+            resizable: true,
+        };
+    }
+
     pub fn regions(&self, area: Rect) -> Vec<(Id, Rect)> {
         self.root.layout(area)
     }
@@ -394,57 +453,10 @@ impl<Id: Copy + Eq + Ord> TilingLayout<Id> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum RectSpec {
-    Absolute(Rect),
-    Percent {
-        x: u16,
-        y: u16,
-        width: u16,
-        height: u16,
-    },
-}
-
-impl RectSpec {
-    pub fn resolve(self, area: Rect) -> Rect {
-        match self {
-            RectSpec::Absolute(rect) => rect,
-            RectSpec::Percent {
-                x,
-                y,
-                width,
-                height,
-            } => {
-                let to_abs = |base: u16, pct: u16| (base as u32 * pct as u32 / 100) as u16;
-                Rect {
-                    x: area.x.saturating_add(to_abs(area.width, x)),
-                    y: area.y.saturating_add(to_abs(area.height, y)),
-                    width: to_abs(area.width, width),
-                    height: to_abs(area.height, height),
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FloatingPane<Id: Copy + Eq + Ord> {
-    pub id: Id,
-    pub rect: RectSpec,
-}
-
 #[derive(Debug, Clone)]
 pub struct LayoutPlan<Id: Copy + Eq + Ord> {
     pub root: LayoutNode<Id>,
     pub floating: Vec<FloatingPane<Id>>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum InsertPosition {
-    Left,
-    Right,
-    Top,
-    Bottom,
 }
 
 impl<Id: Copy + Eq + Ord> LayoutPlan<Id> {
@@ -686,6 +698,17 @@ fn split_at_path_mut<'a, Id: Copy + Eq + Ord>(
 }
 
 pub fn render_handles(frame: &mut Frame, handles: &[SplitHandle], hovered: Option<&SplitHandle>) {
+    render_handles_masked(frame, handles, hovered, |_, _| false);
+}
+
+pub fn render_handles_masked<F>(
+    frame: &mut Frame,
+    handles: &[SplitHandle],
+    hovered: Option<&SplitHandle>,
+    is_obscured: F,
+) where
+    F: Fn(u16, u16) -> bool,
+{
     let buffer = frame.buffer_mut();
     let hover_rect = hovered.map(|handle| handle.rect);
     for handle in handles {
@@ -704,8 +727,14 @@ pub fn render_handles(frame: &mut Frame, handles: &[SplitHandle], hovered: Optio
         };
         for y in handle.rect.y..handle.rect.y.saturating_add(handle.rect.height) {
             for x in handle.rect.x..handle.rect.x.saturating_add(handle.rect.width) {
+                if is_obscured(x, y) {
+                    continue;
+                }
                 if let Some(cell) = buffer.cell_mut((x, y)) {
-                    cell.set_symbol(".");
+                    // Reset the cell to ensure no background color bleeds through from underlying layers
+                    cell.reset();
+
+                    cell.set_symbol("·");
                     cell.set_style(style);
                 }
             }
@@ -717,6 +746,9 @@ pub fn render_handles(frame: &mut Frame, handles: &[SplitHandle], hovered: Optio
                 for offset in 0..3 {
                     let y = y_center.saturating_sub(1).saturating_add(offset);
                     if y < handle.rect.y || y >= handle.rect.y.saturating_add(handle.rect.height) {
+                        continue;
+                    }
+                    if is_obscured(x, y) {
                         continue;
                     }
                     if let Some(cell) = buffer.cell_mut((x, y)) {
@@ -731,6 +763,9 @@ pub fn render_handles(frame: &mut Frame, handles: &[SplitHandle], hovered: Optio
                 for offset in 0..3 {
                     let x = x_center.saturating_sub(1).saturating_add(offset);
                     if x < handle.rect.x || x >= handle.rect.x.saturating_add(handle.rect.width) {
+                        continue;
+                    }
+                    if is_obscured(x, y) {
                         continue;
                     }
                     if let Some(cell) = buffer.cell_mut((x, y)) {
@@ -753,9 +788,15 @@ pub fn render_handles(frame: &mut Frame, handles: &[SplitHandle], hovered: Optio
                 .y
                 .saturating_add(handle.rect.height.saturating_sub(1));
             for x in handle.rect.x..=max_x {
+                if is_obscured(x, handle.rect.y) {
+                    continue;
+                }
                 if let Some(cell) = buffer.cell_mut((x, handle.rect.y)) {
                     cell.set_symbol("-");
                     cell.set_style(border_style);
+                }
+                if is_obscured(x, max_y) {
+                    continue;
                 }
                 if let Some(cell) = buffer.cell_mut((x, max_y)) {
                     cell.set_symbol("-");
@@ -763,28 +804,42 @@ pub fn render_handles(frame: &mut Frame, handles: &[SplitHandle], hovered: Optio
                 }
             }
             for y in handle.rect.y..=max_y {
+                if is_obscured(handle.rect.x, y) {
+                    continue;
+                }
                 if let Some(cell) = buffer.cell_mut((handle.rect.x, y)) {
                     cell.set_symbol("|");
                     cell.set_style(border_style);
+                }
+                if is_obscured(max_x, y) {
+                    continue;
                 }
                 if let Some(cell) = buffer.cell_mut((max_x, y)) {
                     cell.set_symbol("|");
                     cell.set_style(border_style);
                 }
             }
-            if let Some(cell) = buffer.cell_mut((handle.rect.x, handle.rect.y)) {
+            if !is_obscured(handle.rect.x, handle.rect.y)
+                && let Some(cell) = buffer.cell_mut((handle.rect.x, handle.rect.y))
+            {
                 cell.set_symbol("+");
                 cell.set_style(border_style);
             }
-            if let Some(cell) = buffer.cell_mut((max_x, handle.rect.y)) {
+            if !is_obscured(max_x, handle.rect.y)
+                && let Some(cell) = buffer.cell_mut((max_x, handle.rect.y))
+            {
                 cell.set_symbol("+");
                 cell.set_style(border_style);
             }
-            if let Some(cell) = buffer.cell_mut((handle.rect.x, max_y)) {
+            if !is_obscured(handle.rect.x, max_y)
+                && let Some(cell) = buffer.cell_mut((handle.rect.x, max_y))
+            {
                 cell.set_symbol("+");
                 cell.set_style(border_style);
             }
-            if let Some(cell) = buffer.cell_mut((max_x, max_y)) {
+            if !is_obscured(max_x, max_y)
+                && let Some(cell) = buffer.cell_mut((max_x, max_y))
+            {
                 cell.set_symbol("+");
                 cell.set_style(border_style);
             }

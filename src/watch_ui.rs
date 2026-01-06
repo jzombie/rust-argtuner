@@ -5,8 +5,7 @@ use std::time::{Duration, Instant};
 
 use argtuner::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
-    MouseEventKind,
+    DisableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind,
 };
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
@@ -24,9 +23,11 @@ use rusqlite::{Connection, OpenFlags};
 use term_wm::components::{
     Component, ListComponent, ScrollView, StatusBar, ToggleItem, ToggleListComponent,
 };
-use term_wm::layout::{LayoutNode, TilingLayout};
+use term_wm::drivers::console::ConsoleDriver;
+use term_wm::drivers::mouse::MouseDriver;
+use term_wm::layout::{LayoutNode, TilingLayout, rect_contains};
 use term_wm::runner::{HasWindowManager, run_app};
-use term_wm::window::{WindowManager, rect_contains};
+use term_wm::window::WindowManager;
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let mut app = AppState {
@@ -90,12 +91,15 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
 
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    let mut driver = ConsoleDriver::new();
+    driver.enable()?;
 
     let result = run_app(
         &mut terminal,
+        &mut driver,
         &mut app,
         &[
             RegionId::Trials,
@@ -210,6 +214,19 @@ enum FocusTarget {
 enum ChartMode {
     Metrics,
     HyperParams,
+}
+
+impl PartialEq<FocusTarget> for RegionId {
+    fn eq(&self, other: &FocusTarget) -> bool {
+        matches!(
+            (self, other),
+            (RegionId::Trials, FocusTarget::Trials)
+                | (RegionId::Charts, FocusTarget::Charts)
+                | (RegionId::Details, FocusTarget::Details)
+                | (RegionId::ParamsInner, FocusTarget::DetailsParams)
+                | (RegionId::MetricsInner, FocusTarget::DetailsMetrics)
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

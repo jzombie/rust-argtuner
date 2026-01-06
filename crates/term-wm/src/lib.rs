@@ -1,6 +1,10 @@
 pub mod components;
+pub mod drivers;
+pub mod event_loop;
 pub mod layout;
+pub mod panel;
+pub mod pty;
 pub mod runner;
-pub mod terminal_pane;
-pub mod user_input;
+pub mod state;
+pub mod ui;
 pub mod window;

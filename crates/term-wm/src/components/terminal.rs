@@ -10,23 +10,23 @@ use ratatui::{
 use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
 use crate::components::scroll_view::ScrollView;
-use crate::terminal_pane::TerminalPane;
-use crate::window::rect_contains;
+use crate::layout::rect_contains;
+use crate::pty::Pty;
 
 // This controls the scrollback buffer size in the vt100 parser.
 // It determines how many lines you can scroll up to see.
 const DEFAULT_SCROLLBACK_LEN: usize = 2000;
 
 pub struct TerminalComponent {
-    pane: TerminalPane,
+    pane: Pty,
     last_size: (u16, u16),
     scroll_view: ScrollView,
     last_area: Rect,
 }
 
 impl TerminalComponent {
-    pub fn spawn(command: CommandBuilder, size: PtySize) -> crate::terminal_pane::PtyResult<Self> {
-        let pane = TerminalPane::spawn_with_scrollback(command, size, DEFAULT_SCROLLBACK_LEN)?;
+    pub fn spawn(command: CommandBuilder, size: PtySize) -> crate::pty::PtyResult<Self> {
+        let pane = Pty::spawn_with_scrollback(command, size, DEFAULT_SCROLLBACK_LEN)?;
         Ok(Self {
             pane,
             last_size: (size.cols, size.rows),
@@ -56,44 +56,65 @@ impl TerminalComponent {
         let used = self.pane.max_scrollback();
         let screen = self.pane.screen();
         let buffer = frame.buffer_mut();
-        for row in 0..area.height {
-            for col in 0..area.width {
-                let Some(cell) = screen.cell(row, col) else {
-                    continue;
-                };
-                let mut symbol = cell.contents().chars().next().unwrap_or(' ');
-                let (fg, bg) = resolve_colors(cell, screen);
-                let mut style = Style::default();
-                if let Some(fg) = fg {
-                    style = style.fg(fg);
-                }
-                if let Some(bg) = bg {
-                    style = style.bg(bg);
-                }
-                if cell.bold() {
-                    style = style.add_modifier(Modifier::BOLD);
-                }
-                if cell.dim() {
-                    style = style.add_modifier(Modifier::DIM);
-                }
-                if cell.italic() {
-                    style = style.add_modifier(Modifier::ITALIC);
-                }
-                if cell.underline() {
-                    style = style.add_modifier(Modifier::UNDERLINED);
-                }
-                if cell.inverse() {
-                    style = style.add_modifier(Modifier::REVERSED);
-                }
-                if cell.is_wide_continuation() {
-                    symbol = ' ';
-                }
-                let x = area.x + col;
-                let y = area.y + row;
-                if let Some(cell) = buffer.cell_mut((x, y)) {
-                    let mut buf = [0u8; 4];
-                    let sym = symbol.encode_utf8(&mut buf);
-                    cell.set_symbol(sym).set_style(style);
+
+        // Optimally only iterate over the visible intersection
+        let visible = area.intersection(buffer.area);
+        if visible.width == 0 || visible.height == 0 {
+            return;
+        }
+
+        // Calculate offset into the PTY screen
+        let start_col = visible.x.saturating_sub(area.x);
+        let start_row = visible.y.saturating_sub(area.y);
+
+        for row in start_row..start_row + visible.height {
+            for col in start_col..start_col + visible.width {
+                let cell_x = area.x + col;
+                let cell_y = area.y + row;
+
+                // If we have a PTY cell, render it
+                if let Some(cell) = screen.cell(row, col) {
+                    let mut symbol = cell.contents().chars().next().unwrap_or(' ');
+                    let (fg, bg) = resolve_colors(cell, screen);
+                    let mut style = Style::default();
+                    if let Some(fg) = fg {
+                        style = style.fg(fg);
+                    }
+                    if let Some(bg) = bg {
+                        style = style.bg(bg);
+                    }
+                    if cell.bold() {
+                        style = style.add_modifier(Modifier::BOLD);
+                    }
+                    if cell.dim() {
+                        style = style.add_modifier(Modifier::DIM);
+                    }
+                    if cell.italic() {
+                        style = style.add_modifier(Modifier::ITALIC);
+                    }
+                    if cell.underline() {
+                        style = style.add_modifier(Modifier::UNDERLINED);
+                    }
+                    if cell.inverse() {
+                        style = style.add_modifier(Modifier::REVERSED);
+                    }
+                    if cell.is_wide_continuation() {
+                        symbol = ' ';
+                    }
+
+                    if let Some(buf_cell) = buffer.cell_mut((cell_x, cell_y)) {
+                        let mut buf = [0u8; 4];
+                        // If background is transparent (None), force it to Reset to clear underlying content
+                        if bg.is_none() {
+                            buf_cell.reset();
+                        }
+                        let sym = symbol.encode_utf8(&mut buf);
+                        buf_cell.set_symbol(sym).set_style(style);
+                    }
+                } else if let Some(buf_cell) = buffer.cell_mut((cell_x, cell_y)) {
+                    // Otherwise clear the cell so we don't bleed background
+                    buf_cell.reset();
+                    buf_cell.set_symbol(" ");
                 }
             }
         }
@@ -378,6 +399,9 @@ fn vt_color_to_ratatui(color: vt100::Color) -> Option<TColor> {
 fn resolve_color(color: vt100::Color, screen_default: vt100::Color) -> Option<TColor> {
     match color {
         vt100::Color::Default => match screen_default {
+            // Default to Reset (No Color) which ratatui treats as "Inherit" or "Transparent" usually.
+            // But since this is a Terminal component, we treat Default as Black/Opaque if undefined,
+            // otherwise we risk bleeding through windows underneath.
             vt100::Color::Default => None,
             other => vt_color_to_ratatui(other),
         },
