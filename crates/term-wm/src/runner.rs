@@ -38,7 +38,7 @@ pub fn run_app<B, D, A, W, R, FDraw, FDispatch, FQuit, FMap, FFocus, E>(
     app: &mut A,
     focus_regions: &[R],
     map_region: FMap,
-    map_focus: FFocus,
+    _map_focus: FFocus,
     poll_interval: Duration,
     mut draw: FDraw,
     mut dispatch: FDispatch,
@@ -154,7 +154,6 @@ where
                         let _ = app
                             .windows()
                             .handle_focus_event(&evt, focus_regions, &map_region);
-                        app.windows().bring_focus_to_front(&map_focus);
                         return flush_mouse_capture(app, ControlFlow::Continue);
                     }
                     if dispatch(&evt, app) {
@@ -163,7 +162,6 @@ where
                     let _ = app
                         .windows()
                         .handle_focus_event(&evt, focus_regions, &map_region);
-                    app.windows().bring_focus_to_front(&map_focus);
                     return flush_mouse_capture(app, ControlFlow::Continue);
                 }
                 Event::Key(key) if key.code == KeyCode::Tab => {
@@ -174,7 +172,6 @@ where
                         let _ = app
                             .windows()
                             .handle_focus_event(&evt, focus_regions, &map_region);
-                        app.windows().bring_focus_to_front(&map_focus);
                         return flush_mouse_capture(app, ControlFlow::Continue);
                     }
                     if dispatch(&evt, app) {
@@ -183,7 +180,7 @@ where
                     let _ = app
                         .windows()
                         .handle_focus_event(&evt, focus_regions, &map_region);
-                    app.windows().bring_focus_to_front(&map_focus);
+                    return flush_mouse_capture(app, ControlFlow::Continue);
                 }
                 Event::Key(_) if app.windows().capture_active() => {
                     app.windows().clear_capture();
@@ -221,7 +218,7 @@ pub fn run_window_app<B, D, A, W, R, FDispatch, FQuit, FMap, FFocus, E>(
     app: &mut A,
     focus_regions: &[R],
     map_region: FMap,
-    map_focus: FFocus,
+    _map_focus: FFocus,
     poll_interval: Duration,
     dispatch: FDispatch,
     should_quit: FQuit,
@@ -246,7 +243,7 @@ where
         app,
         focus_regions,
         map_region,
-        map_focus,
+        _map_focus,
         poll_interval,
         move |frame, app| draw_window_app(frame, app, &mut draw_state, draw_map),
         dispatch,

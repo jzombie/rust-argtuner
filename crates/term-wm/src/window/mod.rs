@@ -1529,11 +1529,19 @@ where
         match event {
             Event::Key(key) => match key.code {
                 KeyCode::Tab => {
-                    self.advance_wm_focus(true);
+                    if self.layout_contract == LayoutContract::WindowManaged {
+                        self.advance_wm_focus(true);
+                    } else {
+                        self.app_focus.advance(true);
+                    }
                     true
                 }
                 KeyCode::BackTab => {
-                    self.advance_wm_focus(false);
+                    if self.layout_contract == LayoutContract::WindowManaged {
+                        self.advance_wm_focus(false);
+                    } else {
+                        self.app_focus.advance(false);
+                    }
                     true
                 }
                 _ => false,
