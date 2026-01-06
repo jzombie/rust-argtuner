@@ -10,8 +10,8 @@ use self::decorator::{OpenStepDecorator, WindowDecorator};
 use crate::components::{Component, ConfirmAction, ConfirmOverlay, DialogOverlay};
 use crate::layout::floating::*;
 use crate::layout::{
-    FloatingPane, LayoutNode, LayoutPlan, RectSpec, RegionMap, SplitHandle, TilingLayout,
-    rect_contains, render_handles_masked,
+    FloatingPane, InsertPosition, LayoutNode, LayoutPlan, RectSpec, RegionMap, SplitHandle,
+    TilingLayout, rect_contains, render_handles_masked,
 };
 use crate::panel::Panel;
 
@@ -127,6 +127,7 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     decorator: Box<dyn WindowDecorator>,
     floating_resize_offscreen: bool,
     z_order: Vec<R>,
+    drag_snap: Option<(Option<R>, InsertPosition, Rect)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +170,7 @@ where
             decorator: Box::new(OpenStepDecorator),
             floating_resize_offscreen: true,
             z_order: Vec::new(),
+            drag_snap: None,
         }
     }
 
@@ -564,12 +566,16 @@ where
                             drag.offset_x,
                             drag.offset_y,
                         );
+                        self.update_snap_preview(drag.id, mouse.column, mouse.row);
                     }
                     return true;
                 }
             }
             MouseEventKind::Up(_) => {
-                if self.drag_header.take().is_some() {
+                if let Some(drag) = self.drag_header.take() {
+                    if self.drag_snap.is_some() {
+                        self.apply_snap(drag.id);
+                    }
                     return true;
                 }
             }
@@ -659,6 +665,18 @@ where
         if self.managed_layout.is_none() {
             return false;
         }
+
+        if let Some(layout) = self.managed_layout.as_mut() {
+            if !layout.root_mut().remove_leaf(id) {
+                // If remove failed, check if it's the root leaf
+                if let LayoutNode::Leaf(root_id) = layout.root() {
+                    if *root_id == id {
+                        self.managed_layout = None;
+                    }
+                }
+            }
+        }
+
         let width = rect.width.max(1);
         let height = rect.height.max(1);
         let x = rect.x;
@@ -700,6 +718,151 @@ where
             width,
             height,
         });
+    }
+
+    fn update_snap_preview(&mut self, dragging_id: R, mouse_x: u16, mouse_y: u16) {
+        self.drag_snap = None;
+        let area = self.managed_area;
+        let sensitivity = 3;
+
+        // 1. Screen Edge Snap
+        let position = if mouse_x < area.x.saturating_add(sensitivity) {
+            Some(InsertPosition::Left)
+        } else if mouse_x
+            > area
+                .x
+                .saturating_add(area.width)
+                .saturating_sub(sensitivity)
+        {
+            Some(InsertPosition::Right)
+        } else if mouse_y < area.y.saturating_add(sensitivity) {
+            Some(InsertPosition::Top)
+        } else if mouse_y
+            > area
+                .y
+                .saturating_add(area.height)
+                .saturating_sub(sensitivity)
+        {
+            Some(InsertPosition::Bottom)
+        } else {
+            None
+        };
+
+        if let Some(pos) = position {
+            let preview = match pos {
+                InsertPosition::Left => Rect {
+                    width: area.width / 2,
+                    ..area
+                },
+                InsertPosition::Right => Rect {
+                    x: area.x + area.width / 2,
+                    width: area.width / 2,
+                    ..area
+                },
+                InsertPosition::Top => Rect {
+                    height: area.height / 2,
+                    ..area
+                },
+                InsertPosition::Bottom => Rect {
+                    y: area.y + area.height / 2,
+                    height: area.height / 2,
+                    ..area
+                },
+            };
+            self.drag_snap = Some((None, pos, preview));
+            return;
+        }
+
+        // 2. Window Snap
+        if let Some(layout) = &self.managed_layout {
+            let regions = layout.regions(area);
+            for (target_id, rect) in regions {
+                if target_id == dragging_id {
+                    continue;
+                }
+
+                if rect_contains(rect, mouse_x, mouse_y) {
+                    let local_x = mouse_x.saturating_sub(rect.x);
+                    let local_y = mouse_y.saturating_sub(rect.y);
+                    let w = rect.width;
+                    let h = rect.height;
+                    let sens_x = (w / 4).max(2);
+                    let sens_y = (h / 4).max(2);
+
+                    let snap = if local_x < sens_x {
+                        Some((
+                            InsertPosition::Left,
+                            Rect {
+                                width: w / 2,
+                                ..rect
+                            },
+                        ))
+                    } else if local_x > w.saturating_sub(sens_x) {
+                        Some((
+                            InsertPosition::Right,
+                            Rect {
+                                x: rect.x + w / 2,
+                                width: w / 2,
+                                ..rect
+                            },
+                        ))
+                    } else if local_y < sens_y {
+                        Some((
+                            InsertPosition::Top,
+                            Rect {
+                                height: h / 2,
+                                ..rect
+                            },
+                        ))
+                    } else if local_y > h.saturating_sub(sens_y) {
+                        Some((
+                            InsertPosition::Bottom,
+                            Rect {
+                                y: rect.y + h / 2,
+                                height: h / 2,
+                                ..rect
+                            },
+                        ))
+                    } else {
+                        None
+                    };
+
+                    if let Some((pos, preview)) = snap {
+                        self.drag_snap = Some((Some(target_id), pos, preview));
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_snap(&mut self, id: R) {
+        if let Some((target, position, _)) = self.drag_snap.take() {
+            if let Some(index) = self.floating_index(id) {
+                self.managed_floating.remove(index);
+            }
+            if let Some(layout) = &mut self.managed_layout {
+                let success = if let Some(target_id) = target {
+                    layout.root_mut().insert_leaf(target_id, id, position)
+                } else {
+                    false
+                };
+
+                if !success {
+                    layout.split_root(id, position);
+                }
+
+                // Ensure the snapped window is brought to front/focused
+                // This ensures it appears in the draw order even if register_managed_layout logic is tricky
+                if let Some(pos) = self.z_order.iter().position(|&z_id| z_id == id) {
+                    self.z_order.remove(pos);
+                }
+                self.z_order.push(id);
+                self.managed_draw_order = self.z_order.clone();
+            } else {
+                self.managed_layout = Some(TilingLayout::new(LayoutNode::leaf(id)));
+            }
+        }
     }
 
     pub fn bring_to_front(&mut self, id: R) {
@@ -857,6 +1020,21 @@ where
             &self.managed_floating,
             &self.managed_draw_order,
         );
+
+        if let Some((_, _, rect)) = self.drag_snap {
+            let buffer = frame.buffer_mut();
+            let color = ratatui::style::Color::Rgb(200, 100, 0);
+            for y in rect.y..rect.y.saturating_add(rect.height) {
+                for x in rect.x..rect.x.saturating_add(rect.width) {
+                    if let Some(cell) = buffer.cell_mut((x, y)) {
+                        let mut style = cell.style();
+                        style.bg = Some(color);
+                        cell.set_style(style);
+                    }
+                }
+            }
+        }
+
         let status_line = if self.wm_overlay_visible {
             let esc_state = if let Some(remaining) = self.esc_passthrough_remaining() {
                 format!("Esc passthrough: active ({}ms)", remaining.as_millis())

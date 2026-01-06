@@ -16,6 +16,14 @@ pub enum LayoutNode<Id: Copy + Eq + Ord> {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertPosition {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
 impl<Id: Copy + Eq + Ord> LayoutNode<Id> {
     pub fn leaf(id: Id) -> Self {
         Self::Leaf(id)
@@ -47,6 +55,13 @@ impl<Id: Copy + Eq + Ord> LayoutNode<Id> {
             weights: Vec::new(),
             constraints,
             resizable,
+        }
+    }
+
+    pub fn unwrap_leaf(&self) -> Option<Id> {
+        match self {
+            LayoutNode::Leaf(id) => Some(*id),
+            _ => None,
         }
     }
 
@@ -163,11 +178,22 @@ impl<Id: Copy + Eq + Ord> LayoutNode<Id> {
                 let mut removed = false;
                 let mut index = 0;
                 while index < children.len() {
-                    let child_removed = match &mut children[index] {
+                    let should_remove_child = match &mut children[index] {
                         LayoutNode::Leaf(child_id) if *child_id == id => true,
-                        child => child.remove_leaf(id),
+                        // If it's a split/subtree, we recurse.
+                        // If remove_leaf returns true, the ID was found and removed from that subtree.
+                        // BUT we do not remove the child node itself unless it was the leaf we targeted directly.
+                        // The child node (Split) is responsible for collapsing itself if needed.
+                        child => {
+                            if child.remove_leaf(id) {
+                                removed = true;
+                                break;
+                            }
+                            false
+                        }
                     };
-                    if child_removed {
+
+                    if should_remove_child {
                         let prev_len = children.len();
                         children.remove(index);
                         if constraints.len() == prev_len {
@@ -321,6 +347,34 @@ impl<Id: Copy + Eq + Ord> TilingLayout<Id> {
         &mut self.root
     }
 
+    pub fn split_root(&mut self, insert: Id, position: InsertPosition) {
+        let (direction, children) = match position {
+            InsertPosition::Left => (
+                Direction::Horizontal,
+                vec![LayoutNode::leaf(insert), self.root.clone()],
+            ),
+            InsertPosition::Right => (
+                Direction::Horizontal,
+                vec![self.root.clone(), LayoutNode::leaf(insert)],
+            ),
+            InsertPosition::Top => (
+                Direction::Vertical,
+                vec![LayoutNode::leaf(insert), self.root.clone()],
+            ),
+            InsertPosition::Bottom => (
+                Direction::Vertical,
+                vec![self.root.clone(), LayoutNode::leaf(insert)],
+            ),
+        };
+        self.root = LayoutNode::Split {
+            direction,
+            children,
+            weights: vec![1.0, 1.0],
+            constraints: Vec::new(),
+            resizable: true,
+        };
+    }
+
     pub fn regions(&self, area: Rect) -> Vec<(Id, Rect)> {
         self.root.layout(area)
     }
@@ -394,14 +448,6 @@ impl<Id: Copy + Eq + Ord> TilingLayout<Id> {
 pub struct LayoutPlan<Id: Copy + Eq + Ord> {
     pub root: LayoutNode<Id>,
     pub floating: Vec<FloatingPane<Id>>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum InsertPosition {
-    Left,
-    Right,
-    Top,
-    Bottom,
 }
 
 impl<Id: Copy + Eq + Ord> LayoutPlan<Id> {
