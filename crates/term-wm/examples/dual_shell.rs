@@ -99,7 +99,6 @@ impl App {
             panes,
         })
     }
-
 }
 
 impl HasWindowManager<PaneId, PaneId> for App {

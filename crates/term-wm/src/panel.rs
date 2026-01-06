@@ -194,7 +194,14 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             } else {
                 Style::default().fg(Color::DarkGray)
             };
-            safe_set_string(buffer, bounds, indicator_x, y, &total_label, indicator_style);
+            safe_set_string(
+                buffer,
+                bounds,
+                indicator_x,
+                y,
+                &total_label,
+                indicator_style,
+            );
             let available = max_x.saturating_sub(indicator_x);
             let rect_width = total_width.min(available);
             if rect_width > 0 {

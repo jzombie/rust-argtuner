@@ -786,21 +786,15 @@ where
         });
 
         if let Some((target_id, rect)) = target {
-            let w = rect.width;
             let h = rect.height;
 
             // Distance to edges
-            let d_left = mouse_x.saturating_sub(rect.x);
-            let d_right = (rect.x + w).saturating_sub(1).saturating_sub(mouse_x);
             let d_top = mouse_y.saturating_sub(rect.y);
             let d_bottom = (rect.y + h).saturating_sub(1).saturating_sub(mouse_y);
-
-            let min_dist = d_left.min(d_right).min(d_top).min(d_bottom);
 
             // Sensitivity: Allow a reasonable localized zone.
             // Reduced sensitivity to prevent accidental snaps when crossing windows.
             // w/10 is 10%. Clamped to [2, 6] means you must be quite close to the edge.
-            let sens_x = (w / 10).clamp(2, 6);
             let sens_y = (h / 10).clamp(1, 4);
 
             // Check if the closest edge is within its sensitivity limit
@@ -1348,9 +1342,7 @@ where
             if let Some(index) = self.panel.hit_test_menu_item(event) {
                 let items = wm_menu_items(self.mouse_capture_enabled());
                 self.wm_menu_selected = index.min(items.len().saturating_sub(1));
-                return items
-                    .get(self.wm_menu_selected)
-                    .map(|item| item.action);
+                return items.get(self.wm_menu_selected).map(|item| item.action);
             }
             if self.panel.menu_icon_contains_point(mouse.column, mouse.row) {
                 return Some(WmMenuAction::CloseMenu);
