@@ -14,6 +14,12 @@ Run the tuner from the repository root, pointing it to this project directory:
 cargo run -p argtuner -- run crates/loss-generator/loss-tuning-project
 ```
 
+Viewing in TUI app:
+
+```bash
+cargo run -- watch --project crates/loss-generator/loss-tuning-project
+```
+
 ## How it works
 
 The project uses the `argtuner-loss-generator` crate (located in `../../`) as the trial command.
