@@ -91,19 +91,17 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn render<W: Copy + Eq>(
+    pub fn render(
         &mut self,
         frame: &mut Frame,
         active: bool,
-        focus_current: W,
-        focus_order: &[W],
+        focus_current: R,
+        focus_order: &[R],
         managed_draw_order: &[R],
         status_line: Option<&str>,
         mouse_capture_enabled: bool,
         menu_open: bool,
-    ) where
-        R: PartialEq<W>,
-    {
+    ) {
         if !active {
             return;
         }
@@ -424,10 +422,7 @@ struct PanelMenuHit {
     rect: Rect,
 }
 
-fn panel_order<W: Copy + Eq, R: Copy + Eq + Ord + PartialEq<W>>(
-    focus_order: &[W],
-    managed_draw_order: &[R],
-) -> Vec<R> {
+fn panel_order<R: Copy + Eq + Ord>(focus_order: &[R], managed_draw_order: &[R]) -> Vec<R> {
     if focus_order.is_empty() {
         return managed_draw_order.to_vec();
     }

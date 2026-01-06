@@ -6,15 +6,14 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use ratatui::backend::CrosstermBackend;
-use ratatui::prelude::{Constraint, Direction, Rect};
+use ratatui::prelude::Rect;
 use ratatui::widgets::{Block, Borders, Clear};
 use ratatui::{Frame, Terminal};
 
 use term_wm::components::{AsciiImage, Component};
 use term_wm::drivers::console::ConsoleDriver;
-use term_wm::layout::{LayoutNode, TilingLayout};
-use term_wm::runner::{HasWindowManager, run_app};
-use term_wm::window::WindowManager;
+use term_wm::runner::{HasWindowManager, WindowApp, run_window_app};
+use term_wm::window::{AppWindowDraw, WindowManager};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum PaneId {
@@ -31,7 +30,7 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
     let mut driver = ConsoleDriver::new();
 
-    let result = run_app(
+    let result = run_window_app(
         &mut terminal,
         &mut driver,
         &mut app,
@@ -39,7 +38,6 @@ fn main() -> io::Result<()> {
         |id| id,
         Some,
         Duration::from_millis(16),
-        draw_ui,
         |event, app| {
             if matches!(event, Event::Mouse(_)) && app.windows.handle_managed_event(event) {
                 return true;
@@ -94,15 +92,6 @@ impl App {
         load_into(&mut right, &paths[1])?;
         let mut windows = WindowManager::new_managed(PaneId::Left);
         windows.set_focus_order(vec![PaneId::Left, PaneId::Right]);
-        let layout = LayoutNode::split(
-            Direction::Horizontal,
-            vec![Constraint::Percentage(50), Constraint::Percentage(50)],
-            vec![
-                LayoutNode::leaf(PaneId::Left),
-                LayoutNode::leaf(PaneId::Right),
-            ],
-        );
-        windows.set_managed_layout(TilingLayout::new(layout));
         Ok(Self {
             windows,
             left,
@@ -117,19 +106,28 @@ impl HasWindowManager<PaneId, PaneId> for App {
     }
 }
 
-fn draw_ui(frame: &mut Frame, app: &mut App) {
-    let area = frame.area();
-    app.windows.register_managed_layout(area);
-    for pane in app.windows.managed_draw_order() {
-        let rect = app.windows.region(*pane);
-        match pane {
-            PaneId::Left => render_pane(frame, &mut app.left, rect),
-            PaneId::Right => render_pane(frame, &mut app.right, rect),
+impl WindowApp<PaneId, PaneId> for App {
+    fn enumerate_windows(&mut self) -> Vec<PaneId> {
+        vec![PaneId::Left, PaneId::Right]
+    }
+
+    fn render_window(&mut self, frame: &mut Frame, window: AppWindowDraw<PaneId>) {
+        match window.id {
+            PaneId::Left => {
+                render_pane(frame, &mut self.left, window.surface.inner, window.focused)
+            }
+            PaneId::Right => {
+                render_pane(frame, &mut self.right, window.surface.inner, window.focused)
+            }
         }
+    }
+
+    fn empty_window_message(&self) -> &str {
+        "no images loaded"
     }
 }
 
-fn render_pane(frame: &mut Frame, image: &mut AsciiImage, area: Rect) {
+fn render_pane(frame: &mut Frame, image: &mut AsciiImage, area: Rect, _focused: bool) {
     let block = Block::default().borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
