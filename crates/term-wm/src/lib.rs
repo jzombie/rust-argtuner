@@ -5,5 +5,6 @@ pub mod layout;
 pub mod panel;
 pub mod pty;
 pub mod runner;
+pub mod state;
 pub mod ui;
 pub mod window;

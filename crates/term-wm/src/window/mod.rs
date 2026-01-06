@@ -14,6 +14,7 @@ use crate::layout::{
     TilingLayout, rect_contains, render_handles_masked,
 };
 use crate::panel::Panel;
+use crate::state::AppState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Describes who owns layout placement and how WM-level input is handled.
@@ -117,6 +118,7 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     hover: Option<(u16, u16)>,
     capture_deadline: Option<Instant>,
     pending_deadline: Option<Instant>,
+    state: AppState,
     layout_contract: LayoutContract,
     wm_overlay_visible: bool,
     wm_overlay_opened_at: Option<Instant>,
@@ -136,6 +138,7 @@ pub enum WmMenuAction {
     NewWindow,
     ExitUi,
     BringFloatingFront,
+    ToggleMouseCapture,
 }
 
 impl<W: Copy + Eq + Ord, R: Copy + Eq + Ord + std::fmt::Debug> WindowManager<W, R>
@@ -160,6 +163,7 @@ where
             hover: None,
             capture_deadline: None,
             pending_deadline: None,
+            state: AppState::new(),
             layout_contract: LayoutContract::AppManaged,
             wm_overlay_visible: false,
             wm_overlay_opened_at: None,
@@ -230,11 +234,36 @@ where
     }
 
     pub fn capture_active(&mut self) -> bool {
+        if !self.state.mouse_capture_enabled() {
+            return false;
+        }
         if self.layout_contract == LayoutContract::WindowManaged && self.wm_overlay_visible {
             return true;
         }
         self.refresh_capture();
         self.capture_deadline.is_some()
+    }
+
+    pub fn mouse_capture_enabled(&self) -> bool {
+        self.state.mouse_capture_enabled()
+    }
+
+    pub fn set_mouse_capture_enabled(&mut self, enabled: bool) {
+        self.state.set_mouse_capture_enabled(enabled);
+        if !self.state.mouse_capture_enabled() {
+            self.clear_capture();
+        }
+    }
+
+    pub fn toggle_mouse_capture(&mut self) {
+        self.state.toggle_mouse_capture();
+        if !self.state.mouse_capture_enabled() {
+            self.clear_capture();
+        }
+    }
+
+    pub fn take_mouse_capture_change(&mut self) -> Option<bool> {
+        self.state.take_mouse_capture_change()
     }
 
     fn refresh_capture(&mut self) {
@@ -488,6 +517,8 @@ where
                 } else {
                     self.open_wm_overlay();
                 }
+            } else if self.panel.hit_test_mouse_capture(event) {
+                self.toggle_mouse_capture();
             } else if let Some(id) = self.panel.hit_test_window(event)
                 && let Some(target) = self.focus_for_region(id)
             {
@@ -1210,9 +1241,10 @@ where
             &self.focus.order,
             &self.managed_draw_order,
             status_line.as_deref(),
+            self.mouse_capture_enabled(),
             self.wm_overlay_visible,
         );
-        let menu_labels = wm_menu_items()
+        let menu_labels = wm_menu_items(self.mouse_capture_enabled())
             .iter()
             .map(|item| (item.icon, item.label))
             .collect::<Vec<_>>();
@@ -1330,8 +1362,9 @@ where
             && matches!(mouse.kind, MouseEventKind::Down(_))
         {
             if let Some(index) = self.panel.hit_test_menu_item(event) {
-                self.wm_menu_selected = index.min(wm_menu_items().len().saturating_sub(1));
-                return wm_menu_items()
+                let items = wm_menu_items(self.mouse_capture_enabled());
+                self.wm_menu_selected = index.min(items.len().saturating_sub(1));
+                return items
                     .get(self.wm_menu_selected)
                     .map(|item| item.action);
             }
@@ -1347,7 +1380,7 @@ where
         };
         match key.code {
             KeyCode::Up => {
-                let total = wm_menu_items().len();
+                let total = wm_menu_items(self.mouse_capture_enabled()).len();
                 if total > 0 {
                     if self.wm_menu_selected == 0 {
                         self.wm_menu_selected = total - 1;
@@ -1358,14 +1391,14 @@ where
                 None
             }
             KeyCode::Down => {
-                let total = wm_menu_items().len();
+                let total = wm_menu_items(self.mouse_capture_enabled()).len();
                 if total > 0 {
                     self.wm_menu_selected = (self.wm_menu_selected + 1) % total;
                 }
                 None
             }
             KeyCode::Char('k') => {
-                let total = wm_menu_items().len();
+                let total = wm_menu_items(self.mouse_capture_enabled()).len();
                 if total > 0 {
                     if self.wm_menu_selected == 0 {
                         self.wm_menu_selected = total - 1;
@@ -1376,13 +1409,13 @@ where
                 None
             }
             KeyCode::Char('j') => {
-                let total = wm_menu_items().len();
+                let total = wm_menu_items(self.mouse_capture_enabled()).len();
                 if total > 0 {
                     self.wm_menu_selected = (self.wm_menu_selected + 1) % total;
                 }
                 None
             }
-            KeyCode::Enter => wm_menu_items()
+            KeyCode::Enter => wm_menu_items(self.mouse_capture_enabled())
                 .get(self.wm_menu_selected)
                 .map(|item| item.action),
             _ => None,
@@ -1417,12 +1450,22 @@ struct WmMenuItem {
     action: WmMenuAction,
 }
 
-fn wm_menu_items() -> [WmMenuItem; 4] {
+fn wm_menu_items(mouse_capture_enabled: bool) -> [WmMenuItem; 5] {
+    let mouse_label = if mouse_capture_enabled {
+        "Mouse Capture: On"
+    } else {
+        "Mouse Capture: Off"
+    };
     [
         WmMenuItem {
             label: "Resume",
             icon: None,
             action: WmMenuAction::CloseMenu,
+        },
+        WmMenuItem {
+            label: mouse_label,
+            icon: Some("🖱"),
+            action: WmMenuAction::ToggleMouseCapture,
         },
         WmMenuItem {
             label: "Floating Front",

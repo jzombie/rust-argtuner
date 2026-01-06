@@ -23,6 +23,7 @@ pub struct Panel<R: Copy + Eq + Ord> {
     menu_rect: Option<Rect>,
     menu_item_hits: Vec<PanelMenuHit>,
     menu_bounds: Option<Rect>,
+    mouse_capture_rect: Option<Rect>,
 }
 
 impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
@@ -35,6 +36,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
             menu_rect: None,
             menu_item_hits: Vec::new(),
             menu_bounds: None,
+            mouse_capture_rect: None,
         }
     }
 
@@ -43,6 +45,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
         self.menu_rect = None;
         self.menu_item_hits.clear();
         self.menu_bounds = None;
+        self.mouse_capture_rect = None;
     }
 
     pub fn visible(&self) -> bool {
@@ -96,6 +99,7 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
         focus_order: &[W],
         managed_draw_order: &[R],
         status_line: Option<&str>,
+        mouse_capture_enabled: bool,
         menu_open: bool,
     ) where
         R: PartialEq<W>,
@@ -167,6 +171,41 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
                 x = x.saturating_add(chunk_width);
             }
         }
+
+        let indicator = "🖱";
+        let label = if mouse_capture_enabled {
+            "mouse capture: on"
+        } else {
+            "mouse capture: off"
+        };
+        let total_label = format!("{indicator} {label}");
+        let total_width = total_label.chars().count() as u16;
+        let indicator_x = if total_width >= bounds.width {
+            bounds.x
+        } else {
+            max_x.saturating_sub(total_width)
+        };
+        if total_width > 0 && indicator_x < max_x {
+            let indicator_style = if mouse_capture_enabled {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            safe_set_string(buffer, bounds, indicator_x, y, &total_label, indicator_style);
+            let available = max_x.saturating_sub(indicator_x);
+            let rect_width = total_width.min(available);
+            if rect_width > 0 {
+                self.mouse_capture_rect = Some(Rect {
+                    x: indicator_x,
+                    y,
+                    width: rect_width,
+                    height: 1,
+                });
+            }
+        }
     }
 
     pub fn hit_test_menu(&self, event: &Event) -> bool {
@@ -192,6 +231,19 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
     pub fn menu_icon_contains_point(&self, column: u16, row: u16) -> bool {
         if let Some(rect) = self.menu_rect {
             return rect_contains(rect, column, row);
+        }
+        false
+    }
+
+    pub fn hit_test_mouse_capture(&self, event: &Event) -> bool {
+        let Event::Mouse(mouse) = event else {
+            return false;
+        };
+        if !matches!(mouse.kind, MouseEventKind::Down(_)) {
+            return false;
+        }
+        if let Some(rect) = self.mouse_capture_rect {
+            return rect_contains(rect, mouse.column, mouse.row);
         }
         false
     }

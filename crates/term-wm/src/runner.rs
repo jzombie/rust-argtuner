@@ -43,8 +43,15 @@ where
 {
     let capture_timeout = Duration::from_millis(500);
     let mut event_loop = EventLoop::new(driver, poll_interval);
+    apply_mouse_capture(app.windows().mouse_capture_enabled())?;
 
     event_loop.run(|_driver, event| {
+        let flush_mouse_capture = |app: &mut A, flow: ControlFlow| {
+            if let Some(enabled) = app.windows().take_mouse_capture_change() {
+                let _ = apply_mouse_capture(enabled);
+            }
+            Ok(flow)
+        };
         if let Some(evt) = event {
             if app.windows().exit_confirm_visible() {
                 if let Some(action) = app.windows().handle_exit_confirm_event(&evt) {
@@ -53,7 +60,7 @@ where
                         ConfirmAction::Cancel => app.windows().close_exit_confirm(),
                     }
                 }
-                return Ok(ControlFlow::Continue);
+                return flush_mouse_capture(app, ControlFlow::Continue);
             }
             let wm_mode = app.windows().layout_contract() == LayoutContract::WindowManaged;
             if wm_mode
@@ -70,13 +77,16 @@ where
                 } else {
                     app.windows().open_wm_overlay();
                 }
-                return Ok(ControlFlow::Continue);
+                return flush_mouse_capture(app, ControlFlow::Continue);
             }
             if wm_mode && app.windows().wm_overlay_visible() {
                 if let Some(action) = app.windows().handle_wm_menu_event(&evt) {
                     match action {
                         WmMenuAction::CloseMenu => {
                             app.windows().close_wm_overlay();
+                        }
+                        WmMenuAction::ToggleMouseCapture => {
+                            app.windows().toggle_mouse_capture();
                         }
                         WmMenuAction::NewWindow => {
                             app.wm_new_window();
@@ -89,13 +99,13 @@ where
                         WmMenuAction::ExitUi => {
                             app.windows().close_wm_overlay();
                             app.windows().open_exit_confirm();
-                            return Ok(ControlFlow::Continue);
+                            return flush_mouse_capture(app, ControlFlow::Continue);
                         }
                     }
-                    return Ok(ControlFlow::Continue);
+                    return flush_mouse_capture(app, ControlFlow::Continue);
                 }
                 if app.windows().wm_menu_consumes_event(&evt) {
-                    return Ok(ControlFlow::Continue);
+                    return flush_mouse_capture(app, ControlFlow::Continue);
                 }
                 if let Event::Key(key) = evt
                     && key.code == KeyCode::Char('n')
@@ -103,12 +113,15 @@ where
                 {
                     app.wm_new_window();
                     app.windows().close_wm_overlay();
-                    return Ok(ControlFlow::Continue);
+                    return flush_mouse_capture(app, ControlFlow::Continue);
                 }
             }
             if should_quit(Some(&evt), app) {
                 app.windows().open_exit_confirm();
-                return Ok(ControlFlow::Continue);
+                return flush_mouse_capture(app, ControlFlow::Continue);
+            }
+            if matches!(evt, Event::Mouse(_)) && !app.windows().mouse_capture_enabled() {
+                return flush_mouse_capture(app, ControlFlow::Continue);
             }
             match &evt {
                 Event::Key(key) if key.code == KeyCode::BackTab => {
@@ -120,16 +133,16 @@ where
                             .windows()
                             .handle_focus_event(&evt, focus_regions, &map_region);
                         app.windows().bring_focus_to_front(&map_focus);
-                        return Ok(ControlFlow::Continue);
+                        return flush_mouse_capture(app, ControlFlow::Continue);
                     }
                     if dispatch(&evt, app) {
-                        return Ok(ControlFlow::Continue);
+                        return flush_mouse_capture(app, ControlFlow::Continue);
                     }
                     let _ = app
                         .windows()
                         .handle_focus_event(&evt, focus_regions, &map_region);
                     app.windows().bring_focus_to_front(&map_focus);
-                    return Ok(ControlFlow::Continue);
+                    return flush_mouse_capture(app, ControlFlow::Continue);
                 }
                 Event::Key(key) if key.code == KeyCode::Tab => {
                     if app.windows().capture_active() {
@@ -140,10 +153,10 @@ where
                             .windows()
                             .handle_focus_event(&evt, focus_regions, &map_region);
                         app.windows().bring_focus_to_front(&map_focus);
-                        return Ok(ControlFlow::Continue);
+                        return flush_mouse_capture(app, ControlFlow::Continue);
                     }
                     if dispatch(&evt, app) {
-                        return Ok(ControlFlow::Continue);
+                        return flush_mouse_capture(app, ControlFlow::Continue);
                     }
                     let _ = app
                         .windows()
@@ -163,7 +176,7 @@ where
             }
         } else {
             if should_quit(None, app) {
-                return Ok(ControlFlow::Quit);
+                return flush_mouse_capture(app, ControlFlow::Quit);
             }
             app.windows().begin_frame();
             terminal
@@ -173,8 +186,17 @@ where
                 })
                 .map_err(|e| io::Error::other(e.to_string()))?;
         }
-        Ok(ControlFlow::Continue)
+        flush_mouse_capture(app, ControlFlow::Continue)
     })?;
 
     Ok(())
+}
+
+fn apply_mouse_capture(enabled: bool) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    if enabled {
+        crossterm::execute!(stdout, crossterm::event::EnableMouseCapture)
+    } else {
+        crossterm::execute!(stdout, crossterm::event::DisableMouseCapture)
+    }
 }
