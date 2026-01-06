@@ -269,6 +269,9 @@ impl<R: Copy + Eq + Ord + std::fmt::Debug> Panel<R> {
                     break;
                 }
                 if let Some(cell) = buffer.cell_mut((x, y)) {
+                    // Prevent potential color bleed-through
+                    cell.reset();
+
                     cell.set_symbol(" ");
                     cell.set_style(menu_style);
                 }
