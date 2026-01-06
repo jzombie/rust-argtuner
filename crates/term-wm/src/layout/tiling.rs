@@ -178,33 +178,42 @@ impl<Id: Copy + Eq + Ord> LayoutNode<Id> {
                 let mut removed = false;
                 let mut index = 0;
                 while index < children.len() {
-                    let should_remove_child = match &mut children[index] {
-                        LayoutNode::Leaf(child_id) if *child_id == id => true,
-                        // If it's a split/subtree, we recurse.
-                        // If remove_leaf returns true, the ID was found and removed from that subtree.
-                        // BUT we do not remove the child node itself unless it was the leaf we targeted directly.
-                        // The child node (Split) is responsible for collapsing itself if needed.
-                        child => {
-                            if child.remove_leaf(id) {
-                                removed = true;
-                                break;
-                            }
-                            false
-                        }
+                    let is_target = match &children[index] {
+                        LayoutNode::Leaf(i) => *i == id,
+                        _ => false,
                     };
 
-                    if should_remove_child {
-                        let prev_len = children.len();
+                    if is_target {
                         children.remove(index);
-                        if constraints.len() == prev_len {
-                            constraints.remove(index);
-                        }
-                        if weights.len() == prev_len {
+                        if index < weights.len() {
                             weights.remove(index);
+                        }
+                        if index < constraints.len() {
+                            constraints.remove(index);
                         }
                         removed = true;
                         break;
                     }
+
+                    if children[index].remove_leaf(id) {
+                        removed = true;
+                        // If the child split created an empty split, remove it
+                        let is_empty_split = match &children[index] {
+                            LayoutNode::Split { children: s, .. } => s.is_empty(),
+                            _ => false,
+                        };
+                        if is_empty_split {
+                            children.remove(index);
+                            if index < weights.len() {
+                                weights.remove(index);
+                            }
+                            if index < constraints.len() {
+                                constraints.remove(index);
+                            }
+                        }
+                        break;
+                    }
+
                     index += 1;
                 }
                 if removed && children.len() == 1 {

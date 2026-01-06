@@ -552,6 +552,8 @@ where
                         id: header.id,
                         offset_x: mouse.column.saturating_sub(rect.x),
                         offset_y: mouse.row.saturating_sub(rect.y),
+                        start_x: mouse.column,
+                        start_y: mouse.row,
                     });
                     return true;
                 }
@@ -566,7 +568,14 @@ where
                             drag.offset_x,
                             drag.offset_y,
                         );
-                        self.update_snap_preview(drag.id, mouse.column, mouse.row);
+                        // Only show snap preview if dragged a bit
+                        let dx = mouse.column.abs_diff(drag.start_x);
+                        let dy = mouse.row.abs_diff(drag.start_y);
+                        if dx + dy > 2 {
+                            self.update_snap_preview(drag.id, mouse.column, mouse.row);
+                        } else {
+                            self.drag_snap = None;
+                        }
                     }
                     return true;
                 }
@@ -667,12 +676,19 @@ where
         }
 
         if let Some(layout) = self.managed_layout.as_mut() {
-            if !layout.root_mut().remove_leaf(id) {
-                // If remove failed, check if it's the root leaf
-                if let LayoutNode::Leaf(root_id) = layout.root() {
-                    if *root_id == id {
-                        self.managed_layout = None;
-                    }
+            if layout.root_mut().remove_leaf(id) {
+                // If remove succeeded, check if root is now an empty split
+                let root_empty = match layout.root() {
+                    LayoutNode::Split { children, .. } => children.is_empty(),
+                    _ => false,
+                };
+                if root_empty {
+                    self.managed_layout = None;
+                }
+            } else if let LayoutNode::Leaf(root_id) = layout.root() {
+                // If remove failed but it's the root leaf
+                if *root_id == id {
+                    self.managed_layout = None;
                 }
             }
         }
@@ -723,33 +739,123 @@ where
     fn update_snap_preview(&mut self, dragging_id: R, mouse_x: u16, mouse_y: u16) {
         self.drag_snap = None;
         let area = self.managed_area;
-        let sensitivity = 3;
 
-        // 1. Screen Edge Snap
-        let position = if mouse_x < area.x.saturating_add(sensitivity) {
-            Some(InsertPosition::Left)
-        } else if mouse_x
-            > area
-                .x
-                .saturating_add(area.width)
-                .saturating_sub(sensitivity)
-        {
-            Some(InsertPosition::Right)
-        } else if mouse_y < area.y.saturating_add(sensitivity) {
-            Some(InsertPosition::Top)
-        } else if mouse_y
-            > area
-                .y
-                .saturating_add(area.height)
-                .saturating_sub(sensitivity)
-        {
-            Some(InsertPosition::Bottom)
+        // 1. Check Window Snap first (more specific)
+        // We iterate z-order (top-to-bottom) to find the first valid target under mouse.
+        // We only allow snapping to windows that are already tiled, unless the layout is empty.
+        let target = self.z_order.iter().rev().find_map(|&id| {
+            if id == dragging_id {
+                return None;
+            }
+            // If we have a layout, ignore floating windows as snap targets
+            // to prevent "bait and switch" (offering to split a float, then splitting root).
+            if self.managed_layout.is_some() && self.floating_index(id).is_some() {
+                return None;
+            }
+
+            let rect = self.regions.get(id)?;
+            if rect_contains(rect, mouse_x, mouse_y) {
+                Some((id, rect))
+            } else {
+                None
+            }
+        });
+
+        if let Some((target_id, rect)) = target {
+            let w = rect.width;
+            let h = rect.height;
+
+            // Distance to edges
+            let d_left = mouse_x.saturating_sub(rect.x);
+            let d_right = (rect.x + w).saturating_sub(1).saturating_sub(mouse_x);
+            let d_top = mouse_y.saturating_sub(rect.y);
+            let d_bottom = (rect.y + h).saturating_sub(1).saturating_sub(mouse_y);
+
+            let min_dist = d_left.min(d_right).min(d_top).min(d_bottom);
+
+            // Sensitivity: Allow a reasonable localized zone.
+            // Reduced sensitivity to prevent accidental snaps when crossing windows.
+            // w/10 is 10%. Clamped to [2, 6] means you must be quite close to the edge.
+            let sens_x = (w / 10).clamp(2, 6);
+            let sens_y = (h / 10).clamp(1, 4);
+
+            // Check if the closest edge is within its sensitivity limit
+            let snap = if d_left == min_dist && d_left < sens_x {
+                Some((
+                    InsertPosition::Left,
+                    Rect {
+                        width: w / 2,
+                        ..rect
+                    },
+                ))
+            } else if d_right == min_dist && d_right < sens_x {
+                Some((
+                    InsertPosition::Right,
+                    Rect {
+                        x: rect.x + w / 2,
+                        width: w / 2,
+                        ..rect
+                    },
+                ))
+            } else if d_top == min_dist && d_top < sens_y {
+                Some((
+                    InsertPosition::Top,
+                    Rect {
+                        height: h / 2,
+                        ..rect
+                    },
+                ))
+            } else if d_bottom == min_dist && d_bottom < sens_y {
+                Some((
+                    InsertPosition::Bottom,
+                    Rect {
+                        y: rect.y + h / 2,
+                        height: h / 2,
+                        ..rect
+                    },
+                ))
+            } else {
+                None
+            };
+
+            if let Some((pos, preview)) = snap {
+                self.drag_snap = Some((Some(target_id), pos, preview));
+                return;
+            }
+        }
+
+        // 2. Check Screen Edge Snap (fallback, less specific)
+        let sensitivity = 2; // Strict sensitivity for screen edge
+
+        let d_left = mouse_x.saturating_sub(area.x);
+        let d_right = (area.x + area.width)
+            .saturating_sub(1)
+            .saturating_sub(mouse_x);
+        let d_top = mouse_y.saturating_sub(area.y);
+        let d_bottom = (area.y + area.height)
+            .saturating_sub(1)
+            .saturating_sub(mouse_y);
+
+        let min_screen_dist = d_left.min(d_right).min(d_top).min(d_bottom);
+
+        let position = if min_screen_dist < sensitivity {
+            if d_left == min_screen_dist {
+                Some(InsertPosition::Left)
+            } else if d_right == min_screen_dist {
+                Some(InsertPosition::Right)
+            } else if d_top == min_screen_dist {
+                Some(InsertPosition::Top)
+            } else if d_bottom == min_screen_dist {
+                Some(InsertPosition::Bottom)
+            } else {
+                None
+            }
         } else {
             None
         };
 
         if let Some(pos) = position {
-            let preview = match pos {
+            let mut preview = match pos {
                 InsertPosition::Left => Rect {
                     width: area.width / 2,
                     ..area
@@ -769,78 +875,65 @@ where
                     ..area
                 },
             };
+
+            // If there's no layout to split, dragging to edge just re-tiles to full screen.
+            if self.managed_layout.is_none() {
+                preview = area;
+            }
+
             self.drag_snap = Some((None, pos, preview));
             return;
-        }
-
-        // 2. Window Snap
-        if let Some(layout) = &self.managed_layout {
-            let regions = layout.regions(area);
-            for (target_id, rect) in regions {
-                if target_id == dragging_id {
-                    continue;
-                }
-
-                if rect_contains(rect, mouse_x, mouse_y) {
-                    let local_x = mouse_x.saturating_sub(rect.x);
-                    let local_y = mouse_y.saturating_sub(rect.y);
-                    let w = rect.width;
-                    let h = rect.height;
-                    let sens_x = (w / 4).max(2);
-                    let sens_y = (h / 4).max(2);
-
-                    let snap = if local_x < sens_x {
-                        Some((
-                            InsertPosition::Left,
-                            Rect {
-                                width: w / 2,
-                                ..rect
-                            },
-                        ))
-                    } else if local_x > w.saturating_sub(sens_x) {
-                        Some((
-                            InsertPosition::Right,
-                            Rect {
-                                x: rect.x + w / 2,
-                                width: w / 2,
-                                ..rect
-                            },
-                        ))
-                    } else if local_y < sens_y {
-                        Some((
-                            InsertPosition::Top,
-                            Rect {
-                                height: h / 2,
-                                ..rect
-                            },
-                        ))
-                    } else if local_y > h.saturating_sub(sens_y) {
-                        Some((
-                            InsertPosition::Bottom,
-                            Rect {
-                                y: rect.y + h / 2,
-                                height: h / 2,
-                                ..rect
-                            },
-                        ))
-                    } else {
-                        None
-                    };
-
-                    if let Some((pos, preview)) = snap {
-                        self.drag_snap = Some((Some(target_id), pos, preview));
-                        return;
-                    }
-                }
-            }
         }
     }
 
     fn apply_snap(&mut self, id: R) {
-        if let Some((target, position, _)) = self.drag_snap.take() {
+        if let Some((target, position, preview)) = self.drag_snap.take() {
+            // Check if we should tile or float-snap
+            // We float-snap if we are snapping to a screen edge (target is None)
+            // AND the layout is empty (no other tiled windows).
+            let other_windows_exist = if let Some(layout) = &self.managed_layout {
+                !layout.regions(self.managed_area).is_empty()
+            } else {
+                false
+            };
+
+            if target.is_none() && !other_windows_exist {
+                // Single window edge snap -> Floating Resize
+                if let Some(index) = self.floating_index(id) {
+                    self.managed_floating[index].rect = RectSpec::Absolute(preview);
+                }
+                return;
+            }
+
             if let Some(index) = self.floating_index(id) {
                 self.managed_floating.remove(index);
             }
+
+            // Handle case where target is floating (and thus not in layout yet)
+            if let Some(target_id) = target {
+                if let Some(idx) = self.floating_index(target_id) {
+                    // Target is floating. We must initialize layout with it.
+                    self.managed_floating.remove(idx);
+                    if self.managed_layout.is_none() {
+                        self.managed_layout = Some(TilingLayout::new(LayoutNode::leaf(target_id)));
+                    } else {
+                        // This case is tricky: managed_layout exists (implied other windows), but target is floating.
+                        // We need to tile 'id' based on 'target'.
+                        // However, 'target' itself isn't in the tree.
+                        // This implies we want to perform a "Merge" of two floating windows into a new tiled group?
+                        // But we only support one root.
+                        // If managed_layout exists, we probably shouldn't be here if target is floating?
+                        // Actually, if we have {C} tiled, and {B} floating. Snap A to B.
+                        // We want {A, B} tiled?
+                        // Current logic: If managed_layout is Some, we try insert_leaf.
+                        // If insert_leaf fails, we fallback to split_root.
+                        // If we fall back to split_root, A is added to root. B remains floating.
+                        // This is acceptable/safe.
+                        // The critical case is when managed_layout is None (the 2-window case).
+                    }
+                }
+            }
+
             if let Some(layout) = &mut self.managed_layout {
                 let success = if let Some(target_id) = target {
                     layout.root_mut().insert_leaf(target_id, id, position)
@@ -849,11 +942,13 @@ where
                 };
 
                 if !success {
+                    // If insert failed (e.g. target was missing or we are splitting root),
+                    // If target was the one we just initialized (in the floating case above), it should be at root.
+                    // insert_leaf should have worked if target is root.
                     layout.split_root(id, position);
                 }
 
                 // Ensure the snapped window is brought to front/focused
-                // This ensures it appears in the draw order even if register_managed_layout logic is tricky
                 if let Some(pos) = self.z_order.iter().position(|&z_id| z_id == id) {
                     self.z_order.remove(pos);
                 }
@@ -863,6 +958,55 @@ where
                 self.managed_layout = Some(TilingLayout::new(LayoutNode::leaf(id)));
             }
         }
+    }
+
+    /// Smartly insert a window into the tiling layout.
+    /// If there is a focused tiled window, split it.
+    /// Otherwise, split the root.
+    pub fn tile_window(&mut self, id: R) -> bool {
+        // If already in layout or floating, do nothing (or move it?)
+        // For now, assume this is for new windows.
+        if self.managed_layout.is_none() {
+            self.managed_layout = Some(TilingLayout::new(LayoutNode::leaf(id)));
+            self.bring_to_front(id);
+            return true;
+        }
+
+        // Try to find a focused node that is in the layout
+        let current_focus = self.focus.current();
+
+        let mut target_r = None;
+        for r_id in self.regions.ids() {
+            if let Some(w_id) = self.focus_for_region(r_id) {
+                if w_id == current_focus {
+                    target_r = Some(r_id);
+                    break;
+                }
+            }
+        }
+
+        let Some(layout) = self.managed_layout.as_mut() else {
+            return false;
+        };
+
+        // If we found a focused region, split it
+        if let Some(target) = target_r {
+            // Prefer splitting horizontally (side-by-side) for wide windows, vertically for tall?
+            // Or just default to Right/Bottom.
+            // Let's default to Right for now as it's common.
+            if layout
+                .root_mut()
+                .insert_leaf(target, id, InsertPosition::Right)
+            {
+                self.bring_to_front(id);
+                return true;
+            }
+        }
+
+        // Fallback: split root
+        layout.split_root(id, InsertPosition::Right);
+        self.bring_to_front(id);
+        true
     }
 
     pub fn bring_to_front(&mut self, id: R) {

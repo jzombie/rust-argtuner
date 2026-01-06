@@ -93,6 +93,10 @@ impl<T: Copy + Eq + Ord> Default for RegionMap<T> {
 }
 
 impl<T: Copy + Eq + Ord> RegionMap<T> {
+    pub fn ids(&self) -> Vec<T> {
+        self.regions.keys().copied().collect()
+    }
+
     pub fn set(&mut self, id: T, rect: Rect) {
         self.regions.insert(id, rect);
     }

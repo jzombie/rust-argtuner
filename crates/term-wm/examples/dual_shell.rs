@@ -139,10 +139,9 @@ impl HasWindowManager<PaneId, PaneId> for App {
             let id = self.terminals.len();
             self.terminals.push(pane);
             self.panes.push(id);
-            self.windows.set_focus(id);
             self.windows.set_focus_order(self.panes.clone());
-            self.windows
-                .set_managed_layout(TilingLayout::new(build_layout(&self.panes)));
+            self.windows.set_focus(id);
+            self.windows.tile_window(id);
         }
     }
 }
