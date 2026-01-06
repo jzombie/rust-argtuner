@@ -543,11 +543,16 @@ where
                     }
 
                     let rect = self.full_region(header.id);
-                    if self.floating_index(header.id).is_none() {
-                        let _ = self.detach_to_floating(header.id, rect);
-                    } else {
+                    // Standard floating drag start
+                    if self.floating_index(header.id).is_some() {
                         self.bring_floating_to_front(header.id);
                     }
+                    // If Tiled: We detach immediately to floating (responsive drag).
+                    // Keep the tiling slot reserved so the sibling doesn't expand to full screen.
+                    if self.floating_index(header.id).is_none() {
+                        let _ = self.detach_to_floating(header.id, rect);
+                    }
+
                     self.drag_header = Some(HeaderDrag {
                         id: header.id,
                         offset_x: mouse.column.saturating_sub(rect.x),
@@ -675,24 +680,6 @@ where
             return false;
         }
 
-        if let Some(layout) = self.managed_layout.as_mut() {
-            if layout.root_mut().remove_leaf(id) {
-                // If remove succeeded, check if root is now an empty split
-                let root_empty = match layout.root() {
-                    LayoutNode::Split { children, .. } => children.is_empty(),
-                    _ => false,
-                };
-                if root_empty {
-                    self.managed_layout = None;
-                }
-            } else if let LayoutNode::Leaf(root_id) = layout.root() {
-                // If remove failed but it's the root leaf
-                if *root_id == id {
-                    self.managed_layout = None;
-                }
-            }
-        }
-
         let width = rect.width.max(1);
         let height = rect.height.max(1);
         let x = rect.x;
@@ -712,6 +699,12 @@ where
 
     fn floating_index(&self, id: R) -> Option<usize> {
         self.managed_floating.iter().position(|pane| pane.id == id)
+    }
+
+    fn layout_contains(&self, id: R) -> bool {
+        self.managed_layout
+            .as_ref()
+            .is_some_and(|layout| layout.root().subtree_any(|node_id| node_id == id))
     }
 
     fn move_floating(&mut self, index: usize, column: u16, row: u16, offset_x: u16, offset_y: u16) {
@@ -909,6 +902,21 @@ where
                 self.managed_floating.remove(index);
             }
 
+            if self.layout_contains(id) {
+                if let Some(layout) = &mut self.managed_layout {
+                    let should_retile = match target {
+                        Some(target_id) => target_id != id,
+                        None => true,
+                    };
+                    if should_retile {
+                        layout.root_mut().remove_leaf(id);
+                    } else {
+                        self.bring_to_front(id);
+                        return;
+                    }
+                }
+            }
+
             // Handle case where target is floating (and thus not in layout yet)
             if let Some(target_id) = target {
                 if let Some(idx) = self.floating_index(target_id) {
@@ -966,6 +974,13 @@ where
     pub fn tile_window(&mut self, id: R) -> bool {
         // If already in layout or floating, do nothing (or move it?)
         // For now, assume this is for new windows.
+        if self.layout_contains(id) {
+            if let Some(index) = self.floating_index(id) {
+                self.managed_floating.remove(index);
+            }
+            self.bring_to_front(id);
+            return true;
+        }
         if self.managed_layout.is_none() {
             self.managed_layout = Some(TilingLayout::new(LayoutNode::leaf(id)));
             self.bring_to_front(id);
