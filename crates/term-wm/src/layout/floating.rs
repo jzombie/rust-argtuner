@@ -185,6 +185,7 @@ pub fn floating_header_for_region<R: Copy + Eq + Ord>(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn apply_resize_drag(
     start: Rect,
     edge: ResizeEdge,
@@ -193,6 +194,7 @@ pub fn apply_resize_drag(
     start_col: u16,
     start_row: u16,
     bounds: Rect,
+    allow_offscreen: bool,
 ) -> Rect {
     let dx = column as i32 - start_col as i32;
     let dy = row as i32 - start_row as i32;
@@ -243,8 +245,14 @@ pub fn apply_resize_drag(
         height = min_h;
     }
 
-    let mut width = width.min(bounds.width as i32).max(1);
-    let mut height = height.min(bounds.height as i32).max(1);
+    let mut width = width.max(1);
+    let mut height = height.max(1);
+
+    if !allow_offscreen {
+        width = width.min(bounds.width as i32);
+        height = height.min(bounds.height as i32);
+    }
+
     let max_x = bounds.x.saturating_add(bounds.width.saturating_sub(1)) as i32;
     let max_y = bounds.y.saturating_add(bounds.height.saturating_sub(1)) as i32;
 
@@ -256,7 +264,9 @@ pub fn apply_resize_drag(
     {
         let diff = bounds.x as i32 - x;
         x = bounds.x as i32;
-        width -= diff;
+        if !allow_offscreen {
+            width -= diff;
+        }
     }
 
     // Clamp Top
@@ -267,12 +277,15 @@ pub fn apply_resize_drag(
     {
         let diff = bounds.y as i32 - y;
         y = bounds.y as i32;
-        height -= diff;
+        if !allow_offscreen {
+            height -= diff;
+        }
     }
 
     // Clamp Right
     let right = x + width - 1;
-    if right > max_x
+    if !allow_offscreen
+        && right > max_x
         && matches!(
             edge,
             ResizeEdge::Right | ResizeEdge::TopRight | ResizeEdge::BottomRight
@@ -283,7 +296,8 @@ pub fn apply_resize_drag(
 
     // Clamp Bottom
     let bottom = y + height - 1;
-    if bottom > max_y
+    if !allow_offscreen
+        && bottom > max_y
         && matches!(
             edge,
             ResizeEdge::Bottom | ResizeEdge::BottomLeft | ResizeEdge::BottomRight
@@ -293,8 +307,8 @@ pub fn apply_resize_drag(
     }
 
     Rect {
-        x: x.max(bounds.x as i32) as u16,
-        y: y.max(bounds.y as i32) as u16,
+        x: x.max(0) as u16,
+        y: y.max(0) as u16,
         width: width.max(1) as u16,
         height: height.max(1) as u16,
     }
@@ -449,7 +463,7 @@ mod tests {
         let col = 10;
         let row = 55;
 
-        let res = apply_resize_drag(start, edge, col, row, start_col, start_row, bounds);
+        let res = apply_resize_drag(start, edge, col, row, start_col, start_row, bounds, false);
         assert_eq!(
             res,
             Rect {
@@ -483,7 +497,7 @@ mod tests {
         let col = 10;
         let row = 45;
 
-        let res = apply_resize_drag(start, edge, col, row, start_col, start_row, bounds);
+        let res = apply_resize_drag(start, edge, col, row, start_col, start_row, bounds, false);
         assert_eq!(
             res,
             Rect {

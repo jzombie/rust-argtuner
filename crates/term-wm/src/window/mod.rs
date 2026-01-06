@@ -125,6 +125,7 @@ pub struct WindowManager<W: Copy + Eq + Ord, R: Copy + Eq + Ord> {
     wm_menu_selected: usize,
     exit_confirm: ConfirmOverlay,
     decorator: Box<dyn WindowDecorator>,
+    floating_resize_offscreen: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +165,7 @@ where
             wm_menu_selected: 0,
             exit_confirm: ConfirmOverlay::new(),
             decorator: Box::new(OpenStepDecorator),
+            floating_resize_offscreen: true,
         }
     }
 
@@ -179,6 +181,14 @@ where
 
     pub fn layout_contract(&self) -> LayoutContract {
         self.layout_contract
+    }
+
+    pub fn set_floating_resize_offscreen(&mut self, enabled: bool) {
+        self.floating_resize_offscreen = enabled;
+    }
+
+    pub fn floating_resize_offscreen(&self) -> bool {
+        self.floating_resize_offscreen
     }
 
     pub fn begin_frame(&mut self) {
@@ -345,15 +355,22 @@ where
     pub fn region(&self, id: R) -> Rect {
         let rect = self.regions.get(id).unwrap_or_default();
         if self.layout_contract == LayoutContract::WindowManaged {
-            let clamped = clamp_rect(rect, self.managed_area);
-            if clamped.width < 3 || clamped.height < 4 {
+            let area = if self.floating_resize_offscreen {
+                // If we allow off-screen resizing/dragging, we shouldn't clamp the
+                // logical region to the bounds, otherwise the PTY will be resized
+                // (shrinking the content) instead of just being clipped during render.
+                rect
+            } else {
+                clamp_rect(rect, self.managed_area)
+            };
+            if area.width < 3 || area.height < 4 {
                 return Rect::default();
             }
             Rect {
-                x: clamped.x + 1,
-                y: clamped.y + 2,
-                width: clamped.width.saturating_sub(2),
-                height: clamped.height.saturating_sub(3),
+                x: area.x + 1,
+                y: area.y + 2,
+                width: area.width.saturating_sub(2),
+                height: area.height.saturating_sub(3),
             }
         } else {
             rect
@@ -606,6 +623,7 @@ where
                         drag.start_col,
                         drag.start_row,
                         self.managed_area,
+                        self.floating_resize_offscreen,
                     );
                     self.managed_floating[index].rect = RectSpec::Absolute(resized);
                     return true;
@@ -699,21 +717,49 @@ where
             let out_y = rect_bottom <= bounds.y || rect.y >= bounds_bottom;
             let min_w = FLOATING_MIN_WIDTH.min(bounds.width.max(1));
             let min_h = FLOATING_MIN_HEIGHT.min(bounds.height.max(1));
-            let width = rect.width.max(min_w).min(bounds.width);
-            let height = rect.height.max(min_h).min(bounds.height);
-            let max_x = bounds.x.saturating_add(bounds.width.saturating_sub(width));
-            let max_y = bounds
-                .y
-                .saturating_add(bounds.height.saturating_sub(height));
-            let x = if out_x {
+
+            // Ensure at least a small portion of the window (e.g. handle) is always visible
+            // so the user can grab it back.
+            let min_visible_margin = 4u16;
+
+            let width = if self.floating_resize_offscreen {
+                rect.width.max(min_w)
+            } else {
+                rect.width.max(min_w).min(bounds.width)
+            };
+            let height = if self.floating_resize_offscreen {
+                rect.height.max(min_h)
+            } else {
+                rect.height.max(min_h).min(bounds.height)
+            };
+
+            let max_x = if self.floating_resize_offscreen {
+                bounds
+                    .x
+                    .saturating_add(bounds.width)
+                    .saturating_sub(min_visible_margin.min(width))
+            } else {
+                bounds.x.saturating_add(bounds.width.saturating_sub(width))
+            };
+
+            let max_y = if self.floating_resize_offscreen {
+                bounds.y.saturating_add(bounds.height).saturating_sub(1) // Header is usually top line
+            } else {
+                bounds
+                    .y
+                    .saturating_add(bounds.height.saturating_sub(height))
+            };
+
+            let x = if out_x || !self.floating_resize_offscreen {
                 rect.x.clamp(bounds.x, max_x)
             } else {
-                rect.x
+                rect.x.max(bounds.x).min(max_x)
             };
-            let y = if out_y {
+
+            let y = if out_y || !self.floating_resize_offscreen {
                 rect.y.clamp(bounds.y, max_y)
             } else {
-                rect.y
+                rect.y.max(bounds.y).min(max_y)
             };
             pane.rect = RectSpec::Absolute(Rect {
                 x,

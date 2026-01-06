@@ -6,7 +6,6 @@ use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use ratatui::backend::CrosstermBackend;
 use ratatui::prelude::{Constraint, Direction, Rect};
-use ratatui::widgets::Clear;
 use ratatui::{Frame, Terminal};
 
 use portable_pty::PtySize;
@@ -211,7 +210,6 @@ fn render_pane(frame: &mut Frame, app: &mut App, id: PaneId, area: Rect) {
         return;
     }
     let focused = app.windows.focus() == id;
-    frame.render_widget(Clear, area);
     if let Some(pane) = app.terminals.get_mut(id) {
         pane.resize(area);
         pane.render(frame, area, focused);
