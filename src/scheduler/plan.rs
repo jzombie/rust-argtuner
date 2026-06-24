@@ -179,11 +179,15 @@ pub(crate) fn build_budgets(min_epochs: usize, max_epochs: usize, eta: usize) ->
     let eta = eta.max(2);
     let mut budgets = Vec::new();
     let mut value = min_epochs;
+    let mut step = 1usize;
     while value < max_epochs {
         budgets.push(value);
-        value = value.saturating_mul(eta);
+        value = value.saturating_add(step);
+        step = step.saturating_mul(eta);
     }
-    budgets.push(max_epochs);
+    if budgets.last() != Some(&max_epochs) {
+        budgets.push(max_epochs);
+    }
     budgets
 }
 
@@ -225,6 +229,21 @@ mod tests {
     use crate::scheduler::Scheduler;
 
     #[test]
+    fn budgets_real_epochs_double_per_rung() {
+        let budgets = build_budgets(1689, 1708, 2);
+        let start_epoch = 1688;
+        let real_epochs: Vec<usize> = budgets.iter().map(|b| b - start_epoch).collect();
+        assert_eq!(real_epochs, vec![1, 2, 4, 8, 16, 20]);
+        for pair in real_epochs.windows(2) {
+            assert!(
+                pair[1] == pair[0] * 2 || pair[1] <= pair[0] * 2,
+                "real epochs should double per rung: {:?}",
+                pair
+            );
+        }
+    }
+
+    #[test]
     fn plan_matches_successive_halving_budgets() {
         let config = ProjectConfig {
             metric_key: "metric".to_string(),
@@ -253,6 +272,7 @@ mod tests {
         assert_eq!(plan.tiers[0].configs, 6);
         assert_eq!(plan.tiers[1].configs, 3);
         assert_eq!(plan.tiers[2].configs, 2);
+        assert_eq!(plan.tiers[3].configs, 1);
         assert!(plan.config_plan.is_some());
     }
 }

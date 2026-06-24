@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn budgets_include_min_and_max() {
         let budgets = build_budgets(2, 9, 3);
-        assert_eq!(budgets, vec![2, 6, 9]);
+        assert_eq!(budgets, vec![2, 3, 6, 9]);
     }
 
     #[test]
@@ -273,8 +273,9 @@ mod tests {
             scheduler.record_result(trial.token, Some(trial.token.config_id as f64));
         }
         assert_eq!(counts.get(&2), Some(&6));
-        assert_eq!(counts.get(&4), Some(&3));
-        assert_eq!(counts.get(&8), Some(&2));
+        assert_eq!(counts.get(&3), Some(&3));
+        assert_eq!(counts.get(&5), Some(&2));
+        assert_eq!(counts.get(&8), Some(&1));
         assert!(scheduler.is_done());
     }
 
@@ -312,9 +313,11 @@ mod tests {
     #[test]
     fn successive_halving_budget_accounting() {
         // n=4, min=2, max=4, eta=2
-        // Rung 0: 4 trials * 2 epochs = 8
-        // Rung 1: 2 trials * (4-2) epochs = 4
-        // Total = 12
+        // Budgets: [2, 3, 4]
+        // Rung 0: 4 trials * 2 epochs         = 8
+        // Rung 1: 2 trials * 1 epoch          = 2  (incr: 3-2)
+        // Rung 2: 1 trial  * 1 epoch          = 1  (incr: 4-3)
+        // Total = 11
         let mut scheduler =
             SuccessiveHalvingScheduler::new_with_seed(2, 4, 2, 4, 2, "epochs".to_string(), 7);
 
@@ -326,14 +329,14 @@ mod tests {
                 .fields
                 .get(FIELD_TUNING_BUDGET_TOTAL)
                 .map(|s: &String| s.as_str()),
-            Some("12")
+            Some("11")
         );
         assert_eq!(
             t1.overrides
                 .fields
                 .get(FIELD_TUNING_BUDGET_REMAINING)
                 .map(|s: &String| s.as_str()),
-            Some("10") // 12 - 2
+            Some("9") // 11 - 2
         );
 
         // 2. Retry t1
@@ -347,7 +350,7 @@ mod tests {
                 .fields
                 .get(FIELD_TUNING_BUDGET_REMAINING)
                 .map(|s: &String| s.as_str()),
-            Some("10") // Should be 10 again
+            Some("9") // Should be 9 again
         );
         scheduler.record_result(t1_retry.token, Some(1.0));
 
@@ -356,15 +359,15 @@ mod tests {
             let t = scheduler.next_trial().expect("rung0");
             scheduler.record_result(t.token, Some(1.0));
         }
-        // Issued so far: 4 * 2 = 8. Remaining: 12 - 8 = 4.
+        // Issued so far: 4 * 2 = 8. Remaining: 11 - 8 = 3.
 
         // 5. Promote to Rung 1 (2 trials promote)
         // First promoted trial
         let p1 = scheduler.next_trial().expect("p1");
         assert_eq!(p1.token.rung, 1);
-        assert_eq!(p1.token.budget_epochs, 4);
-        // Incremental cost for p1 is 4 - 2 = 2 epochs.
-        // Remaining: 4 - 2 = 2.
+        assert_eq!(p1.token.budget_epochs, 3);
+        // Incremental cost for p1 is 3 - 2 = 1 epoch.
+        // Remaining: 3 - 1 = 2.
         assert_eq!(
             p1.overrides
                 .fields

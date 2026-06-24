@@ -37,7 +37,7 @@ fn binding_version_mismatch_exits_with_message() {
     );
 
     let template = format!(
-        "{} --version 0.0.0 --metric 1.0 --checkpoint-dir {{trial_dir}}",
+        "'{}' --version 0.0.0 --metric 1.0 --checkpoint-dir {{trial_dir}}",
         emit_bin.display()
     );
     let toml = format!(
