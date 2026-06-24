@@ -241,6 +241,14 @@ impl TrialStore {
         Ok(last_trial_id)
     }
 
+    pub fn save_metadata(&self, key: &str, value: &str) -> std::io::Result<()> {
+        self.db.save_metadata(key, value)
+    }
+
+    pub fn load_metadata(&self, key: &str) -> std::io::Result<Option<String>> {
+        self.db.load_metadata(key)
+    }
+
     fn sync_csv(&self) -> std::io::Result<()> {
         let mut records = self.db.load_records()?;
         let mut epoch_records = self.db.load_epoch_records()?;

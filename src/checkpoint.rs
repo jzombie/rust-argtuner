@@ -2,12 +2,17 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Wraps a `CommandObjective` with a stop flag check.
-/// Any sampler can use this — it encapsulates the "check for Ctrl-C
-/// before a trial" concern so the sampler logic stays self-contained.
+use crate::constants::HP_PREFIX;
+
+/// Wraps a `CommandObjective` with a stop flag check and optional trial cache.
+///
+/// The trial cache lets any sampler avoid re-running a command whose HP values
+/// already have a recorded score in the store.  Built via
+/// [`build_trial_result_cache`] and attached with [`ControllableObjective::with_cache`].
 pub struct ControllableObjective {
     inner: crate::command::CommandObjective,
     stop_flag: Arc<AtomicBool>,
+    trial_cache: Option<HashMap<Vec<(String, String)>, f64>>,
 }
 
 impl ControllableObjective {
@@ -18,14 +23,42 @@ impl ControllableObjective {
         Self {
             inner: objective,
             stop_flag,
+            trial_cache: None,
         }
     }
 
+    /// Attach a trial result cache so that previously-scored HP configurations
+    /// are returned immediately without re-running the command.
+    pub fn with_cache(
+        mut self,
+        cache: HashMap<Vec<(String, String)>, f64>,
+    ) -> Self {
+        self.trial_cache = Some(cache);
+        self
+    }
+
     /// Evaluate coords, returning an error if the stop flag is set.
+    /// If a trial cache is attached and the resulting HP values have a hit,
+    /// the cached score is returned without executing the command.
     pub fn eval(&self, coords: &[f64]) -> Result<f64, String> {
         if self.stop_flag.load(Ordering::SeqCst) {
             return Err("interrupted by user".to_string());
         }
+
+        // ---- trial cache check ----
+        if let Some(ref cache) = self.trial_cache {
+            let fields = self.inner.space().fields_from_unit(coords);
+            let mut hps: Vec<(String, String)> = fields
+                .iter()
+                .filter(|(k, _)| k.starts_with(HP_PREFIX))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            hps.sort_by(|a, b| a.0.cmp(&b.0));
+            if let Some(score) = cache.get(&hps) {
+                return Ok(*score);
+            }
+        }
+
         self.inner.eval(coords)
     }
 
@@ -77,7 +110,7 @@ impl Default for StopFlag {
 pub fn build_trial_result_cache(
     store: &crate::trial::store::TrialStore,
 ) -> Result<HashMap<Vec<(String, String)>, f64>, String> {
-    use crate::constants::{FIELD_SCORE, FIELD_TRIAL_STATUS, HP_PREFIX};
+    use crate::constants::{FIELD_SCORE, FIELD_TRIAL_STATUS};
 
     let rows = store
         .load_rows()
@@ -174,5 +207,46 @@ mod tests {
 
         let cache = build_trial_result_cache(&store).expect("cache");
         assert!(cache.is_empty(), "running trials should be excluded");
+    }
+
+    #[test]
+    fn controllable_objective_returns_cached_score() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = crate::test_support::bin_command("emit_result");
+        let template = CommandTemplate::new(template);
+        let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template.clone());
+
+        let space = crate::SearchSpace {
+            params: vec![crate::ParamSpec::Float {
+                name: "x".to_string(),
+                min: 0.0,
+                max: 1.0,
+                log_scale: false,
+                step: None,
+                format: None,
+            }],
+        };
+        let objective = crate::command::CommandObjective::new(
+            store,
+            template,
+            space,
+            dir.path().join("artifacts"),
+            "metric".to_string(),
+            crate::Goal::Min,
+            false,
+            0,
+        );
+
+        let mut cache = HashMap::new();
+        cache.insert(
+            vec![(format!("{HP_PREFIX}x"), "0.5".to_string())],
+            0.42,
+        );
+
+        let ctrl = ControllableObjective::new(objective, Arc::new(AtomicBool::new(false)))
+            .with_cache(cache);
+
+        let score = ctrl.eval(&[0.5]).expect("eval");
+        assert_eq!(score, 0.42);
     }
 }

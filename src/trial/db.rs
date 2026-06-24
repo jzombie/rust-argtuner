@@ -165,6 +165,31 @@ impl TrialDb {
         })
     }
 
+    pub fn save_metadata(&self, key: &str, value: &str) -> std::io::Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO project_metadata (key, value)
+                VALUES (?1, ?2)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                "#,
+                params![key, value],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn load_metadata(&self, key: &str) -> std::io::Result<Option<String>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT value FROM project_metadata WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+        })
+    }
+
     pub fn save_project_config(&self, config: &str) -> std::io::Result<()> {
         self.with_conn(|conn| {
             conn.execute(
