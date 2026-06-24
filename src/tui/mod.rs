@@ -30,7 +30,7 @@ use term_wm::window::{ScrollState, WindowManager};
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
     let pending_events = Rc::new(RefCell::new(Vec::new()));
-    let window_manager = WindowManager::new_managed(FocusTarget::Trials);
+    let window_manager = WindowManager::new(FocusTarget::Trials);
     let mut app = AppState {
         db_path,
         poll,
@@ -406,6 +406,9 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
             _ => false,
         },
         Event::Mouse(mouse) => {
+            if app.windows.handle_layout_event(event) {
+                return true;
+            }
             let ctx = ComponentContext::new(true);
             if app.trials_list.handle_event(event, &ctx) {
                 return true;
