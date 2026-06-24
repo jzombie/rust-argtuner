@@ -7,7 +7,9 @@ use argmin::core::{CostFunction, Executor, KV, State};
 use argmin::solver::particleswarm::Particle;
 use argmin::solver::particleswarm::ParticleSwarm;
 
-use crate::checkpoint::{ControllableObjective, build_trial_result_cache, sweep_stale_running_trials};
+use crate::checkpoint::{
+    ControllableObjective, build_trial_result_cache, sweep_stale_running_trials,
+};
 use crate::trial::store::TrialStore;
 
 // ---------------------------------------------------------------------------
@@ -198,7 +200,8 @@ fn load_checkpoint(
             let saved_json = serde_json::to_value(&saved_space).unwrap_or_default();
             if current_json != saved_json {
                 let saved_names: Vec<&str> = saved_space.params.iter().map(|p| p.name()).collect();
-                let current_names: Vec<&str> = current_space.params.iter().map(|p| p.name()).collect();
+                let current_names: Vec<&str> =
+                    current_space.params.iter().map(|p| p.name()).collect();
                 return Err(format!(
                     "PSO checkpoint search space mismatch: \
                      saved params {saved_names:?} != current params {current_names:?}"
@@ -449,7 +452,8 @@ mod tests {
 
         // Try loading with a different particle count.
         let cfg_b = PsoSolverConfig::from_parts(20);
-        let err = load_checkpoint(&store, &cfg_b, &dummy_space()).expect_err("should reject mismatch");
+        let err =
+            load_checkpoint(&store, &cfg_b, &dummy_space()).expect_err("should reject mismatch");
         assert!(err.contains("config mismatch"), "got: {err}");
     }
 
@@ -472,7 +476,8 @@ mod tests {
             weight_inertia: 0.7,
             ..cfg_a
         };
-        let err = load_checkpoint(&store, &cfg_b, &dummy_space()).expect_err("should reject weight mismatch");
+        let err = load_checkpoint(&store, &cfg_b, &dummy_space())
+            .expect_err("should reject weight mismatch");
         assert!(err.contains("config mismatch"));
     }
 
@@ -630,13 +635,9 @@ mod tests {
 
         // Verify checkpoint was saved.
         let store = dummy_store(&dir);
-        let chk_before = load_checkpoint(
-            &store,
-            &PsoSolverConfig::from_parts(3),
-            &dummy_space(),
-        )
-        .expect("load before")
-        .expect("checkpoint should exist");
+        let chk_before = load_checkpoint(&store, &PsoSolverConfig::from_parts(3), &dummy_space())
+            .expect("load before")
+            .expect("checkpoint should exist");
         let start_iter = chk_before.iter;
 
         // ---- inject a stale Running trial (simulates Ctrl-C) ----
@@ -654,13 +655,15 @@ mod tests {
             })
             .expect("inject stale");
 
-        let stale_dir = dir.path().join("artifacts").join(format!("trial_{stale_id}"));
+        let stale_dir = dir
+            .path()
+            .join("artifacts")
+            .join(format!("trial_{stale_id}"));
         std::fs::create_dir_all(&stale_dir).expect("create stale dir");
         std::fs::write(stale_dir.join("partial.pt"), "partial").expect("write");
 
         // ---- sweep stale trials ----
-        sweep_stale_running_trials(&store, &dir.path().join("artifacts"))
-            .expect("sweep");
+        sweep_stale_running_trials(&store, &dir.path().join("artifacts")).expect("sweep");
 
         // Verify stale dir was deleted.
         assert!(!stale_dir.exists(), "stale trial dir should be swept");
@@ -683,13 +686,9 @@ mod tests {
 
         // Verify checkpoint advanced past the original start_iter.
         let store2 = dummy_store(&dir);
-        let chk_after = load_checkpoint(
-            &store2,
-            &PsoSolverConfig::from_parts(3),
-            &dummy_space(),
-        )
-        .expect("load after")
-        .expect("checkpoint should exist after resume");
+        let chk_after = load_checkpoint(&store2, &PsoSolverConfig::from_parts(3), &dummy_space())
+            .expect("load after")
+            .expect("checkpoint should exist after resume");
         assert!(
             chk_after.iter > start_iter,
             "PSO should have advanced from iter={} to iter={}",

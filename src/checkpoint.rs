@@ -200,9 +200,7 @@ pub fn sweep_stale_running_trials(
     }
 
     if count > 0 {
-        eprintln!(
-            "INFO: cleaned up {count} stale trial(s) from previous run"
-        );
+        eprintln!("INFO: cleaned up {count} stale trial(s) from previous run");
     }
 
     Ok(count)
@@ -399,7 +397,9 @@ mod tests {
         );
         // Fields should be empty (cleared by reset).
         assert!(
-            row.get(format!("{HP_PREFIX}x").as_str()).map(String::as_str).unwrap_or("")
+            row.get(format!("{HP_PREFIX}x").as_str())
+                .map(String::as_str)
+                .unwrap_or("")
                 .is_empty(),
             "HP fields should be cleared after reset"
         );
@@ -546,10 +546,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
 
         let template = CommandTemplate::new(crate::test_support::bin_command("emit_env_result"));
-        let store = TrialStore::new(
-            dir.path().join(TRIALS_CSV_FILENAME),
-            template.clone(),
-        );
+        let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template.clone());
 
         let space = crate::SearchSpace {
             params: vec![crate::ParamSpec::Float {
@@ -600,8 +597,7 @@ mod tests {
             .fields
             .insert(format!("{HP_PREFIX}x"), "0.5".to_string());
 
-        let result =
-            objective.eval_with_overrides_retryable(&[0.5], &overrides, Some(0));
+        let result = objective.eval_with_overrides_retryable(&[0.5], &overrides, Some(0));
         assert!(
             result.is_ok(),
             "should allow re-eval with same trial_id after sweep: {:?}",
@@ -659,10 +655,7 @@ mod tests {
         assert_eq!(count, 1, "should sweep only the Running trial");
 
         // Parent trial is completely untouched.
-        assert!(
-            parent_dir.exists(),
-            "parent trial dir should still exist"
-        );
+        assert!(parent_dir.exists(), "parent trial dir should still exist");
         assert!(
             parent_dir.join("checkpoint.pt").exists(),
             "parent checkpoint should still exist"
@@ -673,7 +666,9 @@ mod tests {
             .find(|r| r.get("trial_id") == Some(&"0".to_string()))
             .expect("parent should exist");
         assert_eq!(
-            parent_row.get(crate::FIELD_TRIAL_STATUS).map(String::as_str),
+            parent_row
+                .get(crate::FIELD_TRIAL_STATUS)
+                .map(String::as_str),
             Some("ok"),
             "parent status unchanged"
         );
