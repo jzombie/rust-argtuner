@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::TrialOverrides;
 use crate::command::CommandObjective;
@@ -107,10 +107,7 @@ fn run_scheduled(
     let mut discrete_pool: Option<DiscreteConfigPool> = None;
     while let Some(trial) = scheduler.next_trial() {
         // Graceful shutdown: check if Ctrl-C was pressed between trials
-        if stop_flag
-            .as_ref()
-            .is_some_and(|f| f.load(Ordering::SeqCst))
-        {
+        if stop_flag.as_ref().is_some_and(|f| f.load(Ordering::SeqCst)) {
             eprintln!("INFO: stopping trial loop (Ctrl-C received)");
             break;
         }

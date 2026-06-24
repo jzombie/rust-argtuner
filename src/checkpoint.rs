@@ -1,25 +1,26 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use crate::constants::HP_PREFIX;
+use crate::constants::{DUPLICATE_CONFIG_PREFIX, HP_PREFIX};
 
 /// Wraps a `CommandObjective` with a stop flag check and optional trial cache.
 ///
 /// The trial cache lets any sampler avoid re-running a command whose HP values
-/// already have a recorded score in the store.  Built via
-/// [`build_trial_result_cache`] and attached with [`ControllableObjective::with_cache`].
+/// already have a recorded score in the store.  The cache is mutable so that
+/// results from the current run are accumulated and revisited configs return
+/// the cached score without hitting the duplicate-config check.
+///
+/// Populated via [`build_trial_result_cache`] and attached with
+/// [`ControllableObjective::with_cache`].
 pub struct ControllableObjective {
     inner: crate::command::CommandObjective,
     stop_flag: Arc<AtomicBool>,
-    trial_cache: Option<HashMap<Vec<(String, String)>, f64>>,
+    trial_cache: Option<Mutex<HashMap<Vec<(String, String)>, f64>>>,
 }
 
 impl ControllableObjective {
-    pub fn new(
-        objective: crate::command::CommandObjective,
-        stop_flag: Arc<AtomicBool>,
-    ) -> Self {
+    pub fn new(objective: crate::command::CommandObjective, stop_flag: Arc<AtomicBool>) -> Self {
         Self {
             inner: objective,
             stop_flag,
@@ -29,17 +30,33 @@ impl ControllableObjective {
 
     /// Attach a trial result cache so that previously-scored HP configurations
     /// are returned immediately without re-running the command.
-    pub fn with_cache(
-        mut self,
-        cache: HashMap<Vec<(String, String)>, f64>,
-    ) -> Self {
-        self.trial_cache = Some(cache);
+    pub fn with_cache(mut self, cache: HashMap<Vec<(String, String)>, f64>) -> Self {
+        self.trial_cache = Some(Mutex::new(cache));
         self
+    }
+
+    /// Build the cache key (sorted HP-prefixed field pairs) from `coords`.
+    fn cache_key(&self, coords: &[f64]) -> Vec<(String, String)> {
+        let fields = self.inner.space().fields_from_unit(coords);
+        let mut hps: Vec<(String, String)> = fields
+            .iter()
+            .filter(|(k, _)| k.starts_with(HP_PREFIX))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        hps.sort_by(|a, b| a.0.cmp(&b.0));
+        hps
     }
 
     /// Evaluate coords, returning an error if the stop flag is set.
     /// If a trial cache is attached and the resulting HP values have a hit,
     /// the cached score is returned without executing the command.
+    /// Otherwise runs the command and inserts the result into the cache.
+    ///
+    /// If `inner.eval` returns a duplicate-config error, the cache is
+    /// refreshed from the store (the duplicate's score may already be
+    /// persisted) and the lookup is retried before propagating the
+    /// error.  This handles the case where PSO visits the same HP
+    /// configuration multiple times as particles converge.
     pub fn eval(&self, coords: &[f64]) -> Result<f64, String> {
         if self.stop_flag.load(Ordering::SeqCst) {
             return Err("interrupted by user".to_string());
@@ -47,19 +64,39 @@ impl ControllableObjective {
 
         // ---- trial cache check ----
         if let Some(ref cache) = self.trial_cache {
-            let fields = self.inner.space().fields_from_unit(coords);
-            let mut hps: Vec<(String, String)> = fields
-                .iter()
-                .filter(|(k, _)| k.starts_with(HP_PREFIX))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            hps.sort_by(|a, b| a.0.cmp(&b.0));
-            if let Some(score) = cache.get(&hps) {
+            let key = self.cache_key(coords);
+            if let Some(score) = cache.lock().unwrap().get(&key) {
                 return Ok(*score);
             }
         }
 
-        self.inner.eval(coords)
+        let result = self.inner.eval(coords);
+
+        // ---- cache insert on success ----
+        if let Some(ref cache) = self.trial_cache {
+            if let Ok(score) = result {
+                let key = self.cache_key(coords);
+                cache.lock().unwrap().insert(key, score);
+            }
+        }
+
+        // ---- recover from duplicate-config error by refreshing cache ----
+        if let Some(ref cache) = self.trial_cache {
+            if let Err(ref err) = result {
+                if err.starts_with(DUPLICATE_CONFIG_PREFIX) {
+                    if let Ok(fresh) = build_trial_result_cache(self.inner.store()) {
+                        let mut guard = cache.lock().unwrap();
+                        *guard = fresh;
+                        let key = self.cache_key(coords);
+                        if let Some(score) = guard.get(&key) {
+                            return Ok(*score);
+                        }
+                    }
+                }
+            }
+        }
+
+        result
     }
 
     pub fn inner(&self) -> &crate::command::CommandObjective {
@@ -148,10 +185,10 @@ pub fn build_trial_result_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{FIELD_SCORE, HP_PREFIX};
-    use crate::trial::store::{TrialRecord, TrialStatus, TrialStore};
     use crate::CommandTemplate;
     use crate::TRIALS_CSV_FILENAME;
+    use crate::constants::{FIELD_SCORE, HP_PREFIX};
+    use crate::trial::store::{TrialRecord, TrialStatus, TrialStore};
     use std::collections::BTreeMap;
 
     #[test]
@@ -182,8 +219,7 @@ mod tests {
         let cache = build_trial_result_cache(&store).expect("cache");
         assert_eq!(cache.len(), 1);
 
-        let key: Vec<(String, String)> =
-            vec![(format!("{HP_PREFIX}lr"), "0.1".to_string())];
+        let key: Vec<(String, String)> = vec![(format!("{HP_PREFIX}lr"), "0.1".to_string())];
         assert_eq!(cache.get(&key), Some(&0.5));
     }
 
@@ -238,10 +274,7 @@ mod tests {
         );
 
         let mut cache = HashMap::new();
-        cache.insert(
-            vec![(format!("{HP_PREFIX}x"), "0.5".to_string())],
-            0.42,
-        );
+        cache.insert(vec![(format!("{HP_PREFIX}x"), "0.5".to_string())], 0.42);
 
         let ctrl = ControllableObjective::new(objective, Arc::new(AtomicBool::new(false)))
             .with_cache(cache);
