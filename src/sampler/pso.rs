@@ -20,6 +20,10 @@ const PSO_CHECKPOINT_KEY: &str = "pso_checkpoint";
 /// reject a checkpoint whose configuration differs from the current run.
 const PSO_CHECKPOINT_CFG_KEY: &str = "pso_checkpoint_config";
 
+/// Checkpoint search space key — stores the param specs so we can reject a
+/// checkpoint whose search space (bounds, param names) has changed.
+const PSO_CHECKPOINT_SPACE_KEY: &str = "pso_checkpoint_space";
+
 // ---------------------------------------------------------------------------
 // Observer that periodically saves a PSO checkpoint
 // ---------------------------------------------------------------------------
@@ -140,6 +144,7 @@ fn save_checkpoint(
 fn load_checkpoint(
     store: &TrialStore,
     current_config: &PsoSolverConfig,
+    current_space: &crate::SearchSpace,
 ) -> Result<Option<PopulationState<Particle<Vec<f64>, f64>, f64>>, String> {
     let json = match store.load_metadata(PSO_CHECKPOINT_KEY) {
         Ok(Some(v)) => v,
@@ -179,6 +184,29 @@ fn load_checkpoint(
         }
     }
 
+    // Validate the saved search space matches the current run.
+    let saved_space_json = match store.load_metadata(PSO_CHECKPOINT_SPACE_KEY) {
+        Ok(Some(v)) => v,
+        _ => String::new(),
+    };
+
+    if !saved_space_json.is_empty() {
+        if let Ok(saved_space) = serde_json::from_str::<crate::SearchSpace>(&saved_space_json) {
+            // Compare param specs by their JSON representation since
+            // SearchSpace does not implement PartialEq.
+            let current_json = serde_json::to_value(current_space).unwrap_or_default();
+            let saved_json = serde_json::to_value(&saved_space).unwrap_or_default();
+            if current_json != saved_json {
+                let saved_names: Vec<&str> = saved_space.params.iter().map(|p| p.name()).collect();
+                let current_names: Vec<&str> = current_space.params.iter().map(|p| p.name()).collect();
+                return Err(format!(
+                    "PSO checkpoint search space mismatch: \
+                     saved params {saved_names:?} != current params {current_names:?}"
+                ));
+            }
+        }
+    }
+
     match serde_json::from_str(&json) {
         Ok(state) => Ok(Some(state)),
         Err(e) => Err(format!("corrupt PSO checkpoint: {e}")),
@@ -211,9 +239,15 @@ pub fn run_pso(
     let upper = vec![1.0; dims];
     let store = objective.store().clone();
     let solver_config = PsoSolverConfig::from_parts(particles);
+    let space = objective.inner().space().clone();
+
+    // Persist the search space so future runs can validate against it.
+    if let Ok(space_json) = serde_json::to_string(&space) {
+        let _ = store.save_metadata(PSO_CHECKPOINT_SPACE_KEY, &space_json);
+    }
 
     // ---- checkpoint loading (warm restart) ----
-    let loaded_state = match load_checkpoint(&store, &solver_config) {
+    let loaded_state = match load_checkpoint(&store, &solver_config, &space) {
         Ok(Some(mut s)) => {
             let pop_len = s.population.as_ref().map(|p| p.len()).unwrap_or(0);
             if pop_len == particles {
@@ -314,6 +348,30 @@ mod tests {
         )
     }
 
+    /// 2D continuous [0,1] space matching `make_pso_objective`.
+    fn dummy_space() -> crate::SearchSpace {
+        crate::SearchSpace {
+            params: vec![
+                crate::ParamSpec::Float {
+                    name: "x0".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                    log_scale: false,
+                    step: None,
+                    format: None,
+                },
+                crate::ParamSpec::Float {
+                    name: "x1".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                    log_scale: false,
+                    step: None,
+                    format: None,
+                },
+            ],
+        }
+    }
+
     fn make_state() -> PopulationState<Particle<Vec<f64>, f64>, f64> {
         let particle = Particle::new(vec![0.1, 0.2], 0.42, vec![0.01, 0.02]);
         let mut state: PopulationState<Particle<Vec<f64>, f64>, f64> = PopulationState::new();
@@ -347,7 +405,7 @@ mod tests {
             .expect("load metadata");
         assert!(meta.is_some(), "checkpoint should exist in database");
 
-        let loaded = load_checkpoint(&store2, &cfg)
+        let loaded = load_checkpoint(&store2, &cfg, &dummy_space())
             .expect("load")
             .expect("checkpoint");
         assert_eq!(loaded.iter, 10);
@@ -364,7 +422,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = dummy_store(&dir);
         let cfg = PsoSolverConfig::from_parts(10);
-        let loaded = load_checkpoint(&store, &cfg).expect("load");
+        let loaded = load_checkpoint(&store, &cfg, &dummy_space()).expect("load");
         assert!(loaded.is_none());
     }
 
@@ -376,7 +434,7 @@ mod tests {
         store
             .save_metadata(PSO_CHECKPOINT_KEY, "not valid json")
             .expect("save corrupt");
-        let err = load_checkpoint(&store, &cfg).expect_err("should reject corrupt");
+        let err = load_checkpoint(&store, &cfg, &dummy_space()).expect_err("should reject corrupt");
         assert!(err.contains("corrupt PSO checkpoint"), "got: {err}");
     }
 
@@ -391,7 +449,7 @@ mod tests {
 
         // Try loading with a different particle count.
         let cfg_b = PsoSolverConfig::from_parts(20);
-        let err = load_checkpoint(&store, &cfg_b).expect_err("should reject mismatch");
+        let err = load_checkpoint(&store, &cfg_b, &dummy_space()).expect_err("should reject mismatch");
         assert!(err.contains("config mismatch"), "got: {err}");
     }
 
@@ -414,7 +472,7 @@ mod tests {
             weight_inertia: 0.7,
             ..cfg_a
         };
-        let err = load_checkpoint(&store, &cfg_b).expect_err("should reject weight mismatch");
+        let err = load_checkpoint(&store, &cfg_b, &dummy_space()).expect_err("should reject weight mismatch");
         assert!(err.contains("config mismatch"));
     }
 
@@ -527,7 +585,7 @@ mod tests {
 
         // ---- verify checkpoint was updated ----
         let store2 = dummy_store(&dir);
-        let chk2 = load_checkpoint(&store2, &PsoSolverConfig::from_parts(3))
+        let chk2 = load_checkpoint(&store2, &PsoSolverConfig::from_parts(3), &dummy_space())
             .expect("load")
             .expect("checkpoint after second run");
         // Second run started at iter 3 and ran 3 more → final iter should be 6.
@@ -548,7 +606,7 @@ mod tests {
         // The checkpoint should now reflect 10 particles.
         let store = dummy_store(&dir);
         let cfg = PsoSolverConfig::from_parts(10);
-        let chk = load_checkpoint(&store, &cfg)
+        let chk = load_checkpoint(&store, &cfg, &dummy_space())
             .expect("load")
             .expect("checkpoint");
         assert_eq!(
@@ -575,6 +633,7 @@ mod tests {
         let chk_before = load_checkpoint(
             &store,
             &PsoSolverConfig::from_parts(3),
+            &dummy_space(),
         )
         .expect("load before")
         .expect("checkpoint should exist");
@@ -627,6 +686,7 @@ mod tests {
         let chk_after = load_checkpoint(
             &store2,
             &PsoSolverConfig::from_parts(3),
+            &dummy_space(),
         )
         .expect("load after")
         .expect("checkpoint should exist after resume");
