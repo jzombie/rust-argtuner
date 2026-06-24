@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::constants::{DUPLICATE_CONFIG_PREFIX, HP_PREFIX};
+use crate::constants::{DUPLICATE_CONFIG_PREFIX, FIELD_TRIAL_ID, FIELD_TRIAL_STATUS, HP_PREFIX};
 
 /// Wraps a `CommandObjective` with a stop flag check and optional trial cache.
 ///
@@ -140,6 +141,68 @@ impl Default for StopFlag {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Find all trials with status=`Running`, delete their artifact directories,
+/// and mark them as `Error`.  Returns the number of trials swept.
+///
+/// This is called at the start of a resume to clean up stale entries left
+/// by a Ctrl-C'd run so that:
+///   - PSO's duplicate-config check does not block re-evaluation
+///   - SHA promotion does not copy partial artifacts from the interrupted parent
+pub fn sweep_stale_running_trials(
+    store: &crate::trial::store::TrialStore,
+    artifacts_dir: &Path,
+) -> Result<usize, String> {
+    use crate::constants::FIELD_TRIAL_ERROR;
+    use crate::trial::store::{TrialRecord, TrialStatus};
+
+    let rows = store
+        .load_rows()
+        .map_err(|e| format!("failed to load trials for sweep: {e}"))?;
+
+    let mut count = 0;
+    for row in &rows {
+        let is_running = row.get(FIELD_TRIAL_STATUS).map(|s| s == "running").unwrap_or(false);
+        if !is_running {
+            continue;
+        }
+
+        let trial_id = match row.get(FIELD_TRIAL_ID).and_then(|v| v.parse::<usize>().ok()) {
+            Some(id) => id,
+            None => continue,
+        };
+
+        // Delete the artifact directory for this trial.
+        let trial_dir = artifacts_dir.join(format!("trial_{trial_id}"));
+        if trial_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&trial_dir) {
+                eprintln!("WARN: failed to remove stale trial dir {trial_dir:?}: {e}");
+            }
+        }
+
+        // Mark the trial as Error so it doesn't block future evaluations.
+        let mut fields: std::collections::BTreeMap<String, String> = row
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        fields.insert(FIELD_TRIAL_STATUS.to_string(), "error".to_string());
+        fields.insert(FIELD_TRIAL_ERROR.to_string(), "interrupted by previous run".to_string());
+
+        if let Err(e) = store.update(&TrialRecord {
+            trial_id,
+            status: TrialStatus::Error,
+            elapsed_ms: 0,
+            error: Some("interrupted by previous run".to_string()),
+            fields,
+        }) {
+            eprintln!("WARN: failed to update stale trial {trial_id}: {e}");
+        }
+
+        count += 1;
+    }
+
+    Ok(count)
 }
 
 /// Build a cache of completed trials. Maps sorted HP-field pairs → score.
@@ -281,5 +344,173 @@ mod tests {
 
         let score = ctrl.eval(&[0.5]).expect("eval");
         assert_eq!(score, 0.42);
+    }
+
+    // -----------------------------------------------------------------------
+    // Sweep tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    // Scenario: a Ctrl-C'd run left a trial with status=Running and an
+    // artifact directory.  The sweep must delete the directory and mark the
+    // trial as Error so that PSO's duplicate check doesn't block it.
+    fn sweep_removes_artifact_dir_and_marks_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = CommandTemplate::new("echo".to_string());
+        let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template);
+
+        let artifacts_dir = dir.path().join("artifacts");
+        let trial_dir = artifacts_dir.join("trial_0");
+        std::fs::create_dir_all(&trial_dir).expect("create trial dir");
+        std::fs::write(trial_dir.join("checkpoint.pt"), "partial").expect("write");
+
+        let mut fields = BTreeMap::new();
+        fields.insert(format!("{HP_PREFIX}x"), "0.5".to_string());
+        store
+            .append(&TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Running,
+                elapsed_ms: 0,
+                error: None,
+                fields,
+            })
+            .expect("append");
+
+        let count = sweep_stale_running_trials(&store, &artifacts_dir)
+            .expect("sweep");
+        assert_eq!(count, 1, "should sweep one trial");
+
+        // Artifact directory should be gone.
+        assert!(!trial_dir.exists(), "trial dir should be deleted");
+
+        // Trial should now be Error.
+        let rows = store.load_rows().expect("load rows");
+        let row = rows.iter().find(|r| r.get("trial_id") == Some(&"0".to_string()))
+            .expect("trial 0 should exist");
+        assert_eq!(row.get(crate::FIELD_TRIAL_STATUS).map(String::as_str), Some("error"));
+        assert_eq!(
+            row.get(crate::FIELD_TRIAL_ERROR).map(String::as_str),
+            Some("interrupted by previous run")
+        );
+    }
+
+    #[test]
+    // Scenario: a Running trial with no artifact directory (e.g. Ctrl-C
+    // happened before the dir was created).  The sweep should still mark it
+    // as Error without crashing.
+    fn sweep_handles_missing_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = CommandTemplate::new("echo".to_string());
+        let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template);
+
+        let mut fields = BTreeMap::new();
+        fields.insert(format!("{HP_PREFIX}x"), "0.5".to_string());
+        store
+            .append(&TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Running,
+                elapsed_ms: 0,
+                error: None,
+                fields,
+            })
+            .expect("append");
+
+        // Sweep when artifact dir doesn't exist — should not crash.
+        let artifacts_dir = dir.path().join("artifacts");
+        let count = sweep_stale_running_trials(&store, &artifacts_dir)
+            .expect("sweep");
+        assert_eq!(count, 1, "should sweep one trial");
+
+        // Trial should now be Error.
+        let rows = store.load_rows().expect("load rows");
+        let row = rows.iter().find(|r| r.get("trial_id") == Some(&"0".to_string()))
+            .expect("trial 0 should exist");
+        assert_eq!(row.get(crate::FIELD_TRIAL_STATUS).map(String::as_str), Some("error"));
+    }
+
+    #[test]
+    // Scenario: only Running trials are swept; Ok and Error trials are
+    // left untouched.
+    fn sweep_ignores_non_running() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = CommandTemplate::new("echo".to_string());
+        let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template);
+        let artifacts_dir = dir.path().join("artifacts");
+
+        // An Ok trial with artifacts.
+        let ok_dir = artifacts_dir.join("trial_0");
+        std::fs::create_dir_all(&ok_dir).expect("create");
+        let mut ok_fields = BTreeMap::new();
+        ok_fields.insert(format!("{HP_PREFIX}x"), "0.5".to_string());
+        store
+            .append(&TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Ok,
+                elapsed_ms: 100,
+                error: None,
+                fields: ok_fields,
+            })
+            .expect("append");
+
+        // An Error trial with artifacts.
+        let err_dir = artifacts_dir.join("trial_1");
+        std::fs::create_dir_all(&err_dir).expect("create");
+        let mut err_fields = BTreeMap::new();
+        err_fields.insert(format!("{HP_PREFIX}x"), "0.6".to_string());
+        store
+            .append(&TrialRecord {
+                trial_id: 1,
+                status: TrialStatus::Error,
+                elapsed_ms: 50,
+                error: Some("previous error".to_string()),
+                fields: err_fields,
+            })
+            .expect("append");
+
+        let count = sweep_stale_running_trials(&store, &artifacts_dir)
+            .expect("sweep");
+        assert_eq!(count, 0, "should not sweep any trials");
+
+        // Both directories should still exist.
+        assert!(ok_dir.exists(), "Ok trial dir should remain");
+        assert!(err_dir.exists(), "Error trial dir should remain");
+    }
+
+    #[test]
+    // Scenario: `find_duplicate_config` (used by PSO) already skips
+    // Running and Error trials.  The sweep marks stale Running trials as
+    // Error, confirming they stay skipped — no regression.
+    fn sweep_does_not_regress_duplicate_check() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = CommandTemplate::new("echo".to_string());
+        let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template);
+
+        // Create a Running trial (simulates Ctrl-C).
+        let mut fields = BTreeMap::new();
+        fields.insert(format!("{HP_PREFIX}x"), "0.5".to_string());
+        store
+            .append(&TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Running,
+                elapsed_ms: 0,
+                error: None,
+                fields,
+            })
+            .expect("append");
+
+        // Even before sweep, Running trials should not block (the
+        // duplicate check only considers Ok trials).
+        let mut query = BTreeMap::new();
+        query.insert(format!("{HP_PREFIX}x"), "0.5".to_string());
+        let dup = store.find_duplicate_config(None, &query).expect("find");
+        assert!(dup.is_none(), "Running trial should not block PSO");
+
+        // Run sweep — marks it as Error.
+        let artifacts_dir = dir.path().join("artifacts");
+        sweep_stale_running_trials(&store, &artifacts_dir).expect("sweep");
+
+        // After sweep: Error trials should also not block.
+        let dup_after = store.find_duplicate_config(None, &query).expect("find");
+        assert!(dup_after.is_none(), "Error trial should not block after sweep");
     }
 }

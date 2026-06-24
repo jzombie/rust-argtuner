@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use crate::analysis::{print_hparam_impact, print_top_trials};
-use crate::checkpoint::{ControllableObjective, StopFlag};
+use crate::checkpoint::{sweep_stale_running_trials, ControllableObjective, StopFlag};
 use crate::command::CommandObjective;
 use crate::project::{Project, Sampler};
 use crate::sampler::{run_pso, run_random};
@@ -83,6 +83,17 @@ impl Tuner {
         );
         // Register Ctrl-C handler for graceful shutdown across all samplers
         let stop_flag = StopFlag::new();
+
+        // Sweep stale Running trials from a prior interrupted run so that
+        // PSO's duplicate check and SHA's artifact copy behave correctly.
+        if temp_root.is_none() {
+            if let Err(e) = sweep_stale_running_trials(
+                &store_for_summary,
+                &self.project.artifacts_dir(),
+            ) {
+                eprintln!("WARN: stale trial sweep failed (continuing): {e}");
+            }
+        }
 
         match config.sampler.kind {
             Sampler::Pso => {

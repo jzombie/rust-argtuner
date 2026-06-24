@@ -206,6 +206,11 @@ impl TrialStore {
         let candidate = hp_fields(fields);
         let rows = self.load_rows()?;
         for row in rows {
+            // Only completed (Ok) trials should block re-evaluation.
+            // Running/Error trials were never successfully completed.
+            if row.get(FIELD_TRIAL_STATUS).map(|s| s != "ok").unwrap_or(true) {
+                continue;
+            }
             let row_config_id = row
                 .get(FIELD_TRIAL_CONFIG_ID)
                 .and_then(|value| value.parse::<usize>().ok());
