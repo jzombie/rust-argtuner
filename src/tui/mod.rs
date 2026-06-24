@@ -264,6 +264,9 @@ impl WindowManagerHost<RegionId> for AppState {
         &mut self.windows
     }
 
+    /// Opens an exit confirmation dialog.
+    /// The default opens a NoopOverlay whose handle_confirm_event always returns None,
+    /// making exit impossible. A real ConfirmOverlayComponent is required.
     fn open_exit_confirm(&mut self) {
         let mut confirm = term_wm::ConfirmOverlayComponent::new();
         confirm.open("Exit", "Exit the tuner?");
