@@ -1,15 +1,12 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use argtuner::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
-use crossterm::event::{
-    DisableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind,
-};
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{execute, terminal};
-use ratatui::backend::CrosstermBackend;
+use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::prelude::{Constraint, Direction, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
@@ -18,31 +15,35 @@ use ratatui::widgets::{
     Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph,
     canvas::{Canvas, Line as CanvasLine},
 };
-use ratatui::{Frame, Terminal};
 use rusqlite::{Connection, OpenFlags};
 use term_wm::components::{
-    Component, ListComponent, ScrollView, StatusBar, ToggleItem, ToggleListComponent,
+    Component, ComponentContext, ListComponent, ToggleItem, ToggleListComponent,
 };
-use term_wm::drivers::console::ConsoleDriver;
-use term_wm::drivers::mouse::MouseDriver;
+use term_wm::components::render_scrollbar;
+use term_wm::drivers::console::{ConsoleInputDriver, ConsoleOutputDriver};
+use term_wm::drivers::OutputDriver;
 use term_wm::layout::{LayoutNode, TilingLayout, rect_contains};
-use term_wm::runner::{HasWindowManager, run_app};
-use term_wm::window::WindowManager;
+use term_wm::runner::{HasWindowManager, WindowApp, run_window_app};
+use term_wm::ui::UiFrame;
+use term_wm::window::{ScrollState, WindowManager};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
+    let poll = Duration::from_millis(poll_ms.max(16));
+    let pending_events = Rc::new(RefCell::new(Vec::new()));
+    let window_manager = WindowManager::new_managed(FocusTarget::Trials);
     let mut app = AppState {
         db_path,
-        poll: Duration::from_millis(poll_ms),
+        poll,
         last_refresh: Instant::now()
             .checked_sub(Duration::from_secs(60))
             .unwrap_or_else(Instant::now),
         trials: Vec::new(),
         epoch_rows: BTreeMap::new(),
         last_error: None,
-        windows: WindowManager::new(FocusTarget::Trials),
+        windows: window_manager,
         trials_list: ListComponent::new("Trials"),
-        charts_scroll: ScrollView::new(),
-        details_scroll: ScrollView::new(),
+        charts_scroll: ScrollState::default(),
+        details_scroll: ScrollState::default(),
         chart_zoom: 1.0,
         chart_view: ChartView::Summary,
         chart_selected: 0,
@@ -51,91 +52,44 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         params_list: ToggleListComponent::new("Hyperparameters"),
         params_x_offset: 0,
         metrics_list: ToggleListComponent::new("Metrics"),
-        status_bar: StatusBar::new(),
-        main_layout: TilingLayout::new(LayoutNode::split_resizable(
-            Direction::Vertical,
-            vec![Constraint::Min(1), Constraint::Length(1)],
-            vec![
-                LayoutNode::split(
-                    Direction::Horizontal,
-                    vec![Constraint::Percentage(40), Constraint::Percentage(60)],
-                    vec![
-                        LayoutNode::leaf(RegionId::Trials),
-                        LayoutNode::leaf(RegionId::Charts),
-                    ],
-                ),
-                LayoutNode::leaf(RegionId::Status),
-            ],
-            false,
-        )),
-        charts_layout: TilingLayout::new(LayoutNode::split(
-            Direction::Vertical,
-            vec![Constraint::Percentage(65), Constraint::Percentage(35)],
-            vec![
-                LayoutNode::leaf(RegionId::Charts),
-                LayoutNode::leaf(RegionId::Details),
-            ],
-        )),
-        details_layout: TilingLayout::new(LayoutNode::split(
-            Direction::Horizontal,
-            vec![Constraint::Percentage(55), Constraint::Percentage(45)],
-            vec![
-                LayoutNode::leaf(RegionId::ParamsInner),
-                LayoutNode::leaf(RegionId::MetricsInner),
-            ],
-        )),
-        main_area: Rect::default(),
-        charts_area: Rect::default(),
-        details_area: Rect::default(),
+        pending_events: pending_events.clone(),
+        dispatch: EventDispatchComponent { pending_events },
     };
 
-    terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    let mut driver = ConsoleDriver::new();
-    driver.enable()?;
+    let mut output = ConsoleOutputDriver::new()?;
+    let mut input = ConsoleInputDriver::new();
+    output.enter()?;
 
-    let result = run_app(
-        &mut terminal,
-        &mut driver,
+    let focus_regions = [
+        RegionId::Trials,
+        RegionId::Charts,
+        RegionId::Details,
+    ];
+
+    let result = run_window_app(
+        &mut output,
+        &mut input,
         &mut app,
-        &[
-            RegionId::Trials,
-            RegionId::Charts,
-            RegionId::ParamsInner,
-            RegionId::MetricsInner,
-            RegionId::Details,
-        ],
+        &focus_regions,
         map_focus_from_region,
         |_focus| None,
-        Duration::from_millis(50),
-        |frame, app| {
-            if app.last_refresh.elapsed() >= app.poll {
-                refresh_trials(app);
-                app.last_refresh = Instant::now();
-            }
-            draw_ui(frame, app);
-        },
-        |event, app| handle_event(app, event),
-        |event, _app| {
-            matches!(
-                event,
-                Some(Event::Key(key)) if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc
-            )
-        },
     );
 
-    terminal::disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()?;
-
+    output.exit()?;
     result
+}
+
+struct EventDispatchComponent {
+    pending_events: Rc<RefCell<Vec<Event>>>,
+}
+
+impl Component for EventDispatchComponent {
+    fn render(&mut self, _frame: &mut UiFrame<'_>, _area: Rect, _ctx: &ComponentContext) {}
+
+    fn handle_event(&mut self, event: &Event, _ctx: &ComponentContext) -> bool {
+        self.pending_events.borrow_mut().push(event.clone());
+        true
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -159,8 +113,8 @@ struct AppState {
     last_error: Option<String>,
     windows: WindowManager<FocusTarget, RegionId>,
     trials_list: ListComponent,
-    charts_scroll: ScrollView,
-    details_scroll: ScrollView,
+    charts_scroll: ScrollState,
+    details_scroll: ScrollState,
     chart_zoom: f64,
     chart_view: ChartView,
     chart_selected: usize,
@@ -169,13 +123,122 @@ struct AppState {
     params_list: ToggleListComponent,
     params_x_offset: usize,
     metrics_list: ToggleListComponent,
-    status_bar: StatusBar,
-    main_layout: TilingLayout<RegionId>,
-    charts_layout: TilingLayout<RegionId>,
-    details_layout: TilingLayout<RegionId>,
-    main_area: Rect,
-    charts_area: Rect,
-    details_area: Rect,
+    pending_events: Rc<RefCell<Vec<Event>>>,
+    dispatch: EventDispatchComponent,
+}
+
+impl WindowApp<FocusTarget, RegionId> for AppState {
+    fn enumerate_windows(&mut self) -> Vec<RegionId> {
+        let events: Vec<Event> = self.pending_events.borrow_mut().drain(..).collect();
+        for event in &events {
+            handle_event(self, event);
+        }
+        if self.last_refresh.elapsed() >= self.poll {
+            refresh_trials(self);
+            self.last_refresh = Instant::now();
+        }
+        self.windows.set_focus_order(focus_targets(self));
+        let windows = match self.chart_mode {
+            ChartMode::Metrics => vec![RegionId::Trials, RegionId::Charts, RegionId::Details],
+            ChartMode::HyperParams => vec![
+                RegionId::Trials,
+                RegionId::Charts,
+                RegionId::ParamsInner,
+                RegionId::MetricsInner,
+            ],
+        };
+        self.windows.set_window_title(RegionId::Trials, "Trials");
+        self.windows.set_window_title(RegionId::Charts, charts_window_title(self));
+        self.windows.set_window_title(RegionId::Details, "Trial Details");
+        self.windows.set_window_title(RegionId::ParamsInner, "Hyperparameters");
+        self.windows.set_window_title(RegionId::MetricsInner, "Metrics");
+        windows
+    }
+
+    fn render_window(&mut self, frame: &mut UiFrame<'_>, window: term_wm::window::AppWindowDraw<RegionId>) {
+        match window.id {
+            RegionId::Trials => render_trials_content(frame, self, window.surface.inner),
+            RegionId::Charts => render_charts_content(frame, self, window.surface.inner),
+            RegionId::Details => render_details_content(frame, self, window.surface.inner),
+            RegionId::ParamsInner => render_params_content(frame, self, window.surface.inner),
+            RegionId::MetricsInner => render_metrics_content(frame, self, window.surface.inner),
+            _ => {}
+        }
+    }
+
+    fn layout_for_windows(&mut self, windows: &[RegionId]) -> Option<TilingLayout<RegionId>> {
+        let root = if windows.contains(&RegionId::ParamsInner) {
+            LayoutNode::split(
+                Direction::Horizontal,
+                vec![Constraint::Percentage(40), Constraint::Percentage(60)],
+                vec![
+                    LayoutNode::leaf(RegionId::Trials),
+                    LayoutNode::split(
+                        Direction::Vertical,
+                        vec![Constraint::Percentage(65), Constraint::Percentage(35)],
+                        vec![
+                            LayoutNode::leaf(RegionId::Charts),
+                            LayoutNode::split(
+                                Direction::Horizontal,
+                                vec![Constraint::Percentage(55), Constraint::Percentage(45)],
+                                vec![
+                                    LayoutNode::leaf(RegionId::ParamsInner),
+                                    LayoutNode::leaf(RegionId::MetricsInner),
+                                ],
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        } else {
+            LayoutNode::split(
+                Direction::Horizontal,
+                vec![Constraint::Percentage(40), Constraint::Percentage(60)],
+                vec![
+                    LayoutNode::leaf(RegionId::Trials),
+                    LayoutNode::split(
+                        Direction::Vertical,
+                        vec![Constraint::Percentage(65), Constraint::Percentage(35)],
+                        vec![
+                            LayoutNode::leaf(RegionId::Charts),
+                            LayoutNode::leaf(RegionId::Details),
+                        ],
+                    ),
+                ],
+            )
+        };
+        Some(TilingLayout::new(root))
+    }
+
+    fn window_component(&mut self, _id: RegionId) -> Option<&mut dyn Component> {
+        Some(&mut self.dispatch)
+    }
+}
+
+fn charts_window_title(app: &AppState) -> String {
+    let focus = pane_focus(app);
+    match app.chart_mode {
+        ChartMode::Metrics if focus == PaneFocus::Charts && app.chart_view == ChartView::Focused => {
+            let total = app.metrics_len;
+            let current = app.chart_selected.saturating_add(1);
+            format!("Metric Curve {current}/{total}")
+        }
+        ChartMode::Metrics if focus == PaneFocus::Charts => "Metric Curves".to_string(),
+        ChartMode::Metrics => "Metric Curves".to_string(),
+        ChartMode::HyperParams if focus == PaneFocus::Charts => "Hyperparameter Space".to_string(),
+        ChartMode::HyperParams => "Hyperparameter Space".to_string(),
+    }
+}
+
+fn map_focus_from_region(region: RegionId) -> FocusTarget {
+    match region {
+        RegionId::Trials => FocusTarget::Trials,
+        RegionId::Charts => FocusTarget::Charts,
+        RegionId::ParamsInner => FocusTarget::DetailsParams,
+        RegionId::MetricsInner => FocusTarget::DetailsMetrics,
+        RegionId::Details => FocusTarget::Details,
+        _ => FocusTarget::Details,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,10 +258,8 @@ enum RegionId {
     Details,
     TrialsInner,
     ChartsInner,
-    DetailsInner,
     ParamsInner,
     MetricsInner,
-    Status,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -243,20 +304,13 @@ impl HasWindowManager<FocusTarget, RegionId> for AppState {
     }
 }
 
-fn map_focus_from_region(region: RegionId) -> FocusTarget {
-    match region {
-        RegionId::Trials => FocusTarget::Trials,
-        RegionId::Charts => FocusTarget::Charts,
-        RegionId::ParamsInner => FocusTarget::DetailsParams,
-        RegionId::MetricsInner => FocusTarget::DetailsMetrics,
-        RegionId::Details => FocusTarget::Details,
-        _ => FocusTarget::Details,
-    }
-}
-
 fn handle_event(app: &mut AppState, event: &Event) -> bool {
     match event {
         Event::Key(key) => match key.code {
+            KeyCode::Char('q') => {
+                app.windows.open_exit_confirm();
+                true
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 apply_focus_delta(app, -1);
                 true
@@ -352,22 +406,12 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
             _ => false,
         },
         Event::Mouse(mouse) => {
-            if app.details_layout.handle_event(event, app.details_area)
-                || app.charts_layout.handle_event(event, app.charts_area)
-                || app.main_layout.handle_event(event, app.main_area)
-            {
-                return true;
-            }
-            if app.trials_list.handle_event(event) {
+            let ctx = ComponentContext::new(true);
+            if app.trials_list.handle_event(event, &ctx) {
                 return true;
             }
             if app.chart_mode == ChartMode::HyperParams
-                && (app.params_list.handle_event(event) || app.metrics_list.handle_event(event))
-            {
-                return true;
-            }
-            if app.details_scroll.handle_event(event).handled
-                || app.charts_scroll.handle_event(event).handled
+                && (app.params_list.handle_event(event, &ctx) || app.metrics_list.handle_event(event, &ctx))
             {
                 return true;
             }
@@ -526,15 +570,14 @@ fn toggle_chart_view(app: &mut AppState) {
             if app.metrics_len == 0 {
                 ChartView::Summary
             } else {
-                let offset = app.charts_scroll.offset();
+                let offset = app.charts_scroll.offset;
                 app.chart_selected = offset.min(app.metrics_len - 1);
                 ChartView::Focused
             }
         }
         ChartView::Focused => {
             if app.metrics_len > 0 {
-                app.charts_scroll
-                    .set_offset(app.chart_selected.min(app.metrics_len - 1));
+                app.charts_scroll.offset = app.chart_selected.min(app.metrics_len - 1);
             }
             ChartView::Summary
         }
@@ -606,12 +649,13 @@ fn handle_trial_click(app: &mut AppState, column: u16, row: u16) {
         return;
     }
     let offset_row = row.saturating_sub(inner.y) as usize;
-    let index = app.trials_list.scroll_offset().saturating_add(offset_row);
+    let index = app.trials_list.selected().saturating_add(offset_row);
     if index >= app.trials.len() {
         return;
     }
     if index != app.trials_list.selected() {
-        app.trials_list.set_selected(index);
+        let delta = index as isize - app.trials_list.selected() as isize;
+        app.trials_list.move_selection(delta);
         app.charts_scroll.reset();
         app.details_scroll.reset();
     }
@@ -627,7 +671,7 @@ fn handle_chart_click(app: &mut AppState, column: u16, row: u16) {
     }
     let offset_row = row.saturating_sub(inner.y) as usize;
     let index_in_view = offset_row / CHART_ITEM_HEIGHT as usize;
-    let index = app.charts_scroll.offset().saturating_add(index_in_view);
+    let index = app.charts_scroll.offset.saturating_add(index_in_view);
     if index >= app.metrics_len {
         return;
     }
@@ -642,7 +686,7 @@ fn handle_details_click(app: &mut AppState, column: u16, row: u16) {
             return;
         }
         let offset_row = row.saturating_sub(inner.y) as usize;
-        let index = app.params_list.scroll_offset().saturating_add(offset_row);
+        let index = app.params_list.selected().saturating_add(offset_row);
         if index >= app.params_list.items().len() {
             return;
         }
@@ -654,7 +698,7 @@ fn handle_details_click(app: &mut AppState, column: u16, row: u16) {
             return;
         }
         let offset_row = row.saturating_sub(inner.y) as usize;
-        let index = app.metrics_list.scroll_offset().saturating_add(offset_row);
+        let index = app.metrics_list.selected().saturating_add(offset_row);
         if index >= app.metrics_list.items().len() {
             return;
         }
@@ -680,7 +724,10 @@ fn refresh_trials(app: &mut AppState) {
             let before = app.trials_list.selected();
             app.trials_list.set_items(build_trial_items(&app.trials));
             if app.trials.is_empty() {
-                app.trials_list.set_selected(0);
+                let current = app.trials_list.selected();
+                if current != 0 {
+                    app.trials_list.move_selection(-(current as isize));
+                }
             }
             if app.trials_list.selected() != before {
                 app.charts_scroll.reset();
@@ -870,45 +917,9 @@ fn open_connection(path: &Path) -> Result<Connection, String> {
     })
 }
 
-fn draw_ui(frame: &mut Frame, app: &mut AppState) {
-    let area = frame.area();
-    app.main_area = area;
-    app.windows.set_focus_order(focus_targets(app));
-    app.windows.register_tiling_layout(&app.main_layout, area);
-    let trials_area = app.windows.region(RegionId::Trials);
-    let charts_area = app.windows.region(RegionId::Charts);
-    draw_trial_list(frame, app, trials_area);
-    draw_metrics_overview(frame, app, charts_area);
-    draw_status_bar(frame, app, app.windows.region(RegionId::Status));
-}
-
-fn draw_status_bar(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    let selected = if app.trials.is_empty() {
-        "-".to_string()
-    } else {
-        format!("{}", app.trials_list.selected() + 1)
-    };
-    let mode = match app.chart_mode {
-        ChartMode::Metrics => "metrics",
-        ChartMode::HyperParams => "hyperparams",
-    };
-    let left = format!(
-        "trials: {}  selected: {}  view: {}",
-        app.trials.len(),
-        selected,
-        mode
-    );
-    let right = "Tab/Shift-Tab focus | h metrics/params | f focus | +/- zoom | q quit";
-    app.status_bar.set_left(left);
-    app.status_bar.set_right(right);
-    app.status_bar.render(frame, area, false);
-}
-
-fn draw_trial_list(frame: &mut Frame, app: &mut AppState, area: Rect) {
+fn render_trials_content(frame: &mut UiFrame<'_>, app: &mut AppState, area: Rect) {
     let focus = pane_focus(app) == PaneFocus::Trials;
-    let inner = Block::default().borders(Borders::ALL).inner(area);
-    app.windows.set_region(RegionId::TrialsInner, inner);
-    app.trials_list.render(frame, area, focus);
+    app.trials_list.render(frame, area, &ComponentContext::new(focus));
 }
 
 fn metric_for_trial(trial: &TrialRow) -> Option<(String, f64)> {
@@ -941,223 +952,106 @@ fn build_trial_items(trials: &[TrialRow]) -> Vec<String> {
         .collect()
 }
 
-fn draw_metrics_overview(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    let title = match app.chart_mode {
-        ChartMode::Metrics => {
-            "Trial Metrics (Tab/Shift-Tab to switch focus, +/- to zoom, f to focus, h for params)"
-        }
-        ChartMode::HyperParams => "Hyperparameters (Tab/Shift-Tab to switch focus, h for metrics)",
-    };
-    let focus = pane_focus(app);
-    let block = styled_block(title, focus == PaneFocus::Charts);
-    frame.render_widget(&block, area);
-    let inner = block.inner(area);
-    if inner.height == 0 {
-        app.charts_area = Rect::default();
+fn render_charts_content(frame: &mut UiFrame<'_>, app: &mut AppState, area: Rect) {
+    if app.chart_mode == ChartMode::HyperParams {
+        render_hyperparam_space(frame, app, area);
         return;
     }
-    app.charts_area = inner;
-
-    app.windows
-        .register_tiling_layout(&app.charts_layout, inner);
-    app.windows
-        .set_region(RegionId::ChartsInner, Rect::default());
-    app.windows
-        .set_region(RegionId::DetailsInner, Rect::default());
-    app.windows
-        .set_region(RegionId::ParamsInner, Rect::default());
-    app.windows
-        .set_region(RegionId::MetricsInner, Rect::default());
-    app.metrics_len = 0;
-
     if let Some(err) = app.last_error.as_ref() {
-        let text = vec![Line::from(Span::styled(
-            err.clone(),
-            Style::default().fg(Color::Red),
-        ))];
-        frame.render_widget(Paragraph::new(text), inner);
+        frame.render_widget(Paragraph::new(err.clone()).style(Style::default().fg(Color::Red)), area);
         return;
     }
-
     let Some(trial) = app.trials.get(app.trials_list.selected()) else {
-        frame.render_widget(Paragraph::new("No trials loaded."), inner);
+        frame.render_widget(Paragraph::new("No trials loaded."), area);
         return;
     };
-    let trial = trial.clone();
-    let epochs = app
-        .epoch_rows
-        .get(&trial.trial_id)
-        .cloned()
-        .unwrap_or_default();
-    match app.chart_mode {
-        ChartMode::Metrics => {
-            if epochs.is_empty() {
-                frame.render_widget(
-                    Paragraph::new("No epoch metrics for selected trial."),
-                    inner,
-                );
-                return;
-            }
-            let charts_area = app.windows.region(RegionId::Charts);
-            let details_area = app.windows.region(RegionId::Details);
-            draw_metric_charts(frame, app, &epochs, charts_area);
-            draw_trial_details(frame, app, &trial, &epochs, details_area);
-        }
-        ChartMode::HyperParams => {
-            let charts_area = app.windows.region(RegionId::Charts);
-            let details_area = app.windows.region(RegionId::Details);
-            draw_hyperparam_space(frame, app, charts_area);
-            draw_param_toggles(frame, app, details_area);
-        }
+    let epochs = app.epoch_rows.get(&trial.trial_id).cloned().unwrap_or_default();
+    if epochs.is_empty() {
+        frame.render_widget(Paragraph::new("No epoch metrics for selected trial."), area);
+        return;
     }
+    render_metric_charts(frame, app, &epochs, area);
 }
 
-fn draw_metric_charts(frame: &mut Frame, app: &mut AppState, epochs: &[TrialRow], area: Rect) {
+fn render_metric_charts(frame: &mut UiFrame<'_>, app: &mut AppState, epochs: &[TrialRow], area: Rect) {
     let metric_keys = collect_metric_keys_for_epochs(epochs);
     app.metrics_len = metric_keys.len();
-
-    let focus = pane_focus(app);
-    let title = match (focus, app.chart_view, app.metrics_len) {
-        (PaneFocus::Charts, ChartView::Focused, total) if total > 0 => {
-            let current = app.chart_selected.saturating_add(1);
-            format!("Metric Curve {current}/{total} (focus view)")
-        }
-        (PaneFocus::Charts, ChartView::Focused, _) => "Metric Curve (focus view)".to_string(),
-        (PaneFocus::Charts, ChartView::Summary, _) => "Metric Curves (focus)".to_string(),
-        (_, ChartView::Focused, total) if total > 0 => {
-            let current = app.chart_selected.saturating_add(1);
-            format!("Metric Curve {current}/{total} (focus view)")
-        }
-        (_, ChartView::Focused, _) => "Metric Curve (focus view)".to_string(),
-        _ => "Metric Curves".to_string(),
-    };
-    let block = styled_block(title, focus == PaneFocus::Charts);
-    frame.render_widget(&block, area);
-    let inner = block.inner(area);
-    app.windows.set_region(RegionId::ChartsInner, inner);
-    if inner.height == 0 {
-        return;
-    }
     if metric_keys.is_empty() {
-        frame.render_widget(Paragraph::new("No numeric metric curves."), inner);
+        frame.render_widget(Paragraph::new("No numeric metric curves."), area);
         return;
     }
     if app.chart_selected >= metric_keys.len() {
         app.chart_selected = metric_keys.len().saturating_sub(1);
     }
     let x_axis = select_x_axis_spec(epochs);
-
     match app.chart_view {
         ChartView::Summary => {
-            let visible_items = (inner.height / CHART_ITEM_HEIGHT).max(1) as usize;
+            let visible_items = (area.height / CHART_ITEM_HEIGHT).max(1) as usize;
             let total_items = metric_keys.len();
-            app.charts_scroll.update(inner, total_items, visible_items);
-
-            for (row, key) in metric_keys
-                .iter()
-                .skip(app.charts_scroll.offset())
-                .take(visible_items)
-                .enumerate()
-            {
-                let y = inner.y + (row as u16 * CHART_ITEM_HEIGHT);
+            app.charts_scroll.apply(total_items, visible_items);
+            for (row, key) in metric_keys.iter().skip(app.charts_scroll.offset).take(visible_items).enumerate() {
                 let rect = Rect {
-                    x: inner.x,
-                    y,
-                    width: inner.width,
+                    x: area.x,
+                    y: area.y + (row as u16 * CHART_ITEM_HEIGHT),
+                    width: area.width,
                     height: CHART_ITEM_HEIGHT,
                 };
                 render_metric_chart(frame, epochs, key, rect, &x_axis, app.chart_zoom);
             }
-
-            app.charts_scroll.render(frame);
+            render_scrollbar(frame, area, total_items, visible_items, app.charts_scroll.offset);
         }
         ChartView::Focused => {
             let key = &metric_keys[app.chart_selected];
-            render_metric_chart(frame, epochs, key, inner, &x_axis, app.chart_zoom);
+            render_metric_chart(frame, epochs, key, area, &x_axis, app.chart_zoom);
         }
     }
 }
 
-fn draw_hyperparam_space(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    let focus = pane_focus(app);
-    let title = match focus {
-        PaneFocus::Charts => "Hyperparameter Space (loss color, focus, L/R pan axes)",
-        _ => "Hyperparameter Space (loss color, L/R pan axes)",
-    };
-    let block = styled_block(title, focus == PaneFocus::Charts);
-    frame.render_widget(&block, area);
-    let inner = block.inner(area);
-    app.windows.set_region(RegionId::ChartsInner, inner);
-    if inner.height == 0 || inner.width == 0 {
+fn render_hyperparam_space(frame: &mut UiFrame<'_>, app: &mut AppState, area: Rect) {
+    if area.height == 0 || area.width == 0 {
         return;
     }
-
-    let enabled_axes = enabled_axes(app);
-    let enabled: Vec<&AxisKey> = enabled_axes.iter().collect();
-    if enabled.is_empty() {
-        frame.render_widget(Paragraph::new("No axes enabled."), inner);
+    let axes = enabled_axes(app);
+    let enabled_axes: Vec<&AxisKey> = axes.iter().collect();
+    if enabled_axes.is_empty() {
+        frame.render_widget(Paragraph::new("No axes enabled."), area);
         return;
     }
-
-    let max_visible = (inner.width / PARAM_AXIS_WIDTH).max(1) as usize;
-    let enabled_len = enabled.len();
+    let max_visible = (area.width / PARAM_AXIS_WIDTH).max(1) as usize;
+    let enabled_len = enabled_axes.len();
     if app.params_x_offset > enabled_len.saturating_sub(1) {
         app.params_x_offset = 0;
     }
     let start = app.params_x_offset.min(enabled_len.saturating_sub(1));
     let end = (start + max_visible).min(enabled_len);
-    let visible = &enabled[start..end];
+    let visible = &enabled_axes[start..end];
     let visible_len = visible.len();
     if visible_len == 0 {
-        frame.render_widget(Paragraph::new("No parameters in view."), inner);
+        frame.render_widget(Paragraph::new("No parameters in view."), area);
         return;
     }
-
-    let domains = visible
-        .iter()
-        .map(|axis| param_domain(&app.trials, &axis.name))
-        .collect::<Vec<_>>();
+    let domains = visible.iter().map(|axis| param_domain(&app.trials, &axis.name)).collect::<Vec<_>>();
     let objective_range = objective_range(&app.trials);
-    let x_max = if visible_len == 1 {
-        1.0
-    } else {
-        (visible_len - 1) as f64
-    };
-    let max_labels = (inner.width / (PARAM_AXIS_WIDTH * 2)).max(1) as usize;
+    let x_max = if visible_len == 1 { 1.0 } else { (visible_len - 1) as f64 };
+    let max_labels = (area.width / (PARAM_AXIS_WIDTH * 2)).max(1) as usize;
     let label_stride = visible_len.div_ceil(max_labels);
     let canvas = Canvas::default()
-        .x_bounds([0.0, x_max])
-        .y_bounds([0.0, 1.0])
+        .x_bounds([0.0, x_max]).y_bounds([0.0, 1.0])
         .paint(|ctx| {
             for (idx, axis) in visible.iter().enumerate() {
                 let x = idx as f64;
                 ctx.draw(&CanvasLine::new(x, 0.0, x, 1.0, Color::DarkGray));
                 if idx % label_stride == 0 {
-                    let label = short_axis_label(&axis.name, 10);
-                    ctx.print(
-                        x,
-                        1.0,
-                        Line::from(Span::styled(label, Style::default().fg(Color::White))),
-                    );
+                    ctx.print(x, 1.0, Line::from(Span::styled(short_axis_label(&axis.name, 10), Style::default().fg(Color::White))));
                 }
             }
-
             for (trial_idx, trial) in app.trials.iter().enumerate() {
-                let color = if trial_idx == app.trials_list.selected() {
-                    Color::Yellow
-                } else {
-                    color_for_objective(objective_value(trial), objective_range)
-                };
+                let color = if trial_idx == app.trials_list.selected() { Color::Yellow }
+                    else { color_for_objective(objective_value(trial), objective_range) };
                 let mut last: Option<(f64, f64)> = None;
                 for (idx, (axis, domain)) in visible.iter().zip(domains.iter()).enumerate() {
-                    let Some(value) = trial.fields.get(&axis.name) else {
-                        last = None;
-                        continue;
-                    };
-                    let Some(y) = normalize_param_value(value, domain) else {
-                        last = None;
-                        continue;
-                    };
+                    let Some(value) = trial.fields.get(&axis.name) else { last = None; continue; };
+                    let Some(y) = normalize_param_value(value, domain) else { last = None; continue; };
                     let x = idx as f64;
                     if let Some((prev_x, prev_y)) = last {
                         ctx.draw(&CanvasLine::new(prev_x, prev_y, x, y, color));
@@ -1166,11 +1060,11 @@ fn draw_hyperparam_space(frame: &mut Frame, app: &mut AppState, area: Rect) {
                 }
             }
         });
-    frame.render_widget(canvas, inner);
+    frame.render_widget(canvas, area);
 }
 
 fn render_metric_chart(
-    frame: &mut Frame,
+    frame: &mut UiFrame<'_>,
     epochs: &[TrialRow],
     key: &str,
     area: Rect,
@@ -1215,74 +1109,31 @@ fn render_metric_chart(
     frame.render_widget(chart, area);
 }
 
-fn draw_trial_details(
-    frame: &mut Frame,
-    app: &mut AppState,
-    trial: &TrialRow,
-    epochs: &[TrialRow],
-    area: Rect,
-) {
-    if app.chart_mode == ChartMode::HyperParams {
-        draw_param_toggles(frame, app, area);
+fn render_details_content(frame: &mut UiFrame<'_>, app: &mut AppState, area: Rect) {
+    let Some(trial) = app.trials.get(app.trials_list.selected()) else {
+        frame.render_widget(Paragraph::new("No trial selected."), area);
         return;
-    }
-    app.details_area = Rect::default();
-    let focus = pane_focus(app);
-    let title = match focus {
-        PaneFocus::Details => "Trial Details (focus)",
-        _ => "Trial Details",
     };
-    let block = styled_block(title, focus == PaneFocus::Details);
-    frame.render_widget(&block, area);
-    let inner = block.inner(area);
-    if inner.height == 0 {
-        return;
-    }
-
-    let text = trial_detail_lines(trial, epochs);
+    let epochs = app.epoch_rows.get(&trial.trial_id).cloned().unwrap_or_default();
+    let text = trial_detail_lines(trial, &epochs);
     let total_lines = text.len();
-    let visible_lines = inner.height as usize;
-    app.details_scroll.update(inner, total_lines, visible_lines);
-    let paragraph = Paragraph::new(text).scroll((app.details_scroll.offset() as u16, 0));
-    frame.render_widget(paragraph, inner);
-
-    app.details_scroll.render(frame);
+    let visible_lines = area.height as usize;
+    app.details_scroll.apply(total_lines, visible_lines);
+    let paragraph = Paragraph::new(text).scroll((app.details_scroll.offset as u16, 0));
+    frame.render_widget(paragraph, area);
+    render_scrollbar(frame, area, total_lines, visible_lines, app.details_scroll.offset);
 }
 
-fn draw_param_toggles(frame: &mut Frame, app: &mut AppState, area: Rect) {
-    app.details_area = area;
-    app.windows
-        .register_tiling_layout(&app.details_layout, area);
-    let params_area = app.windows.region(RegionId::ParamsInner);
-    let metrics_area = app.windows.region(RegionId::MetricsInner);
-
-    app.windows.set_region(RegionId::DetailsInner, area);
-    app.windows.set_region(
-        RegionId::ParamsInner,
-        Block::default().borders(Borders::ALL).inner(params_area),
-    );
-    app.windows.set_region(
-        RegionId::MetricsInner,
-        Block::default().borders(Borders::ALL).inner(metrics_area),
-    );
-
+fn render_params_content(frame: &mut UiFrame<'_>, app: &mut AppState, area: Rect) {
     let params_focused = pane_focus(app) == PaneFocus::Details
         && matches!(app.windows.focus(), FocusTarget::DetailsParams);
-    let metrics_focused = pane_focus(app) == PaneFocus::Details
-        && matches!(app.windows.focus(), FocusTarget::DetailsMetrics);
-
-    app.params_list.render(frame, params_area, params_focused);
-    app.metrics_list
-        .render(frame, metrics_area, metrics_focused);
+    app.params_list.render(frame, area, &ComponentContext::new(params_focused));
 }
 
-fn styled_block<T: Into<Line<'static>>>(title: T, focused: bool) -> Block<'static> {
-    let base = Block::default().borders(Borders::ALL).title(title);
-    if focused {
-        base.border_style(Style::default().fg(Color::Green))
-    } else {
-        base
-    }
+fn render_metrics_content(frame: &mut UiFrame<'_>, app: &mut AppState, area: Rect) {
+    let metrics_focused = pane_focus(app) == PaneFocus::Details
+        && matches!(app.windows.focus(), FocusTarget::DetailsMetrics);
+    app.metrics_list.render(frame, area, &ComponentContext::new(metrics_focused));
 }
 
 fn collect_metric_keys_for_epochs(epochs: &[TrialRow]) -> Vec<String> {
