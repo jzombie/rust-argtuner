@@ -66,10 +66,13 @@ fn sanitize_state(
     if !s.target_cost.is_finite() {
         s.target_cost = 0.0;
     }
-    // Also sanitize the cost fields inside each Particle (they are Eq+Clone
-    // but we need to rebuild the Vec).  Particle itself does not expose
-    // setters for `cost` or `velocity`, so we work at the state level.
-    // After a few iterations these will always be finite.
+    if let Some(ref mut pop) = s.population {
+        for p in pop.iter_mut() {
+            if !p.cost.is_finite() {
+                p.cost = 0.0;
+            }
+        }
+    }
     s
 }
 
@@ -288,11 +291,10 @@ mod tests {
 
     #[test]
     fn sanitize_replaces_non_finite() {
+        // Particle cost is INFINITY — should be sanitized.
         let particle = Particle::new(vec![0.1, 0.2], f64::INFINITY, vec![0.01, 0.02]);
         let mut state: PopulationState<Particle<Vec<f64>, f64>, f64> =
             PopulationState::new();
-        // PopulationState::new() leaves cost/best_cost/etc at inf by
-        // default.  Override only the particle field.
         state.population = Some(vec![particle]);
         state.cost = f64::INFINITY;
         state.best_cost = f64::NEG_INFINITY;
@@ -306,5 +308,12 @@ mod tests {
         assert!(sanitized.target_cost.is_finite());
         assert!(sanitized.prev_cost.is_finite());
         assert!(sanitized.prev_best_cost.is_finite());
+        // Particle cost should also be sanitized.
+        assert!(sanitized
+            .population
+            .as_ref()
+            .unwrap()
+            .iter()
+            .all(|p| p.cost.is_finite()));
     }
 }
