@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::store::{TrialRecord, TrialStatus};
+use crate::trial::store::{TrialRecord, TrialStatus};
 
 #[derive(Debug, Clone)]
 pub struct TrialDb {

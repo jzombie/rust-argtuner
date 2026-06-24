@@ -2,7 +2,7 @@ use crate::command::CommandTemplate;
 use crate::constants::{PLACEHOLDER_TRIAL_DIR, PLACEHOLDER_TRIAL_ID};
 use crate::project::ProjectConfig;
 use crate::scheduler::SchedulerBinding;
-use crate::space::SearchSpace;
+use crate::search_space::SearchSpace;
 
 pub fn validate_project_config(
     config: &ProjectConfig,

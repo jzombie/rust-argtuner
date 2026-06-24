@@ -4,7 +4,7 @@ use argtuner::validate::validate_project_config;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-mod watch_ui;
+mod tui;
 
 #[derive(Parser)]
 #[command(
@@ -107,7 +107,7 @@ fn main() {
                 }
                 (None, None) => PathBuf::from("trials.sqlite"),
             };
-            if let Err(e) = watch_ui::run(db_path, *poll_ms) {
+            if let Err(e) = tui::run(db_path, *poll_ms) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

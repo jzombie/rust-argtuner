@@ -9,9 +9,9 @@ use crate::constants::{
     MAX_DUPLICATE_RETRIES, MAX_RANDOM_EXHAUSTIVE_CONFIGS,
 };
 use crate::scheduler::TrialScheduler;
-use crate::space::SearchSpace;
-use crate::store::{TrialStatus, TrialStore};
+use crate::search_space::SearchSpace;
 
+use crate::trial::store::{TrialStatus, TrialStore};
 #[derive(Clone, Copy)]
 struct CompletedTrial {
     status: TrialStatus,

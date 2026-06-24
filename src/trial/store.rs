@@ -12,7 +12,7 @@ use crate::constants::{
     FIELD_TRIAL_STATUS, FIELD_TRIAL_TIME, HP_PREFIX, METRIC_NAMESPACE, MODEL_NAMESPACE,
     TRIAL_PREFIX,
 };
-use crate::db::TrialDb;
+use crate::trial::db::TrialDb;
 use chrono::Utc;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

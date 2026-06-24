@@ -1,3 +1,6 @@
+pub mod db;
+pub mod store;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -6,7 +9,7 @@ use crate::constants::{
     ENV_TRIAL_DIR, ENV_TRIAL_ID, FIELD_SCORE, FIELD_TRIAL_ELAPSED_MS, FIELD_TRIAL_ERROR,
     FIELD_TRIAL_STATUS, HP_PREFIX, METRIC_NAMESPACE, PLACEHOLDER_TRIAL_DIR, PLACEHOLDER_TRIAL_ID,
 };
-use crate::space::SearchSpace;
+use crate::search_space::SearchSpace;
 
 #[derive(Debug, Default, Clone)]
 pub struct TrialOverrides {
@@ -161,12 +164,14 @@ mod tests {
         let template = CommandTemplate::new("echo {trial_dir}".to_string());
         let space = SearchSpace { params: vec![] };
         let mut overrides = TrialOverrides::default();
-        overrides
-            .fields
-            .insert(crate::constants::FIELD_TRIAL_CONFIG_ID.to_string(), "7".to_string());
-        overrides
-            .fields
-            .insert(crate::constants::FIELD_TRIAL_BRACKET.to_string(), "2".to_string());
+        overrides.fields.insert(
+            crate::constants::FIELD_TRIAL_CONFIG_ID.to_string(),
+            "7".to_string(),
+        );
+        overrides.fields.insert(
+            crate::constants::FIELD_TRIAL_BRACKET.to_string(),
+            "2".to_string(),
+        );
         let artifacts_dir = PathBuf::from("artifacts");
         let rendered = render_trial_command_with_overrides(
             &template,

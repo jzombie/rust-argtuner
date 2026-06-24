@@ -4,7 +4,7 @@ use crate::project::{Project, Sampler};
 use crate::sampler::{run_pso, run_random};
 use crate::scheduler::Scheduler;
 use crate::scheduler::{SchedulerBinding, TrialScheduler};
-use crate::store::TrialStore;
+use crate::trial::store::TrialStore;
 use crate::validate::validate_project_config;
 use std::error::Error;
 
