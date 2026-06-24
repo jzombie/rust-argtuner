@@ -1,4 +1,7 @@
+use std::error::Error;
+
 use crate::analysis::{print_hparam_impact, print_top_trials};
+use crate::checkpoint::{ControllableObjective, StopFlag};
 use crate::command::CommandObjective;
 use crate::project::{Project, Sampler};
 use crate::sampler::{run_pso, run_random};
@@ -6,7 +9,6 @@ use crate::scheduler::Scheduler;
 use crate::scheduler::{SchedulerBinding, TrialScheduler};
 use crate::trial::store::TrialStore;
 use crate::validate::validate_project_config;
-use std::error::Error;
 
 pub struct Tuner {
     project: Project,
@@ -79,20 +81,20 @@ impl Tuner {
             config.inject_trial_placeholders,
             next_id,
         );
+        // Register Ctrl-C handler for graceful shutdown across all samplers
+        let stop_flag = StopFlag::new();
+
         match config.sampler.kind {
             Sampler::Pso => {
                 if config.scheduler.kind != Scheduler::Fixed {
                     return Err("scheduler must be fixed when using the pso sampler".into());
                 }
-                run_pso(
-                    objective,
-                    config.sampler.pso.iters,
-                    config.sampler.pso.particles,
-                )?;
+                let ctrl = ControllableObjective::new(objective, stop_flag.inner());
+                run_pso(ctrl, config.sampler.pso.iters, config.sampler.pso.particles)?;
             }
             Sampler::Random => {
                 let scheduler: Box<dyn TrialScheduler> = scheduler_binding.build(objective.dims());
-                run_random(objective, scheduler)?;
+                run_random(objective, scheduler, Some(stop_flag.inner()))?;
             }
         }
 
