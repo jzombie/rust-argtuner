@@ -3,7 +3,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::constants::{DUPLICATE_CONFIG_PREFIX, FIELD_TRIAL_ID, FIELD_TRIAL_STATUS, HP_PREFIX};
+use crate::constants::{
+    DUPLICATE_CONFIG_PREFIX, FIELD_TRIAL_ERROR, FIELD_TRIAL_ID, FIELD_TRIAL_STATUS, HP_PREFIX,
+};
 
 /// Wraps a `CommandObjective` with a stop flag check and optional trial cache.
 ///
@@ -154,7 +156,6 @@ pub fn sweep_stale_running_trials(
     store: &crate::trial::store::TrialStore,
     artifacts_dir: &Path,
 ) -> Result<usize, String> {
-    use crate::constants::FIELD_TRIAL_ERROR;
     use crate::trial::store::{TrialRecord, TrialStatus};
 
     let rows = store
@@ -163,12 +164,18 @@ pub fn sweep_stale_running_trials(
 
     let mut count = 0;
     for row in &rows {
-        let is_running = row.get(FIELD_TRIAL_STATUS).map(|s| s == "running").unwrap_or(false);
+        let is_running = row
+            .get(FIELD_TRIAL_STATUS)
+            .and_then(|s| s.parse::<TrialStatus>().ok())
+            .map_or(false, |s| s == TrialStatus::Running);
         if !is_running {
             continue;
         }
 
-        let trial_id = match row.get(FIELD_TRIAL_ID).and_then(|v| v.parse::<usize>().ok()) {
+        let trial_id = match row
+            .get(FIELD_TRIAL_ID)
+            .and_then(|v| v.parse::<usize>().ok())
+        {
             Some(id) => id,
             None => continue,
         };
@@ -184,10 +191,13 @@ pub fn sweep_stale_running_trials(
         // Mark the trial as Error so it doesn't block future evaluations.
         let mut fields: std::collections::BTreeMap<String, String> = row
             .iter()
+            .filter(|(k, _)| *k != FIELD_TRIAL_STATUS)
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        fields.insert(FIELD_TRIAL_STATUS.to_string(), "error".to_string());
-        fields.insert(FIELD_TRIAL_ERROR.to_string(), "interrupted by previous run".to_string());
+        fields.insert(
+            FIELD_TRIAL_ERROR.to_string(),
+            "interrupted by previous run".to_string(),
+        );
 
         if let Err(e) = store.update(&TrialRecord {
             trial_id,
@@ -210,7 +220,8 @@ pub fn sweep_stale_running_trials(
 pub fn build_trial_result_cache(
     store: &crate::trial::store::TrialStore,
 ) -> Result<HashMap<Vec<(String, String)>, f64>, String> {
-    use crate::constants::{FIELD_SCORE, FIELD_TRIAL_STATUS};
+    use crate::constants::FIELD_SCORE;
+    use crate::trial::store::TrialStatus;
 
     let rows = store
         .load_rows()
@@ -219,10 +230,10 @@ pub fn build_trial_result_cache(
     let mut cache = HashMap::new();
 
     for row in &rows {
-        let status = match row.get(FIELD_TRIAL_STATUS).map(|s| s.as_str()) {
-            Some("ok") | Some("error") => true,
-            _ => false,
-        };
+        let status = row
+            .get(FIELD_TRIAL_STATUS)
+            .and_then(|s| s.parse::<TrialStatus>().ok())
+            .map_or(false, |s| s == TrialStatus::Ok || s == TrialStatus::Error);
         if !status {
             continue;
         }
@@ -376,8 +387,7 @@ mod tests {
             })
             .expect("append");
 
-        let count = sweep_stale_running_trials(&store, &artifacts_dir)
-            .expect("sweep");
+        let count = sweep_stale_running_trials(&store, &artifacts_dir).expect("sweep");
         assert_eq!(count, 1, "should sweep one trial");
 
         // Artifact directory should be gone.
@@ -385,9 +395,14 @@ mod tests {
 
         // Trial should now be Error.
         let rows = store.load_rows().expect("load rows");
-        let row = rows.iter().find(|r| r.get("trial_id") == Some(&"0".to_string()))
+        let row = rows
+            .iter()
+            .find(|r| r.get("trial_id") == Some(&"0".to_string()))
             .expect("trial 0 should exist");
-        assert_eq!(row.get(crate::FIELD_TRIAL_STATUS).map(String::as_str), Some("error"));
+        assert_eq!(
+            row.get(crate::FIELD_TRIAL_STATUS).map(String::as_str),
+            Some("error")
+        );
         assert_eq!(
             row.get(crate::FIELD_TRIAL_ERROR).map(String::as_str),
             Some("interrupted by previous run")
@@ -417,15 +432,19 @@ mod tests {
 
         // Sweep when artifact dir doesn't exist — should not crash.
         let artifacts_dir = dir.path().join("artifacts");
-        let count = sweep_stale_running_trials(&store, &artifacts_dir)
-            .expect("sweep");
+        let count = sweep_stale_running_trials(&store, &artifacts_dir).expect("sweep");
         assert_eq!(count, 1, "should sweep one trial");
 
         // Trial should now be Error.
         let rows = store.load_rows().expect("load rows");
-        let row = rows.iter().find(|r| r.get("trial_id") == Some(&"0".to_string()))
+        let row = rows
+            .iter()
+            .find(|r| r.get("trial_id") == Some(&"0".to_string()))
             .expect("trial 0 should exist");
-        assert_eq!(row.get(crate::FIELD_TRIAL_STATUS).map(String::as_str), Some("error"));
+        assert_eq!(
+            row.get(crate::FIELD_TRIAL_STATUS).map(String::as_str),
+            Some("error")
+        );
     }
 
     #[test]
@@ -467,8 +486,7 @@ mod tests {
             })
             .expect("append");
 
-        let count = sweep_stale_running_trials(&store, &artifacts_dir)
-            .expect("sweep");
+        let count = sweep_stale_running_trials(&store, &artifacts_dir).expect("sweep");
         assert_eq!(count, 0, "should not sweep any trials");
 
         // Both directories should still exist.
@@ -511,6 +529,9 @@ mod tests {
 
         // After sweep: Error trials should also not block.
         let dup_after = store.find_duplicate_config(None, &query).expect("find");
-        assert!(dup_after.is_none(), "Error trial should not block after sweep");
+        assert!(
+            dup_after.is_none(),
+            "Error trial should not block after sweep"
+        );
     }
 }

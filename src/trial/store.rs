@@ -208,7 +208,11 @@ impl TrialStore {
         for row in rows {
             // Only completed (Ok) trials should block re-evaluation.
             // Running/Error trials were never successfully completed.
-            if row.get(FIELD_TRIAL_STATUS).map(|s| s != "ok").unwrap_or(true) {
+            if row
+                .get(FIELD_TRIAL_STATUS)
+                .and_then(|s| s.parse::<TrialStatus>().ok())
+                .map_or(true, |s| s != TrialStatus::Ok)
+            {
                 continue;
             }
             let row_config_id = row
