@@ -2636,22 +2636,48 @@ dependencies = [
 name = "term-wm"
 version = "0.5.1-alpha"
 dependencies = [
- "arboard",
  "clap",
+ "indoc",
+ "line-ending",
+ "portable-pty",
+ "ratatui",
+ "term-wm-core",
+ "term-wm-ui-components",
+ "tracing",
+ "tracing-subscriber",
+ "webbrowser",
+]
+
+[[package]]
+name = "term-wm-core"
+version = "0.5.1-alpha"
+dependencies = [
+ "arboard",
  "crossterm",
  "hostname",
+ "linkify",
+ "portable-pty",
+ "ratatui",
+ "thiserror 2.0.17",
+ "tracing",
+ "vt100",
+]
+
+[[package]]
+name = "term-wm-ui-components"
+version = "0.5.1-alpha"
+dependencies = [
+ "crossterm",
  "indoc",
- "libc",
- "line-ending",
  "linkify",
  "portable-pty",
  "pulldown-cmark",
  "ratatui",
  "resvg",
  "shell-words",
+ "term-wm-core",
  "thiserror 2.0.17",
  "tracing",
- "tracing-subscriber",
  "vt100",
  "webbrowser",
  "windows-sys 0.61.2",
