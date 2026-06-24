@@ -1,9 +1,96 @@
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
+use crate::command::template::{CommandTemplate, TemplateError};
 use crate::constants::{
-    FIELD_SCORE, FIELD_TRIAL_ELAPSED_MS, FIELD_TRIAL_ERROR, FIELD_TRIAL_STATUS, HP_PREFIX,
-    METRIC_NAMESPACE,
+    ENV_TRIAL_DIR, ENV_TRIAL_ID, FIELD_SCORE, FIELD_TRIAL_ELAPSED_MS, FIELD_TRIAL_ERROR,
+    FIELD_TRIAL_STATUS, HP_PREFIX, METRIC_NAMESPACE, PLACEHOLDER_TRIAL_DIR, PLACEHOLDER_TRIAL_ID,
 };
+use crate::space::SearchSpace;
+
+#[derive(Debug, Default, Clone)]
+pub struct TrialOverrides {
+    pub values: BTreeMap<String, String>,
+    pub fields: BTreeMap<String, String>,
+    pub env: BTreeMap<String, String>,
+}
+
+pub struct RenderedTrial {
+    pub command: String,
+    pub fields: BTreeMap<String, String>,
+    pub trial_dir: Option<PathBuf>,
+    pub env: BTreeMap<String, String>,
+}
+
+pub fn render_trial_command(
+    template: &CommandTemplate,
+    space: &SearchSpace,
+    coords: &[f64],
+    trial_id: usize,
+    artifacts_dir: &Path,
+    inject_trial_placeholders: bool,
+) -> Result<RenderedTrial, TemplateError> {
+    let overrides = TrialOverrides::default();
+    render_trial_command_with_overrides(
+        template,
+        space,
+        coords,
+        trial_id,
+        artifacts_dir,
+        inject_trial_placeholders,
+        &overrides,
+    )
+}
+
+pub fn render_trial_command_with_overrides(
+    template: &CommandTemplate,
+    space: &SearchSpace,
+    coords: &[f64],
+    trial_id: usize,
+    artifacts_dir: &Path,
+    inject_trial_placeholders: bool,
+    overrides: &TrialOverrides,
+) -> Result<RenderedTrial, TemplateError> {
+    let mut values = space.values_from_unit(coords);
+    let mut fields = space.fields_from_unit(coords);
+    let mut env = BTreeMap::new();
+    for (key, value) in overrides.values.iter() {
+        values.insert(key.clone(), value.clone());
+    }
+    for (key, value) in overrides.fields.iter() {
+        fields.insert(key.clone(), value.clone());
+    }
+    for (key, value) in overrides.env.iter() {
+        env.insert(key.clone(), value.clone());
+    }
+    let mut trial_dir = None;
+    if inject_trial_placeholders {
+        let dir_value = values
+            .get(PLACEHOLDER_TRIAL_DIR)
+            .cloned()
+            .unwrap_or_else(|| format!("trial_{trial_id}"));
+        let dir = artifacts_dir.join(&dir_value);
+        values.insert(PLACEHOLDER_TRIAL_ID.to_string(), trial_id.to_string());
+        values
+            .entry(PLACEHOLDER_TRIAL_DIR.to_string())
+            .or_insert_with(|| dir.to_string_lossy().to_string());
+        fields.insert(PLACEHOLDER_TRIAL_ID.to_string(), trial_id.to_string());
+        fields
+            .entry(PLACEHOLDER_TRIAL_DIR.to_string())
+            .or_insert_with(|| dir.to_string_lossy().to_string());
+        env.insert(ENV_TRIAL_ID.to_string(), trial_id.to_string());
+        env.entry(ENV_TRIAL_DIR.to_string())
+            .or_insert_with(|| dir.to_string_lossy().to_string());
+        trial_dir = Some(dir);
+    }
+    let command = template.render(&values)?;
+    Ok(RenderedTrial {
+        command,
+        fields,
+        trial_dir,
+        env,
+    })
+}
 
 pub fn metric_value_field(metric_key: &str) -> String {
     format!("{METRIC_NAMESPACE}.{metric_key}")
@@ -34,7 +121,6 @@ pub fn merge_running_fields(
     mut existing: BTreeMap<String, String>,
     rendered: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
-    // Strip top-level status fields so reruns can mark the row as running.
     existing.remove(FIELD_TRIAL_STATUS);
     existing.remove(FIELD_TRIAL_ELAPSED_MS);
     existing.remove(FIELD_TRIAL_ERROR);
@@ -69,7 +155,36 @@ pub fn enforce_hp_immutability(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+
+    #[test]
+    fn render_uses_trial_id_for_trial_dir() {
+        let template = CommandTemplate::new("echo {trial_dir}".to_string());
+        let space = SearchSpace { params: vec![] };
+        let mut overrides = TrialOverrides::default();
+        overrides
+            .fields
+            .insert(crate::constants::FIELD_TRIAL_CONFIG_ID.to_string(), "7".to_string());
+        overrides
+            .fields
+            .insert(crate::constants::FIELD_TRIAL_BRACKET.to_string(), "2".to_string());
+        let artifacts_dir = PathBuf::from("artifacts");
+        let rendered = render_trial_command_with_overrides(
+            &template,
+            &space,
+            &[],
+            9,
+            &artifacts_dir,
+            true,
+            &overrides,
+        )
+        .expect("render");
+        let expected = artifacts_dir.join("trial_9").to_string_lossy().to_string();
+        assert_eq!(
+            rendered.env.get(ENV_TRIAL_DIR).map(String::as_str),
+            Some(expected.as_str())
+        );
+        assert!(rendered.command.contains(&expected));
+    }
 
     #[test]
     fn restarting_trial_preserves_existing_score_fields() {
@@ -118,7 +233,6 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert("metric".to_string(), "loss".to_string());
 
-        // Missing hp.* values are restored from the existing row to keep them immutable.
         enforce_hp_immutability(Some(&existing), &mut fields);
         assert_eq!(fields.get("hp.lr").map(String::as_str), Some("0.2"));
         assert_eq!(fields.get("hp.steps").map(String::as_str), Some("10"));
