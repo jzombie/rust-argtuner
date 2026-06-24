@@ -1,5 +1,5 @@
 [package]
-name = "argtuner-loss-generator-demo"
+name = "argtuner-interactive-probe"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,10 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+argtuner-common = { workspace = true }
 argtuner-talkback = { workspace = true, features = ["clap"] }
-argtuner-talkback-derive.workspace = true
+argtuner-talkback-derive = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-indicatif.workspace = true
-rand.workspace = true
-serde.workspace = true
-serde_json.workspace = true

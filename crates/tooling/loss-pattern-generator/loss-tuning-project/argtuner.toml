@@ -1,4 +1,4 @@
-template = "cargo run -q -p argtuner-loss-generator-demo -- --metric-key val_loss --checkpoint-dir {trial_dir} --pattern {pattern} --noise {noise} --spike-prob {spike_prob} --epoch-time {epoch_time}"
+template = "cargo run -q -p argtuner-loss-pattern-generator -- --metric-key val_loss --checkpoint-dir {trial_dir} --pattern {pattern} --noise {noise} --spike-prob {spike_prob} --epoch-time {epoch_time}"
 
 [project]
 metric_key = "val_loss"

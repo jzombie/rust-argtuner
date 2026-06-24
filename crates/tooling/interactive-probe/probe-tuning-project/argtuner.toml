@@ -1,4 +1,4 @@
-template = "cargo run -q -p argtuner-interactive-probe-demo -- --metric-key metric --checkpoint-dir {trial_dir}"
+template = "cargo run -q -p argtuner-interactive-probe -- --metric-key metric --checkpoint-dir {trial_dir}"
 
 [project]
 metric_key = "metric"
