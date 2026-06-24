@@ -3,9 +3,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::constants::{
-    DUPLICATE_CONFIG_PREFIX, FIELD_TRIAL_ERROR, FIELD_TRIAL_ID, FIELD_TRIAL_STATUS, HP_PREFIX,
-};
+use crate::constants::{DUPLICATE_CONFIG_PREFIX, FIELD_TRIAL_ID, FIELD_TRIAL_STATUS, HP_PREFIX};
+
+/// Maps sorted (key, value) HP pairs → previously-scored cost.
+type TrialCache = HashMap<Vec<(String, String)>, f64>;
 
 /// Wraps a `CommandObjective` with a stop flag check and optional trial cache.
 ///
@@ -19,7 +20,7 @@ use crate::constants::{
 pub struct ControllableObjective {
     inner: crate::command::CommandObjective,
     stop_flag: Arc<AtomicBool>,
-    trial_cache: Option<Mutex<HashMap<Vec<(String, String)>, f64>>>,
+    trial_cache: Option<Mutex<TrialCache>>,
 }
 
 impl ControllableObjective {
@@ -33,7 +34,7 @@ impl ControllableObjective {
 
     /// Attach a trial result cache so that previously-scored HP configurations
     /// are returned immediately without re-running the command.
-    pub fn with_cache(mut self, cache: HashMap<Vec<(String, String)>, f64>) -> Self {
+    pub fn with_cache(mut self, cache: TrialCache) -> Self {
         self.trial_cache = Some(Mutex::new(cache));
         self
     }
@@ -76,26 +77,21 @@ impl ControllableObjective {
         let result = self.inner.eval(coords);
 
         // ---- cache insert on success ----
-        if let Some(ref cache) = self.trial_cache {
-            if let Ok(score) = result {
-                let key = self.cache_key(coords);
-                cache.lock().unwrap().insert(key, score);
-            }
+        if let (Some(cache), Ok(score)) = (self.trial_cache.as_ref(), result.as_ref()) {
+            let key = self.cache_key(coords);
+            cache.lock().unwrap().insert(key, *score);
         }
 
         // ---- recover from duplicate-config error by refreshing cache ----
-        if let Some(ref cache) = self.trial_cache {
-            if let Err(ref err) = result {
-                if err.starts_with(DUPLICATE_CONFIG_PREFIX) {
-                    if let Ok(fresh) = build_trial_result_cache(self.inner.store()) {
-                        let mut guard = cache.lock().unwrap();
-                        *guard = fresh;
-                        let key = self.cache_key(coords);
-                        if let Some(score) = guard.get(&key) {
-                            return Ok(*score);
-                        }
-                    }
-                }
+        if let (Some(cache), Err(err)) = (self.trial_cache.as_ref(), result.as_ref())
+            && err.starts_with(DUPLICATE_CONFIG_PREFIX)
+            && let Ok(fresh) = build_trial_result_cache(self.inner.store())
+        {
+            let mut guard = cache.lock().unwrap();
+            *guard = fresh;
+            let key = self.cache_key(coords);
+            if let Some(score) = guard.get(&key) {
+                return Ok(*score);
             }
         }
 
@@ -169,7 +165,7 @@ pub fn sweep_stale_running_trials(
         let is_running = row
             .get(FIELD_TRIAL_STATUS)
             .and_then(|s| s.parse::<TrialStatus>().ok())
-            .map_or(false, |s| s == TrialStatus::Running);
+            == Some(TrialStatus::Running);
         if !is_running {
             continue;
         }
@@ -184,10 +180,10 @@ pub fn sweep_stale_running_trials(
 
         // Delete the stale artifact directory.
         let trial_dir = artifacts_dir.join(format!("trial_{trial_id}"));
-        if trial_dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&trial_dir) {
-                eprintln!("WARN: failed to remove stale trial dir {trial_dir:?}: {e}");
-            }
+        if trial_dir.exists()
+            && let Err(e) = std::fs::remove_dir_all(&trial_dir)
+        {
+            eprintln!("WARN: failed to remove stale trial dir {trial_dir:?}: {e}");
         }
 
         // Reset the trial record to a clean Running state.
@@ -210,7 +206,7 @@ pub fn sweep_stale_running_trials(
 /// Lets any sampler avoid re-running already-completed configs on resume.
 pub fn build_trial_result_cache(
     store: &crate::trial::store::TrialStore,
-) -> Result<HashMap<Vec<(String, String)>, f64>, String> {
+) -> Result<TrialCache, String> {
     use crate::constants::FIELD_SCORE;
     use crate::trial::store::TrialStatus;
 
@@ -218,13 +214,13 @@ pub fn build_trial_result_cache(
         .load_rows()
         .map_err(|e| format!("failed to load trials for cache: {e}"))?;
 
-    let mut cache = HashMap::new();
+    let mut cache = TrialCache::new();
 
     for row in &rows {
         let status = row
             .get(FIELD_TRIAL_STATUS)
             .and_then(|s| s.parse::<TrialStatus>().ok())
-            .map_or(false, |s| s == TrialStatus::Ok || s == TrialStatus::Error);
+            .is_some_and(|s| s == TrialStatus::Ok || s == TrialStatus::Error);
         if !status {
             continue;
         }

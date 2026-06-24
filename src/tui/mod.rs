@@ -286,13 +286,11 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
                 }
                 true
             }
-            KeyCode::Char('f') => {
-                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
-                    toggle_chart_view(app);
-                    true
-                } else {
-                    false
-                }
+            KeyCode::Char('f')
+                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics =>
+            {
+                toggle_chart_view(app);
+                true
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
@@ -311,29 +309,23 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
                     false
                 }
             }
-            KeyCode::Char('+') | KeyCode::Char('=') => {
-                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
-                    zoom_charts(app, 0.8);
-                    true
-                } else {
-                    false
-                }
+            KeyCode::Char('+') | KeyCode::Char('=')
+                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics =>
+            {
+                zoom_charts(app, 0.8);
+                true
             }
-            KeyCode::Char('-') => {
-                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
-                    zoom_charts(app, 1.25);
-                    true
-                } else {
-                    false
-                }
+            KeyCode::Char('-')
+                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics =>
+            {
+                zoom_charts(app, 1.25);
+                true
             }
-            KeyCode::Char('0') => {
-                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
-                    reset_chart_zoom(app);
-                    true
-                } else {
-                    false
-                }
+            KeyCode::Char('0')
+                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics =>
+            {
+                reset_chart_zoom(app);
+                true
             }
             KeyCode::PageDown | KeyCode::Char(']') => {
                 apply_focus_delta(app, 5);
@@ -343,23 +335,19 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
                 apply_focus_delta(app, -5);
                 true
             }
-            KeyCode::Right => {
-                if app.chart_mode == ChartMode::HyperParams && pane_focus(app) == PaneFocus::Charts
-                {
-                    pan_params(app, 1);
-                    true
-                } else {
-                    false
-                }
+            KeyCode::Right
+                if app.chart_mode == ChartMode::HyperParams
+                    && pane_focus(app) == PaneFocus::Charts =>
+            {
+                pan_params(app, 1);
+                true
             }
-            KeyCode::Left => {
-                if app.chart_mode == ChartMode::HyperParams && pane_focus(app) == PaneFocus::Charts
-                {
-                    pan_params(app, -1);
-                    true
-                } else {
-                    false
-                }
+            KeyCode::Left
+                if app.chart_mode == ChartMode::HyperParams
+                    && pane_focus(app) == PaneFocus::Charts =>
+            {
+                pan_params(app, -1);
+                true
             }
             _ => false,
         },
@@ -426,25 +414,21 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
                     }
                     true
                 }
-                MouseEventKind::ScrollLeft => {
+                MouseEventKind::ScrollLeft
                     if app.chart_mode == ChartMode::HyperParams
-                        && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts)
-                    {
-                        pan_params(app, -1);
-                        true
-                    } else {
-                        false
-                    }
+                        && pane_for_mouse(app, mouse.column, mouse.row)
+                            == Some(PaneFocus::Charts) =>
+                {
+                    pan_params(app, -1);
+                    true
                 }
-                MouseEventKind::ScrollRight => {
+                MouseEventKind::ScrollRight
                     if app.chart_mode == ChartMode::HyperParams
-                        && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts)
-                    {
-                        pan_params(app, 1);
-                        true
-                    } else {
-                        false
-                    }
+                        && pane_for_mouse(app, mouse.column, mouse.row)
+                            == Some(PaneFocus::Charts) =>
+                {
+                    pan_params(app, 1);
+                    true
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
                     if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {

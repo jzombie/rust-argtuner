@@ -109,7 +109,7 @@ pub fn print_top_trials(store: &TrialStore, n: usize) {
         if row
             .get(FIELD_TRIAL_STATUS)
             .and_then(|s| s.parse::<TrialStatus>().ok())
-            .map_or(true, |s| s != TrialStatus::Ok)
+            != Some(TrialStatus::Ok)
         {
             continue;
         }
@@ -254,7 +254,7 @@ fn collect_hparam_impacts(
         if row
             .get(FIELD_TRIAL_STATUS)
             .and_then(|s| s.parse::<TrialStatus>().ok())
-            .map_or(true, |s| s != TrialStatus::Ok)
+            != Some(TrialStatus::Ok)
         {
             continue;
         }

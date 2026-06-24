@@ -86,12 +86,11 @@ impl Tuner {
 
         // Sweep stale Running trials from a prior interrupted run so that
         // PSO's duplicate check and SHA's artifact copy behave correctly.
-        if temp_root.is_none() {
-            if let Err(e) =
+        if temp_root.is_none()
+            && let Err(e) =
                 sweep_stale_running_trials(&store_for_summary, &self.project.artifacts_dir())
-            {
-                eprintln!("WARN: stale trial sweep failed (continuing): {e}");
-            }
+        {
+            eprintln!("WARN: stale trial sweep failed (continuing): {e}");
         }
 
         match config.sampler.kind {

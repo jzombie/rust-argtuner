@@ -1,15 +1,12 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use argmin::core::PopulationState;
 use argmin::core::observers::{Observe, ObserverMode};
-use argmin::core::{CostFunction, Executor, KV, State};
+use argmin::core::{CostFunction, Executor, KV, PopulationState, State};
 use argmin::solver::particleswarm::Particle;
 use argmin::solver::particleswarm::ParticleSwarm;
 
-use crate::checkpoint::{
-    ControllableObjective, build_trial_result_cache, sweep_stale_running_trials,
-};
+use crate::checkpoint::{ControllableObjective, build_trial_result_cache};
 use crate::trial::store::TrialStore;
 
 // ---------------------------------------------------------------------------
@@ -36,13 +33,9 @@ struct PsoCheckpointSaver {
     frequency: u64,
 }
 
-impl Observe<PopulationState<Particle<Vec<f64>, f64>, f64>> for PsoCheckpointSaver {
-    fn observe_iter(
-        &mut self,
-        state: &PopulationState<Particle<Vec<f64>, f64>, f64>,
-        _kv: &KV,
-    ) -> Result<(), argmin::core::Error> {
-        if state.iter % self.frequency == 0 {
+impl Observe<PsoState> for PsoCheckpointSaver {
+    fn observe_iter(&mut self, state: &PsoState, _kv: &KV) -> Result<(), argmin::core::Error> {
+        if state.iter.is_multiple_of(self.frequency) {
             save_checkpoint(&self.store, &self.solver_config, state)
                 .map_err(|e| argmin::core::Error::msg(format!("checkpoint save failed: {e}")))?;
         }
@@ -95,9 +88,7 @@ impl PsoSolverConfig {
 /// Replace non-finite float fields so that `serde_json` can round-trip the
 /// state without error.  `serde_json` by default rejects `NaN`, `Infinity`,
 /// and `-Infinity`.
-fn sanitize_state(
-    state: &PopulationState<Particle<Vec<f64>, f64>, f64>,
-) -> PopulationState<Particle<Vec<f64>, f64>, f64> {
+fn sanitize_state(state: &PsoState) -> PsoState {
     let mut s = state.clone();
     if !s.cost.is_finite() {
         s.cost = 0.0;
@@ -127,7 +118,7 @@ fn sanitize_state(
 fn save_checkpoint(
     store: &TrialStore,
     config: &PsoSolverConfig,
-    state: &PopulationState<Particle<Vec<f64>, f64>, f64>,
+    state: &PsoState,
 ) -> Result<(), String> {
     let sanitized = sanitize_state(state);
     let json = serde_json::to_string(&sanitized)
@@ -147,7 +138,7 @@ fn load_checkpoint(
     store: &TrialStore,
     current_config: &PsoSolverConfig,
     current_space: &crate::SearchSpace,
-) -> Result<Option<PopulationState<Particle<Vec<f64>, f64>, f64>>, String> {
+) -> Result<Option<PsoState>, String> {
     let json = match store.load_metadata(PSO_CHECKPOINT_KEY) {
         Ok(Some(v)) => v,
         Ok(None) => return Ok(None),
@@ -165,25 +156,24 @@ fn load_checkpoint(
         Err(_) => String::new(),
     };
 
-    if !saved_cfg_json.is_empty() {
-        if let Ok(saved_cfg) = serde_json::from_str::<PsoSolverConfig>(&saved_cfg_json) {
-            if saved_cfg != *current_config {
-                let msg = format!(
-                    "PSO checkpoint config mismatch (saved: inertia={}, cognitive={}, \
+    if !saved_cfg_json.is_empty()
+        && let Ok(saved_cfg) = serde_json::from_str::<PsoSolverConfig>(&saved_cfg_json)
+        && saved_cfg != *current_config
+    {
+        let msg = format!(
+            "PSO checkpoint config mismatch (saved: inertia={}, cognitive={}, \
                      social={}, particles={}; current: inertia={}, cognitive={}, \
                      social={}, particles={})",
-                    saved_cfg.weight_inertia,
-                    saved_cfg.weight_cognitive,
-                    saved_cfg.weight_social,
-                    saved_cfg.num_particles,
-                    current_config.weight_inertia,
-                    current_config.weight_cognitive,
-                    current_config.weight_social,
-                    current_config.num_particles,
-                );
-                return Err(msg);
-            }
-        }
+            saved_cfg.weight_inertia,
+            saved_cfg.weight_cognitive,
+            saved_cfg.weight_social,
+            saved_cfg.num_particles,
+            current_config.weight_inertia,
+            current_config.weight_cognitive,
+            current_config.weight_social,
+            current_config.num_particles,
+        );
+        return Err(msg);
     }
 
     // Validate the saved search space matches the current run.
@@ -192,21 +182,20 @@ fn load_checkpoint(
         _ => String::new(),
     };
 
-    if !saved_space_json.is_empty() {
-        if let Ok(saved_space) = serde_json::from_str::<crate::SearchSpace>(&saved_space_json) {
-            // Compare param specs by their JSON representation since
-            // SearchSpace does not implement PartialEq.
-            let current_json = serde_json::to_value(current_space).unwrap_or_default();
-            let saved_json = serde_json::to_value(&saved_space).unwrap_or_default();
-            if current_json != saved_json {
-                let saved_names: Vec<&str> = saved_space.params.iter().map(|p| p.name()).collect();
-                let current_names: Vec<&str> =
-                    current_space.params.iter().map(|p| p.name()).collect();
-                return Err(format!(
-                    "PSO checkpoint search space mismatch: \
+    if !saved_space_json.is_empty()
+        && let Ok(saved_space) = serde_json::from_str::<crate::SearchSpace>(&saved_space_json)
+    {
+        // Compare param specs by their JSON representation since
+        // SearchSpace does not implement PartialEq.
+        let current_json = serde_json::to_value(current_space).unwrap_or_default();
+        let saved_json = serde_json::to_value(&saved_space).unwrap_or_default();
+        if current_json != saved_json {
+            let saved_names: Vec<&str> = saved_space.params.iter().map(|p| p.name()).collect();
+            let current_names: Vec<&str> = current_space.params.iter().map(|p| p.name()).collect();
+            return Err(format!(
+                "PSO checkpoint search space mismatch: \
                      saved params {saved_names:?} != current params {current_names:?}"
-                ));
-            }
+            ));
         }
     }
 
@@ -215,6 +204,9 @@ fn load_checkpoint(
         Err(e) => Err(format!("corrupt PSO checkpoint: {e}")),
     }
 }
+
+/// The population state type used throughout this module.
+type PsoState = PopulationState<Particle<Vec<f64>, f64>, f64>;
 
 // ---------------------------------------------------------------------------
 // Public PSO entry point
@@ -233,7 +225,7 @@ pub fn run_pso(
         type Output = f64;
 
         fn cost(&self, param: &Self::Param) -> Result<Self::Output, argmin::core::Error> {
-            self.0.eval(param).map_err(|e| argmin::core::Error::msg(e))
+            self.0.eval(param).map_err(argmin::core::Error::msg)
         }
     }
 
@@ -294,11 +286,8 @@ pub fn run_pso(
     let obj_wrapper = ObjWrapper(Arc::new(objective));
 
     // ---- build executor (with optional warm-start) ----
-    let mut executor = Executor::new(obj_wrapper, solver).configure(
-        |state: PopulationState<Particle<Vec<f64>, f64>, f64>| {
-            loaded_state.unwrap_or_else(|| state.max_iters(iters as u64))
-        },
-    );
+    let mut executor = Executor::new(obj_wrapper, solver)
+        .configure(|state: PsoState| loaded_state.unwrap_or_else(|| state.max_iters(iters as u64)));
 
     // ---- periodic checkpoint observer ----
     let frequency = (iters as u64 / 10).max(1);
@@ -375,9 +364,9 @@ mod tests {
         }
     }
 
-    fn make_state() -> PopulationState<Particle<Vec<f64>, f64>, f64> {
+    fn make_state() -> PsoState {
         let particle = Particle::new(vec![0.1, 0.2], 0.42, vec![0.01, 0.02]);
-        let mut state: PopulationState<Particle<Vec<f64>, f64>, f64> = PopulationState::new();
+        let mut state: PsoState = PopulationState::new();
         state.max_iters = 100;
         state.population = Some(vec![particle]);
         state.cost = 0.42;
@@ -484,7 +473,7 @@ mod tests {
     #[test]
     fn sanitize_replaces_non_finite() {
         let particle = Particle::new(vec![0.1, 0.2], f64::INFINITY, vec![0.01, 0.02]);
-        let mut state: PopulationState<Particle<Vec<f64>, f64>, f64> = PopulationState::new();
+        let mut state: PsoState = PopulationState::new();
         state.population = Some(vec![particle]);
         state.cost = f64::INFINITY;
         state.best_cost = f64::NEG_INFINITY;
@@ -663,7 +652,8 @@ mod tests {
         std::fs::write(stale_dir.join("partial.pt"), "partial").expect("write");
 
         // ---- sweep stale trials ----
-        sweep_stale_running_trials(&store, &dir.path().join("artifacts")).expect("sweep");
+        crate::checkpoint::sweep_stale_running_trials(&store, &dir.path().join("artifacts"))
+            .expect("sweep");
 
         // Verify stale dir was deleted.
         assert!(!stale_dir.exists(), "stale trial dir should be swept");
