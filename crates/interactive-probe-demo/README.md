@@ -1,4 +1,4 @@
-# argtuner-interactive-probe
+# argtuner-interactive-probe-demo
 
 Interactive CLI that emits ARGTUNER event lines so you can manually
 drive the tuner and validate logging/UX.
@@ -6,7 +6,7 @@ drive the tuner and validate logging/UX.
 Primary usage (run the bundled probe project):
 
 ```bash
-cargo run -- run crates/interactive-probe/probe-tuning-project
+cargo run -- run crates/interactive-probe-demo/probe-tuning-project
 ```
 
 Commands:
@@ -54,7 +54,7 @@ max = 0.01
 Template file (or `template` value in `argtuner.toml`):
 
 ```text
-cargo run -q -p argtuner-interactive-probe -- --metric-key metric --checkpoint-dir {trial_dir}
+cargo run -q -p argtuner-interactive-probe-demo -- --metric-key metric --checkpoint-dir {trial_dir}
 ```
 
 3) Run the tuner from the repo root:

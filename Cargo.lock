@@ -155,7 +155,7 @@ name = "argtuner-common"
 version = "0.1.0-alpha"
 
 [[package]]
-name = "argtuner-interactive-probe"
+name = "argtuner-interactive-probe-demo"
 version = "0.1.0-alpha"
 dependencies = [
  "argtuner-common",
@@ -165,7 +165,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "argtuner-loss-generator"
+name = "argtuner-loss-generator-demo"
 version = "0.1.0-alpha"
 dependencies = [
  "argtuner-talkback",

@@ -15,8 +15,8 @@ members = [
     "bindings/rust",
     "bindings/talkback-derive",
     "crates/common",
-    "crates/interactive-probe",
-    "crates/loss-generator",
+    "crates/interactive-probe-demo",
+    "crates/loss-generator-demo",
     "crates/term-wm",
 ]
 resolver = "2"

@@ -11,18 +11,18 @@ Ensure you have the `argtuner` workspace set up.
 Run the tuner from the repository root, pointing it to this project directory:
 
 ```bash
-cargo run -p argtuner -- run crates/loss-generator/loss-tuning-project
+cargo run -p argtuner -- run crates/loss-generator-demo/loss-tuning-project
 ```
 
 Viewing in TUI app:
 
 ```bash
-cargo run -- watch --project crates/loss-generator/loss-tuning-project
+cargo run -- watch --project crates/loss-generator-demo/loss-tuning-project
 ```
 
 ## How it works
 
-The project uses the `argtuner-loss-generator` crate (located in `../../`) as the trial command.
+The project uses the `argtuner-loss-generator-demo` crate (located in `../../`) as the trial command.
 
 The `argtuner.toml` configuration defines a search space that explores different synthetic loss patterns:
 
