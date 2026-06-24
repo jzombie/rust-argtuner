@@ -263,6 +263,13 @@ impl WindowManagerHost<RegionId> for AppState {
     fn windows(&mut self) -> &mut WindowManager<RegionId> {
         &mut self.windows
     }
+
+    fn open_exit_confirm(&mut self) {
+        let mut confirm = term_wm::ConfirmOverlayComponent::new();
+        confirm.open("Exit", "Exit the tuner?");
+        self.windows()
+            .open_overlay(term_wm::window::OverlayId::ExitConfirm, Box::new(confirm));
+    }
 }
 
 fn handle_event(app: &mut AppState, event: &Event) -> bool {
