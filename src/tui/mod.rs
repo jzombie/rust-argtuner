@@ -406,9 +406,7 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
             _ => false,
         },
         Event::Mouse(mouse) => {
-            if app.windows.handle_layout_event(event) {
-                return true;
-            }
+
             let ctx = ComponentContext::new(true);
             if app.trials_list.handle_event(event, &ctx) {
                 return true;
