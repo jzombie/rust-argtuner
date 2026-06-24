@@ -146,17 +146,19 @@ impl Default for StopFlag {
 }
 
 /// Find all trials with status=`Running`, delete their artifact directories,
-/// and mark them as `Error`.  Returns the number of trials swept.
+/// and reset them to a clean state so the sampler can re-issue `eval` with
+/// the same `trial_id` and restart the interrupted command.
 ///
 /// This is called at the start of a resume to clean up stale entries left
 /// by a Ctrl-C'd run so that:
 ///   - PSO's duplicate-config check does not block re-evaluation
 ///   - SHA promotion does not copy partial artifacts from the interrupted parent
+///   - The trial slot is preserved and the command re-runs with a fresh artifact dir
 pub fn sweep_stale_running_trials(
     store: &crate::trial::store::TrialStore,
     artifacts_dir: &Path,
 ) -> Result<usize, String> {
-    use crate::trial::store::{TrialRecord, TrialStatus};
+    use crate::trial::store::TrialStatus;
 
     let rows = store
         .load_rows()
@@ -180,7 +182,7 @@ pub fn sweep_stale_running_trials(
             None => continue,
         };
 
-        // Delete the artifact directory for this trial.
+        // Delete the stale artifact directory.
         let trial_dir = artifacts_dir.join(format!("trial_{trial_id}"));
         if trial_dir.exists() {
             if let Err(e) = std::fs::remove_dir_all(&trial_dir) {
@@ -188,28 +190,19 @@ pub fn sweep_stale_running_trials(
             }
         }
 
-        // Mark the trial as Error so it doesn't block future evaluations.
-        let mut fields: std::collections::BTreeMap<String, String> = row
-            .iter()
-            .filter(|(k, _)| *k != FIELD_TRIAL_STATUS)
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        fields.insert(
-            FIELD_TRIAL_ERROR.to_string(),
-            "interrupted by previous run".to_string(),
-        );
-
-        if let Err(e) = store.update(&TrialRecord {
-            trial_id,
-            status: TrialStatus::Error,
-            elapsed_ms: 0,
-            error: Some("interrupted by previous run".to_string()),
-            fields,
-        }) {
-            eprintln!("WARN: failed to update stale trial {trial_id}: {e}");
+        // Reset the trial record to a clean Running state.
+        if let Err(e) = store.reset_trial(trial_id) {
+            eprintln!("WARN: failed to reset stale trial {trial_id}: {e}");
         }
 
+        eprintln!("INFO: reset stale trial {trial_id} (interrupted by previous run)");
         count += 1;
+    }
+
+    if count > 0 {
+        eprintln!(
+            "INFO: cleaned up {count} stale trial(s) from previous run"
+        );
     }
 
     Ok(count)
@@ -363,9 +356,10 @@ mod tests {
 
     #[test]
     // Scenario: a Ctrl-C'd run left a trial with status=Running and an
-    // artifact directory.  The sweep must delete the directory and mark the
-    // trial as Error so that PSO's duplicate check doesn't block it.
-    fn sweep_removes_artifact_dir_and_marks_error() {
+    // artifact directory.  The sweep must delete the directory and reset
+    // the trial to a clean Running state so the sampler can re-issue eval
+    // with the same trial_id and restart the interrupted command.
+    fn sweep_resets_running_trial() {
         let dir = tempfile::tempdir().expect("tempdir");
         let template = CommandTemplate::new("echo".to_string());
         let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template);
@@ -393,7 +387,7 @@ mod tests {
         // Artifact directory should be gone.
         assert!(!trial_dir.exists(), "trial dir should be deleted");
 
-        // Trial should now be Error.
+        // Trial should still be Running (reset, not Error).
         let rows = store.load_rows().expect("load rows");
         let row = rows
             .iter()
@@ -401,18 +395,26 @@ mod tests {
             .expect("trial 0 should exist");
         assert_eq!(
             row.get(crate::FIELD_TRIAL_STATUS).map(String::as_str),
-            Some("error")
+            Some("running")
         );
+        // Fields should be empty (cleared by reset).
+        assert!(
+            row.get(format!("{HP_PREFIX}x").as_str()).map(String::as_str).unwrap_or("")
+                .is_empty(),
+            "HP fields should be cleared after reset"
+        );
+        // Error should be empty (cleared by reset, fill_row sets header to "").
         assert_eq!(
             row.get(crate::FIELD_TRIAL_ERROR).map(String::as_str),
-            Some("interrupted by previous run")
+            Some(""),
+            "error should be cleared after reset"
         );
     }
 
     #[test]
     // Scenario: a Running trial with no artifact directory (e.g. Ctrl-C
-    // happened before the dir was created).  The sweep should still mark it
-    // as Error without crashing.
+    // happened before the dir was created).  The sweep should still reset
+    // it without crashing.
     fn sweep_handles_missing_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
         let template = CommandTemplate::new("echo".to_string());
@@ -435,7 +437,7 @@ mod tests {
         let count = sweep_stale_running_trials(&store, &artifacts_dir).expect("sweep");
         assert_eq!(count, 1, "should sweep one trial");
 
-        // Trial should now be Error.
+        // Trial should still be Running (reset).
         let rows = store.load_rows().expect("load rows");
         let row = rows
             .iter()
@@ -443,13 +445,13 @@ mod tests {
             .expect("trial 0 should exist");
         assert_eq!(
             row.get(crate::FIELD_TRIAL_STATUS).map(String::as_str),
-            Some("error")
+            Some("running")
         );
     }
 
     #[test]
     // Scenario: only Running trials are swept; Ok and Error trials are
-    // left untouched.
+    // left completely untouched.
     fn sweep_ignores_non_running() {
         let dir = tempfile::tempdir().expect("tempdir");
         let template = CommandTemplate::new("echo".to_string());
@@ -495,9 +497,9 @@ mod tests {
     }
 
     #[test]
-    // Scenario: `find_duplicate_config` (used by PSO) already skips
-    // Running and Error trials.  The sweep marks stale Running trials as
-    // Error, confirming they stay skipped — no regression.
+    // Scenario: `find_duplicate_config` (used by PSO) skips Running trials.
+    // After sweep resets the trial, it stays Running so it still doesn't
+    // block.  No regression.
     fn sweep_does_not_regress_duplicate_check() {
         let dir = tempfile::tempdir().expect("tempdir");
         let template = CommandTemplate::new("echo".to_string());
@@ -523,15 +525,171 @@ mod tests {
         let dup = store.find_duplicate_config(None, &query).expect("find");
         assert!(dup.is_none(), "Running trial should not block PSO");
 
-        // Run sweep — marks it as Error.
+        // Run sweep — resets the trial to clean Running.
         let artifacts_dir = dir.path().join("artifacts");
         sweep_stale_running_trials(&store, &artifacts_dir).expect("sweep");
 
-        // After sweep: Error trials should also not block.
+        // After sweep: still Running so still should not block.
         let dup_after = store.find_duplicate_config(None, &query).expect("find");
         assert!(
             dup_after.is_none(),
-            "Error trial should not block after sweep"
+            "reset Running trial should not block after sweep"
         );
+    }
+
+    #[test]
+    // Scenario: after sweep, a reset Running trial can be re-evaluated with
+    // the same trial_id via eval_with_overrides_retryable (simulating the
+    // sampler re-issuing the interrupted trial).  The eval code path takes
+    // the "existing" branch (non-None load_fields) and renders fresh fields.
+    fn sweep_allows_re_eval_with_same_trial_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let template = CommandTemplate::new(crate::test_support::bin_command("emit_env_result"));
+        let store = TrialStore::new(
+            dir.path().join(TRIALS_CSV_FILENAME),
+            template.clone(),
+        );
+
+        let space = crate::SearchSpace {
+            params: vec![crate::ParamSpec::Float {
+                name: "x".to_string(),
+                min: 0.0,
+                max: 1.0,
+                log_scale: false,
+                step: None,
+                format: None,
+            }],
+        };
+
+        let objective = crate::command::CommandObjective::new(
+            store,
+            template,
+            space,
+            dir.path().join("artifacts"),
+            "metric".to_string(),
+            crate::Goal::Min,
+            true,
+            0,
+        );
+
+        // Create a stale Running trial.
+        let mut fields = BTreeMap::new();
+        fields.insert(format!("{HP_PREFIX}x"), "0.5".to_string());
+        objective
+            .store()
+            .append(&TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Running,
+                elapsed_ms: 0,
+                error: None,
+                fields,
+            })
+            .expect("append");
+
+        // Sweep it.
+        sweep_stale_running_trials(objective.store(), &dir.path().join("artifacts"))
+            .expect("sweep");
+
+        // Now re-evaluate with the same trial_id — should succeed.
+        let mut overrides = crate::TrialOverrides::default();
+        overrides
+            .fields
+            .insert(crate::FIELD_TRIAL_CONFIG_ID.to_string(), "0".to_string());
+        overrides
+            .fields
+            .insert(format!("{HP_PREFIX}x"), "0.5".to_string());
+
+        let result =
+            objective.eval_with_overrides_retryable(&[0.5], &overrides, Some(0));
+        assert!(
+            result.is_ok(),
+            "should allow re-eval with same trial_id after sweep: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    // Scenario: an Ok trial is a parent in an SHA chain (has config_id).
+    // A stale Running trial also exists.  Sweep must only touch the Running
+    // trial and leave the Ok parent completely untouched.
+    fn sweep_does_not_touch_parent_trial() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = CommandTemplate::new("echo".to_string());
+        let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template);
+        let artifacts_dir = dir.path().join("artifacts");
+
+        // Ok parent trial (config_id=0) with artifact dir and fields.
+        let parent_dir = artifacts_dir.join("trial_0");
+        std::fs::create_dir_all(&parent_dir).expect("create");
+        std::fs::write(parent_dir.join("checkpoint.pt"), "weights").expect("write");
+        let mut parent_fields = BTreeMap::new();
+        parent_fields.insert(crate::FIELD_TRIAL_CONFIG_ID.to_string(), "0".to_string());
+        parent_fields.insert(format!("{HP_PREFIX}x"), "0.5".to_string());
+        parent_fields.insert(crate::FIELD_SCORE.to_string(), "0.42".to_string());
+        store
+            .append(&TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Ok,
+                elapsed_ms: 100,
+                error: None,
+                fields: parent_fields,
+            })
+            .expect("append parent");
+
+        // Stale Running trial (config_id=1) with artifact dir.
+        let stale_dir = artifacts_dir.join("trial_1");
+        std::fs::create_dir_all(&stale_dir).expect("create");
+        std::fs::write(stale_dir.join("partial.pt"), "partial").expect("write");
+        let mut stale_fields = BTreeMap::new();
+        stale_fields.insert(crate::FIELD_TRIAL_CONFIG_ID.to_string(), "1".to_string());
+        stale_fields.insert(format!("{HP_PREFIX}x"), "0.6".to_string());
+        store
+            .append(&TrialRecord {
+                trial_id: 1,
+                status: TrialStatus::Running,
+                elapsed_ms: 0,
+                error: None,
+                fields: stale_fields,
+            })
+            .expect("append stale");
+
+        // Run sweep.
+        let count = sweep_stale_running_trials(&store, &artifacts_dir).expect("sweep");
+        assert_eq!(count, 1, "should sweep only the Running trial");
+
+        // Parent trial is completely untouched.
+        assert!(
+            parent_dir.exists(),
+            "parent trial dir should still exist"
+        );
+        assert!(
+            parent_dir.join("checkpoint.pt").exists(),
+            "parent checkpoint should still exist"
+        );
+        let rows = store.load_rows().expect("load rows");
+        let parent_row = rows
+            .iter()
+            .find(|r| r.get("trial_id") == Some(&"0".to_string()))
+            .expect("parent should exist");
+        assert_eq!(
+            parent_row.get(crate::FIELD_TRIAL_STATUS).map(String::as_str),
+            Some("ok"),
+            "parent status unchanged"
+        );
+        assert_eq!(
+            parent_row.get(crate::FIELD_SCORE).map(String::as_str),
+            Some("0.42"),
+            "parent score unchanged"
+        );
+        // find_last_trial_for_config should still return the parent.
+        let parent_id = store
+            .find_last_trial_for_config(0)
+            .expect("find parent")
+            .expect("should find parent trial");
+        assert_eq!(parent_id, 0, "parent trial relationship intact");
+
+        // Stale trial dir is gone.
+        assert!(!stale_dir.exists(), "stale trial dir should be deleted");
     }
 }

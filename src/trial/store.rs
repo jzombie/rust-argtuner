@@ -83,22 +83,34 @@ impl TrialStore {
         }
     }
 
+    /// Run a write operation against the DB, then atomically rewrite the CSV
+    /// snapshot.  Every public write method must go through this helper so that
+    /// the CSV is never stale after a write.
+    fn write<F>(&self, f: F) -> std::io::Result<()>
+    where
+        F: FnOnce(&TrialDb) -> std::io::Result<()>,
+    {
+        f(&self.db)?;
+        self.sync_csv()
+    }
+
     pub fn append(&self, record: &TrialRecord) -> std::io::Result<()> {
         let record = record_with_time(record);
-        self.db.upsert_record(&record)?;
-        self.sync_csv()
+        self.write(|db| db.upsert_record(&record))
     }
 
     pub fn append_epoch(&self, record: &TrialRecord) -> std::io::Result<()> {
         let record = record_with_time(record);
-        self.db.insert_epoch_record(&record)?;
-        self.sync_csv()
+        self.write(|db| db.insert_epoch_record(&record))
     }
 
     pub fn update(&self, record: &TrialRecord) -> std::io::Result<()> {
         let record = record_with_time(record);
-        self.db.upsert_record(&record)?;
-        self.sync_csv()
+        self.write(|db| db.upsert_record(&record))
+    }
+
+    pub fn reset_trial(&self, trial_id: usize) -> std::io::Result<()> {
+        self.write(|db| db.reset_trial(trial_id))
     }
 
     pub fn rebuild_csv(&self) -> std::io::Result<()> {

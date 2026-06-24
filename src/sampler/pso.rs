@@ -7,7 +7,7 @@ use argmin::core::{CostFunction, Executor, KV, State};
 use argmin::solver::particleswarm::Particle;
 use argmin::solver::particleswarm::ParticleSwarm;
 
-use crate::checkpoint::{ControllableObjective, build_trial_result_cache};
+use crate::checkpoint::{ControllableObjective, build_trial_result_cache, sweep_stale_running_trials};
 use crate::trial::store::TrialStore;
 
 // ---------------------------------------------------------------------------
@@ -555,6 +555,86 @@ mod tests {
             chk.population.as_ref().map(|p| p.len()),
             Some(10),
             "checkpoint should have 10 particles after fresh start"
+        );
+    }
+
+    #[test]
+    // Full chain: PSO runs, creates checkpoint and trials.  A stale Running
+    // trial is injected.  Sweep cleans it up, then PSO resumes from checkpoint
+    // and continues optimizing.  Verifies the sweep does not interfere with
+    // checkpoint loading and the stale trial is reset for re-execution.
+    fn pso_sweep_then_resume() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // ---- first PSO run ----
+        let obj1 = make_pso_objective(&dir);
+        run_pso(obj1, 2, 3).expect("first PSO run");
+
+        // Verify checkpoint was saved.
+        let store = dummy_store(&dir);
+        let chk_before = load_checkpoint(
+            &store,
+            &PsoSolverConfig::from_parts(3),
+        )
+        .expect("load before")
+        .expect("checkpoint should exist");
+        let start_iter = chk_before.iter;
+
+        // ---- inject a stale Running trial (simulates Ctrl-C) ----
+        let stale_id = store.next_trial_id().expect("next id");
+        let mut stale_fields = std::collections::BTreeMap::new();
+        stale_fields.insert(format!("{}x0", crate::HP_PREFIX), "0.5".to_string());
+        stale_fields.insert(format!("{}x1", crate::HP_PREFIX), "0.5".to_string());
+        store
+            .append(&crate::trial::store::TrialRecord {
+                trial_id: stale_id,
+                status: crate::trial::store::TrialStatus::Running,
+                elapsed_ms: 0,
+                error: None,
+                fields: stale_fields,
+            })
+            .expect("inject stale");
+
+        let stale_dir = dir.path().join("artifacts").join(format!("trial_{stale_id}"));
+        std::fs::create_dir_all(&stale_dir).expect("create stale dir");
+        std::fs::write(stale_dir.join("partial.pt"), "partial").expect("write");
+
+        // ---- sweep stale trials ----
+        sweep_stale_running_trials(&store, &dir.path().join("artifacts"))
+            .expect("sweep");
+
+        // Verify stale dir was deleted.
+        assert!(!stale_dir.exists(), "stale trial dir should be swept");
+
+        // Verify stale trial was reset to Running with empty fields.
+        let rows = store.load_rows().expect("load rows");
+        let stale_row = rows
+            .iter()
+            .find(|r| r.get("trial_id").map(String::as_str) == Some(&stale_id.to_string()))
+            .expect("stale trial should still exist");
+        assert_eq!(
+            stale_row.get(crate::FIELD_TRIAL_STATUS).map(String::as_str),
+            Some("running"),
+            "stale trial should stay Running after sweep"
+        );
+
+        // ---- resume PSO ----
+        let obj2 = make_pso_objective(&dir);
+        run_pso(obj2, 2, 3).expect("resumed PSO run");
+
+        // Verify checkpoint advanced past the original start_iter.
+        let store2 = dummy_store(&dir);
+        let chk_after = load_checkpoint(
+            &store2,
+            &PsoSolverConfig::from_parts(3),
+        )
+        .expect("load after")
+        .expect("checkpoint should exist after resume");
+        assert!(
+            chk_after.iter > start_iter,
+            "PSO should have advanced from iter={} to iter={}",
+            start_iter,
+            chk_after.iter
         );
     }
 }

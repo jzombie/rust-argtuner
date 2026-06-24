@@ -43,6 +43,23 @@ impl TrialDb {
         })
     }
 
+    pub fn reset_trial(&self, trial_id: usize) -> std::io::Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                r#"
+                UPDATE trial_records
+                SET status = 'running',
+                    elapsed_ms = 0,
+                    error = NULL,
+                    fields_json = '{}'
+                WHERE trial_id = ?1
+                "#,
+                params![trial_id as i64],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn insert_epoch_record(&self, record: &TrialRecord) -> std::io::Result<()> {
         self.with_conn(|conn| {
             let fields_json =
