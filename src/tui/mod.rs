@@ -22,9 +22,7 @@ use term_wm::layout::{LayoutNode, TilingLayout, rect_contains};
 use term_wm::runner::{WindowManagerHost, WindowProvider, run_window_app};
 use term_wm::ui::UiFrame;
 use term_wm::window::WindowManager;
-use term_wm::{
-    ListComponent, ScrollViewComponent, ToggleItem, ToggleListComponent,
-};
+use term_wm::{ListComponent, ScrollViewComponent, ToggleItem, ToggleListComponent};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
@@ -403,88 +401,74 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
             }
             _ => false,
         },
-        Event::Mouse(mouse) => {
-            match mouse.kind {
-                MouseEventKind::ScrollUp => {
-                    let delta = -1;
-                    let pane = pane_for_mouse(app, mouse.column, mouse.row);
-                    if pane == Some(PaneFocus::Charts)
+        Event::Mouse(mouse) => match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
+                    if pane == PaneFocus::Charts
                         && mouse.modifiers.contains(KeyModifiers::CONTROL)
                         && app.chart_mode == ChartMode::Metrics
                     {
                         zoom_charts(app, 0.8);
-                        return true;
+                        return false;
                     }
-                    if pane == Some(PaneFocus::Details)
-                        && app.chart_mode == ChartMode::HyperParams
-                    {
+                    if pane == PaneFocus::Details && app.chart_mode == ChartMode::HyperParams {
                         update_details_focus_for_mouse(app, mouse.column, mouse.row);
                     }
-                    apply_delta_for_pane(app, pane_focus(app), delta);
-                    true
                 }
-                MouseEventKind::ScrollDown => {
-                    let delta = 1;
-                    let pane = pane_for_mouse(app, mouse.column, mouse.row);
-                    if pane == Some(PaneFocus::Charts)
+                apply_delta_for_pane(app, pane_focus(app), -1);
+                false
+            }
+            MouseEventKind::ScrollDown => {
+                if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
+                    if pane == PaneFocus::Charts
                         && mouse.modifiers.contains(KeyModifiers::CONTROL)
                         && app.chart_mode == ChartMode::Metrics
                     {
                         zoom_charts(app, 1.25);
-                        return true;
+                        return false;
                     }
-                    if pane == Some(PaneFocus::Details)
-                        && app.chart_mode == ChartMode::HyperParams
-                    {
+                    if pane == PaneFocus::Details && app.chart_mode == ChartMode::HyperParams {
                         update_details_focus_for_mouse(app, mouse.column, mouse.row);
                     }
-                    apply_delta_for_pane(app, pane_focus(app), delta);
-                    true
                 }
-                MouseEventKind::ScrollLeft
-                    if app.chart_mode == ChartMode::HyperParams
-                        && pane_for_mouse(app, mouse.column, mouse.row)
-                            == Some(PaneFocus::Charts) =>
-                {
-                    pan_params(app, -1);
-                    true
-                }
-                MouseEventKind::ScrollRight
-                    if app.chart_mode == ChartMode::HyperParams
-                        && pane_for_mouse(app, mouse.column, mouse.row)
-                            == Some(PaneFocus::Charts) =>
-                {
-                    pan_params(app, 1);
-                    true
-                }
-                MouseEventKind::Down(MouseButton::Left) => {
-                    if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
-                        match pane {
-                            PaneFocus::Trials => {
-                                // Let normal component dispatch handle list item clicks
-                                false
-                            }
-                            PaneFocus::Charts => {
-                                if app.chart_mode == ChartMode::Metrics {
-                                    handle_chart_click(app, mouse.column, mouse.row);
-                                }
-                                true
-                            }
-                            PaneFocus::Details => {
-                                if app.chart_mode == ChartMode::HyperParams {
-                                    update_details_focus_for_mouse(app, mouse.column, mouse.row);
-                                    handle_details_click(app, mouse.column, mouse.row);
-                                }
-                                true
+                apply_delta_for_pane(app, pane_focus(app), 1);
+                false
+            }
+            MouseEventKind::ScrollLeft
+                if app.chart_mode == ChartMode::HyperParams
+                    && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts) =>
+            {
+                pan_params(app, -1);
+                false
+            }
+            MouseEventKind::ScrollRight
+                if app.chart_mode == ChartMode::HyperParams
+                    && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts) =>
+            {
+                pan_params(app, 1);
+                false
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
+                    match pane {
+                        PaneFocus::Trials => {}
+                        PaneFocus::Charts => {
+                            if app.chart_mode == ChartMode::Metrics {
+                                handle_chart_click(app, mouse.column, mouse.row);
                             }
                         }
-                    } else {
-                        false
+                        PaneFocus::Details => {
+                            if app.chart_mode == ChartMode::HyperParams {
+                                update_details_focus_for_mouse(app, mouse.column, mouse.row);
+                                handle_details_click(app, mouse.column, mouse.row);
+                            }
+                        }
                     }
                 }
-                _ => false,
+                false
             }
-        }
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -674,8 +658,12 @@ fn move_trial_selection(app: &mut AppState, delta: isize) {
     let before = app.trials_scroll_view.content.selected();
     app.trials_scroll_view.content.move_selection(delta);
     if app.trials_scroll_view.content.selected() != before {
-        app.charts_scroll_view.viewport_handle().scroll_vertical_to(0);
-        app.details_scroll_view.viewport_handle().scroll_vertical_to(0);
+        app.charts_scroll_view
+            .viewport_handle()
+            .scroll_vertical_to(0);
+        app.details_scroll_view
+            .viewport_handle()
+            .scroll_vertical_to(0);
     }
 }
 
@@ -688,24 +676,24 @@ fn refresh_trials(app: &mut AppState) {
                 msg.get("steps").and_then(|v| v.as_array()),
             )
         {
-                let rows: Vec<TrialRow> = steps
-                    .iter()
-                    .filter_map(|s| s.as_object())
-                    .map(|fields| {
-                        let mut map = BTreeMap::new();
-                        for (k, v) in fields {
-                            map.insert(k.clone(), v.as_str().unwrap_or("").to_string());
-                        }
-                        TrialRow {
-                            trial_id,
-                            status: "running".to_string(),
-                            elapsed_ms: 0,
-                            error: None,
-                            fields: map,
-                        }
-                    })
-                    .collect();
-                app.step_rows.entry(trial_id).or_default().extend(rows);
+            let rows: Vec<TrialRow> = steps
+                .iter()
+                .filter_map(|s| s.as_object())
+                .map(|fields| {
+                    let mut map = BTreeMap::new();
+                    for (k, v) in fields {
+                        map.insert(k.clone(), v.as_str().unwrap_or("").to_string());
+                    }
+                    TrialRow {
+                        trial_id,
+                        status: "running".to_string(),
+                        elapsed_ms: 0,
+                        error: None,
+                        fields: map,
+                    }
+                })
+                .collect();
+            app.step_rows.entry(trial_id).or_default().extend(rows);
         }
     }
     match load_trials(&app.db_path) {
@@ -714,10 +702,7 @@ fn refresh_trials(app: &mut AppState) {
             app.epoch_rows = epoch_rows;
             // Merge DB-persisted step rows with live subscriber data
             for (trial_id, rows) in step_rows {
-                app.step_rows
-                    .entry(trial_id)
-                    .or_default()
-                    .extend(rows);
+                app.step_rows.entry(trial_id).or_default().extend(rows);
             }
             // Preserve selection across data refreshes: set_items() resets
             // ListComponent.selected to 0, so save the current trial_id,
@@ -727,18 +712,25 @@ fn refresh_trials(app: &mut AppState) {
                 .trials
                 .get(app.trials_scroll_view.content.selected())
                 .map(|t| t.trial_id);
-            app.trials_scroll_view.content.set_items(build_trial_items(&app.trials));
+            app.trials_scroll_view
+                .content
+                .set_items(build_trial_items(&app.trials));
             if let Some(tid) = prev_trial_id
                 && let Some(pos) = app.trials.iter().position(|t| t.trial_id == tid)
-                    && pos != app.trials_scroll_view.content.selected() {
-                        let delta = pos as isize - app.trials_scroll_view.content.selected() as isize;
-                        app.trials_scroll_view.content.move_selection(delta);
-                    }
+                && pos != app.trials_scroll_view.content.selected()
+            {
+                let delta = pos as isize - app.trials_scroll_view.content.selected() as isize;
+                app.trials_scroll_view.content.move_selection(delta);
+            }
             let after = app.trials_scroll_view.content.selected();
             let current_trial_id = app.trials.get(after).map(|t| t.trial_id);
             if current_trial_id != prev_trial_id {
-                app.charts_scroll_view.viewport_handle().scroll_vertical_to(0);
-                app.details_scroll_view.viewport_handle().scroll_vertical_to(0);
+                app.charts_scroll_view
+                    .viewport_handle()
+                    .scroll_vertical_to(0);
+                app.details_scroll_view
+                    .viewport_handle()
+                    .scroll_vertical_to(0);
             }
             sync_param_toggles(app);
             app.last_error = None;
@@ -1063,7 +1055,10 @@ fn render_metric_charts(
 
             // Sync ScrollViewComponent state and render scrollbar
             let handle = app.charts_scroll_view.viewport_handle();
-            handle.set_content_size(area.width as usize, total_items * CHART_ITEM_HEIGHT as usize);
+            handle.set_content_size(
+                area.width as usize,
+                total_items * CHART_ITEM_HEIGHT as usize,
+            );
             {
                 let mut st = handle.shared.borrow_mut();
                 st.width = area.width as usize;
@@ -1078,8 +1073,7 @@ fn render_metric_charts(
             app.charts_scroll_view
                 .render(frame, area, &ComponentContext::new(focus));
 
-            let chart_offset =
-                handle.shared.borrow().offset_y / CHART_ITEM_HEIGHT as usize;
+            let chart_offset = handle.shared.borrow().offset_y / CHART_ITEM_HEIGHT as usize;
             let inner_area = app.charts_scroll_view.viewport_area;
 
             for (row, key) in metric_keys
