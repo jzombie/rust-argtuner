@@ -1,8 +1,6 @@
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use argtuner::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
@@ -30,7 +28,6 @@ use term_wm::{
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
-    let pending_events = Rc::new(RefCell::new(Vec::new()));
     let window_manager = WindowManager::new_embedded(RegionId::Trials);
     let mut step_subscriber = StepSubscriber::new();
     let _ = step_subscriber.connect(argtuner_common::STEP_PUBLISHER_PORT);
@@ -58,16 +55,12 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
             sv
         },
         charts_scroll_view: {
-            let mut sv = ScrollViewComponent::new(EventDispatchComponent {
-                pending_events: pending_events.clone(),
-            });
+            let mut sv = ScrollViewComponent::new(NoopComponent);
             sv.set_keyboard_enabled(false);
             sv
         },
         details_scroll_view: {
-            let mut sv = ScrollViewComponent::new(EventDispatchComponent {
-                pending_events: pending_events.clone(),
-            });
+            let mut sv = ScrollViewComponent::new(NoopComponent);
             sv.set_keyboard_enabled(false);
             sv
         },
@@ -79,8 +72,6 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         params_list: ToggleListComponent::new("Hyperparameters"),
         params_x_offset: 0,
         metrics_list: ToggleListComponent::new("Metrics"),
-        pending_events: pending_events.clone(),
-        dispatch: EventDispatchComponent { pending_events },
     };
 
     let mut output = ConsoleRenderTarget::new()?;
@@ -93,17 +84,10 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     result
 }
 
-struct EventDispatchComponent {
-    pending_events: Rc<RefCell<Vec<Event>>>,
-}
+struct NoopComponent;
 
-impl Component for EventDispatchComponent {
+impl Component for NoopComponent {
     fn render(&mut self, _frame: &mut UiFrame<'_>, _area: Rect, _ctx: &ComponentContext) {}
-
-    fn handle_event(&mut self, event: &Event, _ctx: &ComponentContext) -> bool {
-        self.pending_events.borrow_mut().push(event.clone());
-        true
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -130,8 +114,8 @@ struct AppState {
     last_error: Option<String>,
     windows: WindowManager<RegionId>,
     trials_scroll_view: ScrollViewComponent<ListComponent>,
-    charts_scroll_view: ScrollViewComponent<EventDispatchComponent>,
-    details_scroll_view: ScrollViewComponent<EventDispatchComponent>,
+    charts_scroll_view: ScrollViewComponent<NoopComponent>,
+    details_scroll_view: ScrollViewComponent<NoopComponent>,
     chart_zoom: f64,
     chart_view: ChartView,
     chart_selected: usize,
@@ -140,16 +124,14 @@ struct AppState {
     params_list: ToggleListComponent,
     params_x_offset: usize,
     metrics_list: ToggleListComponent,
-    pending_events: Rc<RefCell<Vec<Event>>>,
-    dispatch: EventDispatchComponent,
 }
 
 impl WindowProvider<RegionId> for AppState {
+    fn handle_app_event(&mut self, event: &Event) -> bool {
+        handle_event(self, event)
+    }
+
     fn enumerate_windows(&mut self) -> Vec<RegionId> {
-        let events: Vec<Event> = self.pending_events.borrow_mut().drain(..).collect();
-        for event in &events {
-            handle_event(self, event);
-        }
         if self.last_refresh.elapsed() >= self.poll {
             refresh_trials(self);
             self.last_refresh = Instant::now();
@@ -243,7 +225,7 @@ impl WindowProvider<RegionId> for AppState {
             RegionId::Trials => Some(&mut self.trials_scroll_view),
             RegionId::Charts => Some(&mut self.charts_scroll_view),
             RegionId::Details => Some(&mut self.details_scroll_view),
-            _ => Some(&mut self.dispatch),
+            _ => None,
         }
     }
 }
@@ -280,7 +262,6 @@ enum RegionId {
     Trials,
     Charts,
     Details,
-    TrialsInner,
     ChartsInner,
     ParamsInner,
     MetricsInner,
@@ -319,6 +300,11 @@ impl WindowManagerHost<RegionId> for AppState {
 fn handle_event(app: &mut AppState, event: &Event) -> bool {
     match event {
         Event::Key(key) => match key.code {
+            KeyCode::Esc => {
+                // Let Esc fall through to component dispatch so the WM
+                // can handle overlay close / passthrough.
+                false
+            }
             KeyCode::Char('q') => {
                 app.open_exit_confirm();
                 true
@@ -418,57 +404,41 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
             _ => false,
         },
         Event::Mouse(mouse) => {
-            let ctx = ComponentContext::new(true);
-            if app.trials_scroll_view.content.handle_event(event, &ctx) {
-                return true;
-            }
-            if app.chart_mode == ChartMode::HyperParams
-                && (app.params_list.handle_event(event, &ctx)
-                    || app.metrics_list.handle_event(event, &ctx))
-            {
-                return true;
-            }
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
                     let delta = -1;
-                    if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
-                        if mouse.modifiers.contains(KeyModifiers::CONTROL)
-                            && pane == PaneFocus::Charts
-                            && app.chart_mode == ChartMode::Metrics
-                        {
-                            zoom_charts(app, 0.8);
-                        } else {
-                            if pane == PaneFocus::Details
-                                && app.chart_mode == ChartMode::HyperParams
-                            {
-                                update_details_focus_for_mouse(app, mouse.column, mouse.row);
-                            }
-                            apply_delta_for_pane(app, pane, delta);
-                        }
-                    } else {
-                        apply_focus_delta(app, delta);
+                    let pane = pane_for_mouse(app, mouse.column, mouse.row);
+                    if pane == Some(PaneFocus::Charts)
+                        && mouse.modifiers.contains(KeyModifiers::CONTROL)
+                        && app.chart_mode == ChartMode::Metrics
+                    {
+                        zoom_charts(app, 0.8);
+                        return true;
                     }
+                    if pane == Some(PaneFocus::Details)
+                        && app.chart_mode == ChartMode::HyperParams
+                    {
+                        update_details_focus_for_mouse(app, mouse.column, mouse.row);
+                    }
+                    apply_delta_for_pane(app, pane_focus(app), delta);
                     true
                 }
                 MouseEventKind::ScrollDown => {
                     let delta = 1;
-                    if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
-                        if mouse.modifiers.contains(KeyModifiers::CONTROL)
-                            && pane == PaneFocus::Charts
-                            && app.chart_mode == ChartMode::Metrics
-                        {
-                            zoom_charts(app, 1.25);
-                        } else {
-                            if pane == PaneFocus::Details
-                                && app.chart_mode == ChartMode::HyperParams
-                            {
-                                update_details_focus_for_mouse(app, mouse.column, mouse.row);
-                            }
-                            apply_delta_for_pane(app, pane, delta);
-                        }
-                    } else {
-                        apply_focus_delta(app, delta);
+                    let pane = pane_for_mouse(app, mouse.column, mouse.row);
+                    if pane == Some(PaneFocus::Charts)
+                        && mouse.modifiers.contains(KeyModifiers::CONTROL)
+                        && app.chart_mode == ChartMode::Metrics
+                    {
+                        zoom_charts(app, 1.25);
+                        return true;
                     }
+                    if pane == Some(PaneFocus::Details)
+                        && app.chart_mode == ChartMode::HyperParams
+                    {
+                        update_details_focus_for_mouse(app, mouse.column, mouse.row);
+                    }
+                    apply_delta_for_pane(app, pane_focus(app), delta);
                     true
                 }
                 MouseEventKind::ScrollLeft
@@ -489,19 +459,25 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
                     if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
-                        if pane == PaneFocus::Trials {
-                            handle_trial_click(app, mouse.column, mouse.row);
-                        } else if pane == PaneFocus::Charts {
-                            if app.chart_mode == ChartMode::Metrics {
-                                handle_chart_click(app, mouse.column, mouse.row);
+                        match pane {
+                            PaneFocus::Trials => {
+                                // Let normal component dispatch handle list item clicks
+                                false
                             }
-                        } else if pane == PaneFocus::Details
-                            && app.chart_mode == ChartMode::HyperParams
-                        {
-                            update_details_focus_for_mouse(app, mouse.column, mouse.row);
-                            handle_details_click(app, mouse.column, mouse.row);
+                            PaneFocus::Charts => {
+                                if app.chart_mode == ChartMode::Metrics {
+                                    handle_chart_click(app, mouse.column, mouse.row);
+                                }
+                                true
+                            }
+                            PaneFocus::Details => {
+                                if app.chart_mode == ChartMode::HyperParams {
+                                    update_details_focus_for_mouse(app, mouse.column, mouse.row);
+                                    handle_details_click(app, mouse.column, mouse.row);
+                                }
+                                true
+                            }
                         }
-                        true
                     } else {
                         false
                     }
@@ -644,24 +620,6 @@ fn pane_for_mouse(app: &AppState, column: u16, row: u16) -> Option<PaneFocus> {
         return Some(PaneFocus::Details);
     }
     None
-}
-
-fn handle_trial_click(app: &mut AppState, column: u16, row: u16) {
-    let inner = app.windows.region(RegionId::TrialsInner);
-    if inner.height == 0 || !rect_contains(inner, column, row) {
-        return;
-    }
-    let offset_row = row.saturating_sub(inner.y) as usize;
-    let index = app.trials_scroll_view.content.selected().saturating_add(offset_row);
-    if index >= app.trials.len() {
-        return;
-    }
-    if index != app.trials_scroll_view.content.selected() {
-        let delta = index as isize - app.trials_scroll_view.content.selected() as isize;
-        app.trials_scroll_view.content.move_selection(delta);
-        app.charts_scroll_view.viewport_handle().scroll_vertical_to(0);
-        app.details_scroll_view.viewport_handle().scroll_vertical_to(0);
-    }
 }
 
 fn handle_chart_click(app: &mut AppState, column: u16, row: u16) {
