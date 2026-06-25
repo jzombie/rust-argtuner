@@ -616,11 +616,10 @@ fn handle_chart_click(app: &mut AppState, column: u16, row: u16) {
     if inner.height == 0 || !rect_contains(inner, column, row) {
         return;
     }
-    let offset_row = row.saturating_sub(inner.y) as usize;
-    let index_in_view = offset_row / CHART_ITEM_HEIGHT as usize;
     let h = app.charts_scroll_view.viewport_handle();
-    let chart_off = h.shared.borrow().offset_y / CHART_ITEM_HEIGHT as usize;
-    let index = chart_off.saturating_add(index_in_view);
+    let offset_y = h.shared.borrow().offset_y;
+    let click_abs_y = offset_y + (row - inner.y) as usize;
+    let index = click_abs_y / CHART_ITEM_HEIGHT as usize;
     if index >= app.metrics_len {
         return;
     }
@@ -1052,7 +1051,6 @@ fn render_metric_charts(
     let x_axis = select_x_axis_spec(epochs);
     match app.chart_view {
         ChartView::Summary => {
-            let visible_items = (area.height / CHART_ITEM_HEIGHT).max(1) as usize;
             let total_items = metric_keys.len();
 
             // Sync ScrollViewComponent state and render scrollbar
@@ -1075,22 +1073,33 @@ fn render_metric_charts(
             app.charts_scroll_view
                 .render(frame, area, &ComponentContext::new(focus));
 
-            let chart_offset = handle.shared.borrow().offset_y / CHART_ITEM_HEIGHT as usize;
+            let offset_y = handle.shared.borrow().offset_y;
             let inner_area = app.charts_scroll_view.viewport_area;
+            let chart_item_h = CHART_ITEM_HEIGHT as usize;
 
-            for (row, key) in metric_keys
-                .iter()
-                .skip(chart_offset)
-                .take(visible_items)
-                .enumerate()
-            {
+            let first_visible = offset_y / chart_item_h;
+            let first_chart = first_visible.saturating_sub(1);
+            let max_visible =
+                ((inner_area.height + CHART_ITEM_HEIGHT - 1) / CHART_ITEM_HEIGHT) as usize;
+            let last_chart = (first_chart + max_visible + 1).min(metric_keys.len());
+
+            for abs_idx in first_chart..last_chart {
+                let abs_y = abs_idx * chart_item_h;
+                let rel_y = (abs_y as i32 - offset_y as i32) + inner_area.y as i32;
                 let rect = Rect {
                     x: inner_area.x,
-                    y: inner_area.y + (row as u16 * CHART_ITEM_HEIGHT),
+                    y: rel_y as u16,
                     width: inner_area.width,
                     height: CHART_ITEM_HEIGHT,
                 };
-                render_metric_chart(frame, epochs, key, rect, &x_axis, app.chart_zoom);
+                render_metric_chart(
+                    frame,
+                    epochs,
+                    &metric_keys[abs_idx],
+                    rect,
+                    &x_axis,
+                    app.chart_zoom,
+                );
             }
         }
         ChartView::Focused => {
