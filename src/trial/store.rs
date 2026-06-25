@@ -132,10 +132,7 @@ impl StepPublisher {
         clients.retain(|mut stream| {
             let mut line = message.to_string();
             line.push('\n'); // TODO: Use line-ending crate
-            match stream.write_all(line.as_bytes()) {
-                Ok(_) => true,
-                Err(_) => false,
-            }
+            stream.write_all(line.as_bytes()).is_ok()
         });
     }
 }
@@ -146,6 +143,12 @@ impl StepPublisher {
 pub struct StepSubscriber {
     stream: Option<TcpStream>,
     reader: Option<BufReader<TcpStream>>,
+}
+
+impl Default for StepSubscriber {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StepSubscriber {
@@ -285,14 +288,13 @@ impl TrialStore {
         }
         if !steps.is_empty() {
             // Push step data to TUI via TCP publisher
-            if let Some(ref publisher) = self.step_publisher {
-                if let Ok(json) = serde_json::to_string(&serde_json::json!({
+            if let Some(ref publisher) = self.step_publisher
+                && let Ok(json) = serde_json::to_string(&serde_json::json!({
                     "trial_id": trial_id,
                     "steps": steps.iter().map(|r| &r.fields).collect::<Vec<_>>(),
                 })) {
                     publisher.push(&json);
                 }
-            }
         }
         Ok(())
     }

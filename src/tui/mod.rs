@@ -23,8 +23,10 @@ use term_wm::io::console::{ConsoleEventSource, ConsoleRenderTarget};
 use term_wm::layout::{LayoutNode, TilingLayout, rect_contains};
 use term_wm::runner::{WindowManagerHost, WindowProvider, run_window_app};
 use term_wm::ui::UiFrame;
-use term_wm::window::{ScrollState, WindowManager};
-use term_wm::{ListComponent, ToggleItem, ToggleListComponent, render_scrollbar};
+use term_wm::window::WindowManager;
+use term_wm::{
+    ListComponent, ScrollViewComponent, ToggleItem, ToggleListComponent,
+};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
@@ -45,8 +47,20 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         last_error: None,
         windows: window_manager,
         trials_list: ListComponent::new("Trials"),
-        charts_scroll: ScrollState::default(),
-        details_scroll: ScrollState::default(),
+        charts_scroll_view: {
+            let mut sv = ScrollViewComponent::new(EventDispatchComponent {
+                pending_events: pending_events.clone(),
+            });
+            sv.set_keyboard_enabled(false);
+            sv
+        },
+        details_scroll_view: {
+            let mut sv = ScrollViewComponent::new(EventDispatchComponent {
+                pending_events: pending_events.clone(),
+            });
+            sv.set_keyboard_enabled(false);
+            sv
+        },
         chart_zoom: 1.0,
         chart_view: ChartView::Summary,
         chart_selected: 0,
@@ -106,8 +120,8 @@ struct AppState {
     last_error: Option<String>,
     windows: WindowManager<RegionId>,
     trials_list: ListComponent,
-    charts_scroll: ScrollState,
-    details_scroll: ScrollState,
+    charts_scroll_view: ScrollViewComponent<EventDispatchComponent>,
+    details_scroll_view: ScrollViewComponent<EventDispatchComponent>,
     chart_zoom: f64,
     chart_view: ChartView,
     chart_selected: usize,
@@ -210,8 +224,12 @@ impl WindowProvider<RegionId> for AppState {
         Some(TilingLayout::new(root))
     }
 
-    fn window_component(&mut self, _id: RegionId) -> Option<&mut dyn Component> {
-        Some(&mut self.dispatch)
+    fn window_component(&mut self, id: RegionId) -> Option<&mut dyn Component> {
+        match id {
+            RegionId::Charts => Some(&mut self.charts_scroll_view),
+            RegionId::Details => Some(&mut self.details_scroll_view),
+            _ => Some(&mut self.dispatch),
+        }
     }
 }
 
@@ -502,7 +520,9 @@ fn apply_delta_for_pane(app: &mut AppState, pane: PaneFocus, delta: isize) {
             } else if app.chart_view == ChartView::Focused {
                 move_chart_selection(app, delta);
             } else {
-                app.charts_scroll.bump(delta);
+                app.charts_scroll_view
+                    .viewport_handle()
+                    .scroll_vertical_by(delta);
             }
         }
         PaneFocus::Details => {
@@ -512,7 +532,9 @@ fn apply_delta_for_pane(app: &mut AppState, pane: PaneFocus, delta: isize) {
                     _ => move_param_selection(app, delta),
                 }
             } else {
-                app.details_scroll.bump(delta);
+                app.details_scroll_view
+                    .viewport_handle()
+                    .scroll_vertical_by(delta);
             }
         }
     }
@@ -533,14 +555,17 @@ fn toggle_chart_view(app: &mut AppState) {
             if app.metrics_len == 0 {
                 ChartView::Summary
             } else {
-                let offset = app.charts_scroll.offset;
-                app.chart_selected = offset.min(app.metrics_len - 1);
+                let h = app.charts_scroll_view.viewport_handle();
+                let chart_offset = h.shared.borrow().offset_y / CHART_ITEM_HEIGHT as usize;
+                app.chart_selected = chart_offset.min(app.metrics_len - 1);
                 ChartView::Focused
             }
         }
         ChartView::Focused => {
             if app.metrics_len > 0 {
-                app.charts_scroll.offset = app.chart_selected.min(app.metrics_len - 1);
+                let h = app.charts_scroll_view.viewport_handle();
+                let rows = app.chart_selected.min(app.metrics_len - 1) * CHART_ITEM_HEIGHT as usize;
+                h.scroll_vertical_to(rows);
             }
             ChartView::Summary
         }
@@ -619,8 +644,8 @@ fn handle_trial_click(app: &mut AppState, column: u16, row: u16) {
     if index != app.trials_list.selected() {
         let delta = index as isize - app.trials_list.selected() as isize;
         app.trials_list.move_selection(delta);
-        app.charts_scroll.reset();
-        app.details_scroll.reset();
+        app.charts_scroll_view.viewport_handle().scroll_vertical_to(0);
+        app.details_scroll_view.viewport_handle().scroll_vertical_to(0);
     }
 }
 
@@ -634,7 +659,9 @@ fn handle_chart_click(app: &mut AppState, column: u16, row: u16) {
     }
     let offset_row = row.saturating_sub(inner.y) as usize;
     let index_in_view = offset_row / CHART_ITEM_HEIGHT as usize;
-    let index = app.charts_scroll.offset.saturating_add(index_in_view);
+    let h = app.charts_scroll_view.viewport_handle();
+    let chart_off = h.shared.borrow().offset_y / CHART_ITEM_HEIGHT as usize;
+    let index = chart_off.saturating_add(index_in_view);
     if index >= app.metrics_len {
         return;
     }
@@ -674,19 +701,20 @@ fn move_trial_selection(app: &mut AppState, delta: isize) {
     let before = app.trials_list.selected();
     app.trials_list.move_selection(delta);
     if app.trials_list.selected() != before {
-        app.charts_scroll.reset();
-        app.details_scroll.reset();
+        app.charts_scroll_view.viewport_handle().scroll_vertical_to(0);
+        app.details_scroll_view.viewport_handle().scroll_vertical_to(0);
     }
 }
 
 fn refresh_trials(app: &mut AppState) {
     // Check for live step data from the TCP subscriber
     while let Some(line) = app.step_subscriber.try_recv() {
-        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-            if let (Some(trial_id), Some(steps)) = (
+        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line)
+            && let (Some(trial_id), Some(steps)) = (
                 msg.get("trial_id").and_then(|v| v.as_i64()),
                 msg.get("steps").and_then(|v| v.as_array()),
-            ) {
+            )
+        {
                 let rows: Vec<TrialRow> = steps
                     .iter()
                     .filter_map(|s| s.as_object())
@@ -705,7 +733,6 @@ fn refresh_trials(app: &mut AppState) {
                     })
                     .collect();
                 app.step_rows.entry(trial_id).or_default().extend(rows);
-            }
         }
     }
     match load_trials(&app.db_path) {
@@ -719,17 +746,22 @@ fn refresh_trials(app: &mut AppState) {
                     .or_default()
                     .extend(rows);
             }
-            let before = app.trials_list.selected();
+            let prev_trial_id = app
+                .trials
+                .get(app.trials_list.selected())
+                .map(|t| t.trial_id);
             app.trials_list.set_items(build_trial_items(&app.trials));
-            if app.trials.is_empty() {
-                let current = app.trials_list.selected();
-                if current != 0 {
-                    app.trials_list.move_selection(-(current as isize));
-                }
-            }
-            if app.trials_list.selected() != before {
-                app.charts_scroll.reset();
-                app.details_scroll.reset();
+            if let Some(tid) = prev_trial_id
+                && let Some(pos) = app.trials.iter().position(|t| t.trial_id == tid)
+                    && pos != app.trials_list.selected() {
+                        let delta = pos as isize - app.trials_list.selected() as isize;
+                        app.trials_list.move_selection(delta);
+                    }
+            let after = app.trials_list.selected();
+            let current_trial_id = app.trials.get(after).map(|t| t.trial_id);
+            if current_trial_id != prev_trial_id {
+                app.charts_scroll_view.viewport_handle().scroll_vertical_to(0);
+                app.details_scroll_view.viewport_handle().scroll_vertical_to(0);
             }
             sync_param_toggles(app);
             app.last_error = None;
@@ -1048,28 +1080,42 @@ fn render_metric_charts(
         ChartView::Summary => {
             let visible_items = (area.height / CHART_ITEM_HEIGHT).max(1) as usize;
             let total_items = metric_keys.len();
-            app.charts_scroll.apply(total_items, visible_items);
+
+            // Sync ScrollViewComponent state and render scrollbar
+            let handle = app.charts_scroll_view.viewport_handle();
+            handle.set_content_size(area.width as usize, total_items * CHART_ITEM_HEIGHT as usize);
+            {
+                let mut st = handle.shared.borrow_mut();
+                st.width = area.width as usize;
+                st.height = area.height as usize;
+                let max_y = st.content_height.saturating_sub(st.height);
+                if let Some(off) = st.pending_offset_y.take() {
+                    st.offset_y = off.min(max_y);
+                }
+                st.offset_y = st.offset_y.min(max_y);
+            }
+            let focus = pane_focus(app) == PaneFocus::Charts;
+            app.charts_scroll_view
+                .render(frame, area, &ComponentContext::new(focus));
+
+            let chart_offset =
+                handle.shared.borrow().offset_y / CHART_ITEM_HEIGHT as usize;
+            let inner_area = app.charts_scroll_view.viewport_area;
+
             for (row, key) in metric_keys
                 .iter()
-                .skip(app.charts_scroll.offset)
+                .skip(chart_offset)
                 .take(visible_items)
                 .enumerate()
             {
                 let rect = Rect {
-                    x: area.x,
-                    y: area.y + (row as u16 * CHART_ITEM_HEIGHT),
-                    width: area.width,
+                    x: inner_area.x,
+                    y: inner_area.y + (row as u16 * CHART_ITEM_HEIGHT),
+                    width: inner_area.width,
                     height: CHART_ITEM_HEIGHT,
                 };
                 render_metric_chart(frame, epochs, key, rect, &x_axis, app.chart_zoom);
             }
-            render_scrollbar(
-                frame,
-                area,
-                total_items,
-                visible_items,
-                app.charts_scroll.offset,
-            );
         }
         ChartView::Focused => {
             let key = &metric_keys[app.chart_selected];
@@ -1216,17 +1262,27 @@ fn render_details_content(frame: &mut UiFrame<'_>, app: &mut AppState, area: Rec
         .unwrap_or_default();
     let text = trial_detail_lines(trial, &epochs);
     let total_lines = text.len();
-    let visible_lines = area.height as usize;
-    app.details_scroll.apply(total_lines, visible_lines);
-    let paragraph = Paragraph::new(text).scroll((app.details_scroll.offset as u16, 0));
-    frame.render_widget(paragraph, area);
-    render_scrollbar(
-        frame,
-        area,
-        total_lines,
-        visible_lines,
-        app.details_scroll.offset,
-    );
+
+    // Sync ScrollViewComponent state and render scrollbar
+    let handle = app.details_scroll_view.viewport_handle();
+    handle.set_content_size(area.width as usize, total_lines);
+    {
+        let mut st = handle.shared.borrow_mut();
+        st.width = area.width as usize;
+        st.height = area.height as usize;
+        let max_y = st.content_height.saturating_sub(st.height);
+        if let Some(off) = st.pending_offset_y.take() {
+            st.offset_y = off.min(max_y);
+        }
+        st.offset_y = st.offset_y.min(max_y);
+    }
+    let focus = pane_focus(app) == PaneFocus::Details;
+    app.details_scroll_view
+        .render(frame, area, &ComponentContext::new(focus));
+
+    let offset_y = handle.shared.borrow().offset_y;
+    let paragraph = Paragraph::new(text).scroll((offset_y as u16, 0));
+    frame.render_widget(paragraph, app.details_scroll_view.viewport_area);
 }
 
 fn render_params_content(frame: &mut UiFrame<'_>, app: &mut AppState, area: Rect) {
