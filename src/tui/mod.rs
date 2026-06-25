@@ -46,7 +46,11 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         step_subscriber,
         last_error: None,
         windows: window_manager,
-        trials_list: ListComponent::new("Trials"),
+        trials_scroll_view: {
+            let mut sv = ScrollViewComponent::new(ListComponent::new("Trials"));
+            sv.set_keyboard_enabled(false);
+            sv
+        },
         charts_scroll_view: {
             let mut sv = ScrollViewComponent::new(EventDispatchComponent {
                 pending_events: pending_events.clone(),
@@ -119,7 +123,7 @@ struct AppState {
     step_subscriber: StepSubscriber,
     last_error: Option<String>,
     windows: WindowManager<RegionId>,
-    trials_list: ListComponent,
+    trials_scroll_view: ScrollViewComponent<ListComponent>,
     charts_scroll_view: ScrollViewComponent<EventDispatchComponent>,
     details_scroll_view: ScrollViewComponent<EventDispatchComponent>,
     chart_zoom: f64,
@@ -226,6 +230,7 @@ impl WindowProvider<RegionId> for AppState {
 
     fn window_component(&mut self, id: RegionId) -> Option<&mut dyn Component> {
         match id {
+            RegionId::Trials => Some(&mut self.trials_scroll_view),
             RegionId::Charts => Some(&mut self.charts_scroll_view),
             RegionId::Details => Some(&mut self.details_scroll_view),
             _ => Some(&mut self.dispatch),
@@ -404,7 +409,7 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
         },
         Event::Mouse(mouse) => {
             let ctx = ComponentContext::new(true);
-            if app.trials_list.handle_event(event, &ctx) {
+            if app.trials_scroll_view.content.handle_event(event, &ctx) {
                 return true;
             }
             if app.chart_mode == ChartMode::HyperParams
@@ -637,13 +642,13 @@ fn handle_trial_click(app: &mut AppState, column: u16, row: u16) {
         return;
     }
     let offset_row = row.saturating_sub(inner.y) as usize;
-    let index = app.trials_list.selected().saturating_add(offset_row);
+    let index = app.trials_scroll_view.content.selected().saturating_add(offset_row);
     if index >= app.trials.len() {
         return;
     }
-    if index != app.trials_list.selected() {
-        let delta = index as isize - app.trials_list.selected() as isize;
-        app.trials_list.move_selection(delta);
+    if index != app.trials_scroll_view.content.selected() {
+        let delta = index as isize - app.trials_scroll_view.content.selected() as isize;
+        app.trials_scroll_view.content.move_selection(delta);
         app.charts_scroll_view.viewport_handle().scroll_vertical_to(0);
         app.details_scroll_view.viewport_handle().scroll_vertical_to(0);
     }
@@ -698,9 +703,9 @@ fn handle_details_click(app: &mut AppState, column: u16, row: u16) {
 }
 
 fn move_trial_selection(app: &mut AppState, delta: isize) {
-    let before = app.trials_list.selected();
-    app.trials_list.move_selection(delta);
-    if app.trials_list.selected() != before {
+    let before = app.trials_scroll_view.content.selected();
+    app.trials_scroll_view.content.move_selection(delta);
+    if app.trials_scroll_view.content.selected() != before {
         app.charts_scroll_view.viewport_handle().scroll_vertical_to(0);
         app.details_scroll_view.viewport_handle().scroll_vertical_to(0);
     }
@@ -748,16 +753,16 @@ fn refresh_trials(app: &mut AppState) {
             }
             let prev_trial_id = app
                 .trials
-                .get(app.trials_list.selected())
+                .get(app.trials_scroll_view.content.selected())
                 .map(|t| t.trial_id);
-            app.trials_list.set_items(build_trial_items(&app.trials));
+            app.trials_scroll_view.content.set_items(build_trial_items(&app.trials));
             if let Some(tid) = prev_trial_id
                 && let Some(pos) = app.trials.iter().position(|t| t.trial_id == tid)
-                    && pos != app.trials_list.selected() {
-                        let delta = pos as isize - app.trials_list.selected() as isize;
-                        app.trials_list.move_selection(delta);
+                    && pos != app.trials_scroll_view.content.selected() {
+                        let delta = pos as isize - app.trials_scroll_view.content.selected() as isize;
+                        app.trials_scroll_view.content.move_selection(delta);
                     }
-            let after = app.trials_list.selected();
+            let after = app.trials_scroll_view.content.selected();
             let current_trial_id = app.trials.get(after).map(|t| t.trial_id);
             if current_trial_id != prev_trial_id {
                 app.charts_scroll_view.viewport_handle().scroll_vertical_to(0);
@@ -800,7 +805,7 @@ fn sync_param_toggles(app: &mut AppState) {
     }
     let main_metric = app
         .trials
-        .get(app.trials_list.selected())
+        .get(app.trials_scroll_view.content.selected())
         .and_then(|trial| trial.fields.get(FIELD_METRIC))
         .map(|value| format!("metric.{value}"));
     let mut params = Vec::with_capacity(names.len());
@@ -998,7 +1003,7 @@ fn open_connection(path: &Path) -> Result<Connection, String> {
 
 fn render_trials_content(frame: &mut UiFrame<'_>, app: &mut AppState, area: Rect) {
     let focus = pane_focus(app) == PaneFocus::Trials;
-    app.trials_list
+    app.trials_scroll_view
         .render(frame, area, &ComponentContext::new(focus));
 }
 
@@ -1044,7 +1049,7 @@ fn render_charts_content(frame: &mut UiFrame<'_>, app: &mut AppState, area: Rect
         );
         return;
     }
-    let Some(trial) = app.trials.get(app.trials_list.selected()) else {
+    let Some(trial) = app.trials.get(app.trials_scroll_view.content.selected()) else {
         frame.render_widget(Paragraph::new("No trials loaded."), area);
         return;
     };
@@ -1178,7 +1183,7 @@ fn render_hyperparam_space(frame: &mut UiFrame<'_>, app: &mut AppState, area: Re
                 }
             }
             for (trial_idx, trial) in app.trials.iter().enumerate() {
-                let color = if trial_idx == app.trials_list.selected() {
+                let color = if trial_idx == app.trials_scroll_view.content.selected() {
                     Color::Yellow
                 } else {
                     color_for_objective(objective_value(trial), objective_range)
@@ -1251,7 +1256,7 @@ fn render_metric_chart(
 }
 
 fn render_details_content(frame: &mut UiFrame<'_>, app: &mut AppState, area: Rect) {
-    let Some(trial) = app.trials.get(app.trials_list.selected()) else {
+    let Some(trial) = app.trials.get(app.trials_scroll_view.content.selected()) else {
         frame.render_widget(Paragraph::new("No trial selected."), area);
         return;
     };
