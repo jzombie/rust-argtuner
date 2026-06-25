@@ -46,6 +46,12 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         step_subscriber,
         last_error: None,
         windows: window_manager,
+        // Wrap ListComponent in ScrollViewComponent for scrollbar rendering and
+        // mouse-wheel scrolling. Keyboard is disabled on the scroll view so that
+        // ListComponent's own keyboard handler (up/down/page/etc.) changes the
+        // selection directly. Mouse clicks on items are handled by ListComponent
+        // itself (see list.rs handle_event), mouse wheel and scrollbar drag by
+        // ScrollViewComponent.
         trials_scroll_view: {
             let mut sv = ScrollViewComponent::new(ListComponent::new("Trials"));
             sv.set_keyboard_enabled(false);
@@ -228,6 +234,10 @@ impl WindowProvider<RegionId> for AppState {
         Some(TilingLayout::new(root))
     }
 
+    // window_component returns the component that receives events for each window.
+    // Trials uses ScrollViewComponent<ListComponent> so that mouse events route
+    // through term-wm's component model (click→ListComponent, wheel/scrollbar→ScrollViewComponent).
+    // Charts and Details use ScrollViewComponent<EventDispatchComponent> (see below).
     fn window_component(&mut self, id: RegionId) -> Option<&mut dyn Component> {
         match id {
             RegionId::Trials => Some(&mut self.trials_scroll_view),
@@ -751,6 +761,10 @@ fn refresh_trials(app: &mut AppState) {
                     .or_default()
                     .extend(rows);
             }
+            // Preserve selection across data refreshes: set_items() resets
+            // ListComponent.selected to 0, so save the current trial_id,
+            // rebuild items, then restore the selection by finding the same
+            // trial_id in the new data.
             let prev_trial_id = app
                 .trials
                 .get(app.trials_scroll_view.content.selected())
@@ -1001,6 +1015,9 @@ fn open_connection(path: &Path) -> Result<Connection, String> {
     })
 }
 
+// Renders the Trials window content via ScrollViewComponent<ListComponent>.
+// ScrollViewComponent.render() draws scrollbars and delegates to
+// ListComponent.render() for the item list.
 fn render_trials_content(frame: &mut UiFrame<'_>, app: &mut AppState, area: Rect) {
     let focus = pane_focus(app) == PaneFocus::Trials;
     app.trials_scroll_view
