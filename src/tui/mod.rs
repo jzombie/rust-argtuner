@@ -1076,21 +1076,27 @@ fn render_metric_charts(
             let offset_y = handle.shared.borrow().offset_y;
             let inner_area = app.charts_scroll_view.viewport_area;
             let chart_item_h = CHART_ITEM_HEIGHT as usize;
+            let area_y = inner_area.y as i32;
+            let area_bottom = (inner_area.y + inner_area.height) as i32;
 
-            let first_visible = offset_y / chart_item_h;
-            let first_chart = first_visible.saturating_sub(1);
+            let first_chart = (offset_y / chart_item_h).saturating_sub(1);
             let max_visible =
                 ((inner_area.height + CHART_ITEM_HEIGHT - 1) / CHART_ITEM_HEIGHT) as usize;
-            let last_chart = (first_chart + max_visible + 1).min(metric_keys.len());
+            let last_chart = (first_chart + max_visible + 2).min(metric_keys.len());
 
             for abs_idx in first_chart..last_chart {
-                let abs_y = abs_idx * chart_item_h;
-                let rel_y = (abs_y as i32 - offset_y as i32) + inner_area.y as i32;
+                let chart_top = area_y + (abs_idx * chart_item_h) as i32 - offset_y as i32;
+                let chart_bot = chart_top + CHART_ITEM_HEIGHT as i32;
+                if chart_bot <= area_y || chart_top >= area_bottom {
+                    continue;
+                }
+                let y = chart_top.max(area_y) as u16;
+                let h = (chart_bot.min(area_bottom) - y as i32) as u16;
                 let rect = Rect {
                     x: inner_area.x,
-                    y: rel_y as u16,
+                    y,
                     width: inner_area.width,
-                    height: CHART_ITEM_HEIGHT,
+                    height: h,
                 };
                 render_metric_chart(
                     frame,
