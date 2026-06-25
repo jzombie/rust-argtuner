@@ -409,7 +409,8 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
                         && app.chart_mode == ChartMode::Metrics
                     {
                         zoom_charts(app, 0.8);
-                        return false;
+                        // Prevent scroll passthru
+                        return true;
                     }
                     if pane == PaneFocus::Details && app.chart_mode == ChartMode::HyperParams {
                         update_details_focus_for_mouse(app, mouse.column, mouse.row);
@@ -425,7 +426,8 @@ fn handle_event(app: &mut AppState, event: &Event) -> bool {
                         && app.chart_mode == ChartMode::Metrics
                     {
                         zoom_charts(app, 1.25);
-                        return false;
+                        // Prevent scroll passthru
+                        return true;
                     }
                     if pane == PaneFocus::Details && app.chart_mode == ChartMode::HyperParams {
                         update_details_focus_for_mouse(app, mouse.column, mouse.row);
