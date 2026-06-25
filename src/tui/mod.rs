@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use argtuner::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
+use argtuner::trial::store::StepSubscriber;
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::prelude::{Constraint, Direction, Rect};
 use ratatui::style::{Color, Style};
@@ -29,6 +30,8 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
     let pending_events = Rc::new(RefCell::new(Vec::new()));
     let window_manager = WindowManager::new_embedded(RegionId::Trials);
+    let mut step_subscriber = StepSubscriber::new();
+    let _ = step_subscriber.connect(argtuner_common::STEP_PUBLISHER_PORT);
     let mut app = AppState {
         db_path,
         poll,
@@ -37,6 +40,8 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
             .unwrap_or_else(Instant::now),
         trials: Vec::new(),
         epoch_rows: BTreeMap::new(),
+        step_rows: BTreeMap::new(),
+        step_subscriber,
         last_error: None,
         windows: window_manager,
         trials_list: ListComponent::new("Trials"),
@@ -87,7 +92,8 @@ struct TrialRow {
 }
 
 type TrialEpochRows = BTreeMap<i64, Vec<TrialRow>>;
-type TrialLoadResult = Result<(Vec<TrialRow>, TrialEpochRows), String>;
+type TrialStepRows = BTreeMap<i64, Vec<TrialRow>>;
+type TrialLoadResult = Result<(Vec<TrialRow>, TrialEpochRows, TrialStepRows), String>;
 
 struct AppState {
     db_path: PathBuf,
@@ -95,6 +101,8 @@ struct AppState {
     last_refresh: Instant,
     trials: Vec<TrialRow>,
     epoch_rows: BTreeMap<i64, Vec<TrialRow>>,
+    step_rows: BTreeMap<i64, Vec<TrialRow>>,
+    step_subscriber: StepSubscriber,
     last_error: Option<String>,
     windows: WindowManager<RegionId>,
     trials_list: ListComponent,
@@ -672,10 +680,45 @@ fn move_trial_selection(app: &mut AppState, delta: isize) {
 }
 
 fn refresh_trials(app: &mut AppState) {
+    // Check for live step data from the TCP subscriber
+    while let Some(line) = app.step_subscriber.try_recv() {
+        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+            if let (Some(trial_id), Some(steps)) = (
+                msg.get("trial_id").and_then(|v| v.as_i64()),
+                msg.get("steps").and_then(|v| v.as_array()),
+            ) {
+                let rows: Vec<TrialRow> = steps
+                    .iter()
+                    .filter_map(|s| s.as_object())
+                    .map(|fields| {
+                        let mut map = BTreeMap::new();
+                        for (k, v) in fields {
+                            map.insert(k.clone(), v.as_str().unwrap_or("").to_string());
+                        }
+                        TrialRow {
+                            trial_id,
+                            status: "running".to_string(),
+                            elapsed_ms: 0,
+                            error: None,
+                            fields: map,
+                        }
+                    })
+                    .collect();
+                app.step_rows.entry(trial_id).or_default().extend(rows);
+            }
+        }
+    }
     match load_trials(&app.db_path) {
-        Ok((trials, epoch_rows)) => {
+        Ok((trials, epoch_rows, step_rows)) => {
             app.trials = trials;
             app.epoch_rows = epoch_rows;
+            // Merge DB-persisted step rows with live subscriber data
+            for (trial_id, rows) in step_rows {
+                app.step_rows
+                    .entry(trial_id)
+                    .or_default()
+                    .extend(rows);
+            }
             let before = app.trials_list.selected();
             app.trials_list.set_items(build_trial_items(&app.trials));
             if app.trials.is_empty() {
@@ -764,7 +807,8 @@ fn load_trials(path: &Path) -> TrialLoadResult {
     let conn = open_connection(path)?;
     let trials = load_trial_rows(&conn, "trial_records")?;
     let epoch_rows = load_epoch_rows(&conn)?;
-    Ok((trials, epoch_rows))
+    let step_rows = load_step_rows(&conn)?;
+    Ok((trials, epoch_rows, step_rows))
 }
 
 fn load_trial_rows(conn: &Connection, table: &str) -> Result<Vec<TrialRow>, String> {
@@ -818,6 +862,54 @@ fn load_epoch_rows(conn: &Connection) -> Result<BTreeMap<i64, Vec<TrialRow>>, St
             if err
                 .to_string()
                 .contains("no such table: trial_epoch_records")
+            {
+                return Ok(BTreeMap::new());
+            }
+            return Err(err.to_string());
+        }
+    };
+    let rows = stmt
+        .query_map([], |row| {
+            let fields_json: String = row.get(4)?;
+            let fields: BTreeMap<String, String> =
+                serde_json::from_str(&fields_json).map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(err),
+                    )
+                })?;
+            Ok(TrialRow {
+                trial_id: row.get(0)?,
+                status: row.get(1)?,
+                elapsed_ms: row.get(2)?,
+                error: row.get(3)?,
+                fields,
+            })
+        })
+        .map_err(|err| err.to_string())?;
+
+    let mut by_trial: BTreeMap<i64, Vec<TrialRow>> = BTreeMap::new();
+    for row in rows {
+        let row = row.map_err(|err| err.to_string())?;
+        by_trial.entry(row.trial_id).or_default().push(row);
+    }
+    Ok(by_trial)
+}
+
+fn load_step_rows(conn: &Connection) -> Result<TrialStepRows, String> {
+    let mut stmt = match conn.prepare(
+        r#"
+        SELECT trial_id, status, elapsed_ms, error, fields_json
+        FROM trial_step_records
+        ORDER BY trial_id ASC, row_id ASC
+        "#,
+    ) {
+        Ok(stmt) => stmt,
+        Err(err) => {
+            if err
+                .to_string()
+                .contains("no such table: trial_step_records")
             {
                 return Ok(BTreeMap::new());
             }

@@ -7,7 +7,7 @@ use crate::project::{Project, Sampler};
 use crate::sampler::{run_pso, run_random};
 use crate::scheduler::Scheduler;
 use crate::scheduler::{SchedulerBinding, TrialScheduler};
-use crate::trial::store::TrialStore;
+use crate::trial::store::{StepPublisher, TrialStore};
 use crate::validate::validate_project_config;
 
 pub struct Tuner {
@@ -54,7 +54,7 @@ impl Tuner {
             .map_err(|err| -> Box<dyn Error> { err.into() })?;
 
         let scheduler_binding = SchedulerBinding::new(&config);
-        let store = if let Some(temp_root) = temp_root.as_ref() {
+        let mut store = if let Some(temp_root) = temp_root.as_ref() {
             let trials_path = temp_root.path().join(crate::TRIALS_CSV_FILENAME);
             TrialStore::new(trials_path, template.clone())
         } else {
@@ -62,6 +62,13 @@ impl Tuner {
         };
         if temp_root.is_none() {
             store.ensure_project_config(&config_text, options.allow_config_change)?;
+        }
+        // Start step publisher for real-time TUI communication
+        if let Some((publisher, port)) =
+            StepPublisher::bind(argtuner_common::STEP_PUBLISHER_PORT, store.step_cache_handle())
+        {
+            eprintln!("step publisher listening on port {port}");
+            store = store.with_step_publisher(publisher);
         }
         let store_for_summary = store.clone();
         let next_id = store.next_trial_id()?;

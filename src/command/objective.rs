@@ -310,10 +310,11 @@ impl CommandObjective {
             };
             let epoch_results = payload.epoch_results.clone();
             let epoch_fields = payload.epoch_fields();
-            Ok((metric, score, extra_fields, epoch_results, epoch_fields))
+            let step_fields = payload.step_fields();
+            Ok((metric, score, extra_fields, epoch_results, epoch_fields, step_fields))
         })();
         match result {
-            Ok((metric, score, extra_fields, epoch_results, epoch_fields)) => {
+            Ok((metric, score, extra_fields, epoch_results, epoch_fields, step_fields)) => {
                 let base_fields = rendered.fields;
                 let mut out_fields = base_fields.clone();
                 for (key, value) in extra_fields {
@@ -324,6 +325,23 @@ impl CommandObjective {
                 out_fields.insert(FIELD_METRIC.to_string(), self.metric_key.clone());
                 out_fields.insert(FIELD_SCORE.to_string(), score.to_string());
                 crate::trial::enforce_hp_immutability(existing_fields.as_ref(), &mut out_fields);
+                // Cache step results in memory for this trial
+                for step_row_fields in &step_fields {
+                    let mut step_fields = base_fields.clone();
+                    for (key, value) in step_row_fields {
+                        step_fields.entry(key.clone()).or_insert(value.clone());
+                    }
+                    self.store.cache_step(
+                        trial_id,
+                        TrialRecord {
+                            trial_id,
+                            status: TrialStatus::Running,
+                            elapsed_ms: start.elapsed().as_millis(),
+                            error: None,
+                            fields: step_fields,
+                        },
+                    );
+                }
                 for (epoch_result, epoch_row_fields) in
                     epoch_results.iter().zip(epoch_fields.iter())
                 {
@@ -356,7 +374,15 @@ impl CommandObjective {
                             fields: epoch_fields,
                         })
                         .map_err(|err| format!("epoch log append failed: {err}"))?;
+                    // Flush cached steps at epoch end
+                    self.store
+                        .flush_steps(trial_id)
+                        .map_err(|err| format!("step flush failed: {err}"))?;
                 }
+                // Flush any remaining cached steps at trial end
+                self.store
+                    .flush_steps(trial_id)
+                    .map_err(|err| format!("step flush failed: {err}"))?;
                 self.store
                     .update(&TrialRecord {
                         trial_id,
@@ -397,6 +423,8 @@ impl CommandObjective {
                     extra_fields,
                 );
                 crate::trial::enforce_hp_immutability(existing_fields.as_ref(), &mut out_fields);
+                // Flush any cached steps before recording the error
+                let _ = self.store.flush_steps(trial_id);
                 self.store
                     .update(&TrialRecord {
                         trial_id,

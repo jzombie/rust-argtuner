@@ -53,6 +53,10 @@ impl Talkback {
     pub fn emit_epoch_end<T: Serialize>(&self, value: &T) -> io::Result<()> {
         emit_epoch_end(value)
     }
+
+    pub fn emit_step_end<T: Serialize>(&self, value: &T) -> io::Result<()> {
+        emit_step_end(value)
+    }
 }
 
 pub fn emit_event<T: Serialize>(event: argtuner_common::EventKind, value: &T) -> io::Result<()> {
@@ -70,6 +74,10 @@ pub fn emit_event<T: Serialize>(event: argtuner_common::EventKind, value: &T) ->
 
 pub fn emit_epoch_end<T: Serialize>(value: &T) -> io::Result<()> {
     emit_event(argtuner_common::EventKind::EpochEnd, value)
+}
+
+pub fn emit_step_end<T: Serialize>(value: &T) -> io::Result<()> {
+    emit_event(argtuner_common::EventKind::StepEnd, value)
 }
 
 pub fn emit_result<T: Serialize>(value: &T) -> io::Result<()> {

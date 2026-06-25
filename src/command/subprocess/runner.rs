@@ -32,6 +32,7 @@ impl CommandOutput {
             parse_prefix_lines(&self.stdout, prefix).map_err(|e| format!("parse error: {e}"))?;
         let mut map = BTreeMap::new();
         let mut epoch_results = Vec::new();
+        let mut step_results = Vec::new();
         let mut last_result_fields: Option<BTreeMap<String, String>> = None;
         let mut last_epoch_fields: Option<BTreeMap<String, String>> = None;
 
@@ -52,6 +53,11 @@ impl CommandOutput {
                                 let mut entry = fields.clone();
                                 entry.insert(name.clone(), "true".to_string());
                                 epoch_fields = Some(entry);
+                            }
+                            argtuner_common::EventKind::StepEnd => {
+                                let mut entry = fields.clone();
+                                entry.insert(name.clone(), "true".to_string());
+                                step_results.push(entry);
                             }
                             argtuner_common::EventKind::InvalidConfig => {
                                 if let Some(err) = fields.get("error") {
@@ -96,6 +102,7 @@ impl CommandOutput {
         Ok(CommandResultPayload {
             data: map,
             epoch_results,
+            step_results,
         })
     }
 }
@@ -103,6 +110,7 @@ impl CommandOutput {
 pub struct CommandResultPayload {
     pub data: BTreeMap<String, String>,
     pub epoch_results: Vec<BTreeMap<String, String>>,
+    pub step_results: Vec<BTreeMap<String, String>>,
 }
 
 impl CommandResultPayload {
@@ -132,6 +140,10 @@ impl CommandResultPayload {
 
     pub fn epoch_fields(&self) -> Vec<BTreeMap<String, String>> {
         self.epoch_results.iter().map(payload_fields_from).collect()
+    }
+
+    pub fn step_fields(&self) -> Vec<BTreeMap<String, String>> {
+        self.step_results.iter().map(payload_fields_from).collect()
     }
 }
 

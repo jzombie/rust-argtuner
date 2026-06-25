@@ -12,11 +12,13 @@ pub const TUNER_NAMESPACE: &str = "tuner";
 pub const EARLY_STOPPED_EVENT: &str = "early_stopped";
 pub const INVALID_CONFIG_EVENT: &str = "invalid_config";
 pub const EPOCH_END_EVENT: &str = "epoch_end";
+pub const STEP_END_EVENT: &str = "step_end";
 pub const BINDING_VERSION_EVENT: &str = "binding_version";
 pub const BINDING_VERSION_FIELD: &str = "version";
 pub const MODEL_EARLY_STOPPED_EVENT: &str = "model.early_stopped";
 pub const MODEL_INVALID_CONFIG_EVENT: &str = "model.invalid_config";
 pub const MODEL_EPOCH_END_EVENT: &str = "model.epoch_end";
+pub const MODEL_STEP_END_EVENT: &str = "model.step_end";
 pub const TUNER_BINDING_VERSION_EVENT: &str = "tuner.binding_version";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +27,7 @@ pub enum EventKind {
     EarlyStopped,
     InvalidConfig,
     EpochEnd,
+    StepEnd,
     TunerApiVersion,
 }
 
@@ -35,6 +38,7 @@ impl EventKind {
             EventKind::EarlyStopped => MODEL_EARLY_STOPPED_EVENT,
             EventKind::InvalidConfig => MODEL_INVALID_CONFIG_EVENT,
             EventKind::EpochEnd => MODEL_EPOCH_END_EVENT,
+            EventKind::StepEnd => MODEL_STEP_END_EVENT,
             EventKind::TunerApiVersion => TUNER_BINDING_VERSION_EVENT,
         }
     }
@@ -44,6 +48,7 @@ impl EventKind {
             MODEL_EARLY_STOPPED_EVENT | EARLY_STOPPED_EVENT => Some(EventKind::EarlyStopped),
             MODEL_INVALID_CONFIG_EVENT | INVALID_CONFIG_EVENT => Some(EventKind::InvalidConfig),
             MODEL_EPOCH_END_EVENT | EPOCH_END_EVENT => Some(EventKind::EpochEnd),
+            MODEL_STEP_END_EVENT | STEP_END_EVENT => Some(EventKind::StepEnd),
             TUNER_BINDING_VERSION_EVENT | BINDING_VERSION_EVENT => Some(EventKind::TunerApiVersion),
             _ => None,
         }
@@ -55,6 +60,9 @@ impl std::fmt::Display for EventKind {
         f.write_str(self.as_str())
     }
 }
+
+/// TCP port for the step publisher (real-time step data to TUI).
+pub const STEP_PUBLISHER_PORT: u16 = 45100;
 
 /// Render a starter argtuner.toml with the provided template command.
 pub fn render_template_toml(command: &str) -> String {

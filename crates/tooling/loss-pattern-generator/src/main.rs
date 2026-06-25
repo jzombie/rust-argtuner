@@ -122,6 +122,7 @@ fn main() {
 
     let mut final_train_loss = 0.0;
     let mut final_val_loss = 0.0;
+    let epoch_every = 10;
     for step in 0..args.steps {
         if let Some(pb) = &pb {
             pb.set_position(step as u64);
@@ -130,13 +131,23 @@ fn main() {
         let train_loss = train_pattern.generate(step, args.steps);
         let val_loss = val_pattern.generate(step, args.steps);
         println!("{},{:.6},{:.6}", step, train_loss, val_loss);
-        let _ = argtuner_talkback::emit_epoch_end(&LossStep {
+        let _ = argtuner_talkback::emit_step_end(&LossStep {
             loss: train_loss,
             train_loss,
             val_loss,
             epoch: step + 1,
             pattern: pattern_name.clone(),
         });
+        // Emit epoch event every `epoch_every` steps
+        if (step + 1) % epoch_every == 0 || step == args.steps - 1 {
+            let _ = argtuner_talkback::emit_epoch_end(&LossStep {
+                loss: train_loss,
+                train_loss,
+                val_loss,
+                epoch: step + 1,
+                pattern: pattern_name.clone(),
+            });
+        }
         final_train_loss = train_loss;
         final_val_loss = val_loss;
     }
