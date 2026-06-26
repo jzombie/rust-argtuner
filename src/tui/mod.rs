@@ -22,11 +22,14 @@ use term_wm::layout::{LayoutNode, TilingLayout, rect_contains};
 use term_wm::runner::{WindowManagerHost, WindowProvider, run_window_app};
 use term_wm::ui::UiFrame;
 use term_wm::window::WindowManager;
-use term_wm::{ListComponent, ScrollViewComponent, ToggleItem, ToggleListComponent};
+use term_wm::{ListComponent, ScrollViewComponent, ToggleItem, ToggleListComponent, AppContext};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
-    let window_manager = WindowManager::new_embedded(RegionId::Trials);
+    let window_manager = WindowManager::new_embedded(
+        RegionId::Trials,
+        AppContext::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+    );
     let mut step_subscriber = StepSubscriber::new();
     let _ = step_subscriber.connect(argtuner_common::STEP_PUBLISHER_PORT);
     let mut app = AppState {
