@@ -2661,7 +2661,7 @@ dependencies = [
 
 [[package]]
 name = "term-wm"
-version = "0.5.1-alpha"
+version = "0.6.0-alpha"
 dependencies = [
  "clap",
  "hostname",
@@ -2678,7 +2678,7 @@ dependencies = [
 
 [[package]]
 name = "term-wm-core"
-version = "0.5.1-alpha"
+version = "0.6.0-alpha"
 dependencies = [
  "arboard",
  "base64",
@@ -2696,7 +2696,7 @@ dependencies = [
 
 [[package]]
 name = "term-wm-ui-components"
-version = "0.5.1-alpha"
+version = "0.6.0-alpha"
 dependencies = [
  "crossterm",
  "indoc",
