@@ -22,7 +22,7 @@ use term_wm::layout::{LayoutNode, TilingLayout, rect_contains};
 use term_wm::runner::{WindowManagerHost, WindowProvider, run_window_app};
 use term_wm::ui::UiFrame;
 use term_wm::window::WindowManager;
-use term_wm::{ListComponent, ScrollViewComponent, ToggleItem, ToggleListComponent, AppContext};
+use term_wm::{ListComponent, ScrollViewComponent, ToggleItem, ToggleListComponent, AppContext, WindowManagerExt};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));

@@ -2661,15 +2661,17 @@ dependencies = [
 
 [[package]]
 name = "term-wm"
-version = "0.6.0-alpha"
+version = "0.7.0-alpha"
 dependencies = [
  "clap",
+ "crossterm",
  "hostname",
  "indoc",
  "line-ending",
  "portable-pty",
  "ratatui",
  "term-wm-core",
+ "term-wm-sys-ui-components",
  "term-wm-ui-components",
  "tracing",
  "tracing-subscriber",
@@ -2678,25 +2680,50 @@ dependencies = [
 
 [[package]]
 name = "term-wm-core"
-version = "0.6.0-alpha"
+version = "0.7.0-alpha"
 dependencies = [
- "arboard",
- "base64",
  "crossterm",
- "hostname",
- "libc",
  "linkify",
  "portable-pty",
  "ratatui",
  "strum 0.28.0",
- "thiserror 2.0.18",
+ "term-wm-layout-engine",
+ "term-wm-pty-engine",
  "tracing",
+]
+
+[[package]]
+name = "term-wm-layout-engine"
+version = "0.7.0-alpha"
+
+[[package]]
+name = "term-wm-pty-engine"
+version = "0.7.0-alpha"
+dependencies = [
+ "arboard",
+ "base64",
+ "crossterm",
+ "ctrlc",
+ "libc",
+ "portable-pty",
+ "thiserror 2.0.18",
  "vt100",
 ]
 
 [[package]]
+name = "term-wm-sys-ui-components"
+version = "0.7.0-alpha"
+dependencies = [
+ "crossterm",
+ "ratatui",
+ "term-wm-core",
+ "term-wm-ui-components",
+ "webbrowser",
+]
+
+[[package]]
 name = "term-wm-ui-components"
-version = "0.6.0-alpha"
+version = "0.7.0-alpha"
 dependencies = [
  "crossterm",
  "indoc",
@@ -2707,6 +2734,7 @@ dependencies = [
  "resvg",
  "shell-words",
  "term-wm-core",
+ "term-wm-pty-engine",
  "thiserror 2.0.18",
  "tracing",
  "vt100",
