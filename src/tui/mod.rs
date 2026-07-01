@@ -162,6 +162,7 @@ impl WindowProvider<RegionId> for AppState {
         &mut self,
         frame: &mut UiFrame<'_>,
         window: term_wm::window::WindowDrawContext<RegionId>,
+        _ctx: &ComponentContext,
     ) {
         match window.id {
             RegionId::Trials => render_trials_content(frame, self, window.surface.inner),
