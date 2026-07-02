@@ -522,6 +522,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-utils"
+version = "0.8.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+
+[[package]]
 name = "crossterm"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2661,9 +2676,10 @@ dependencies = [
 
 [[package]]
 name = "term-wm"
-version = "0.7.0-alpha"
+version = "0.8.0-alpha"
 dependencies = [
  "clap",
+ "crossbeam-channel",
  "crossterm",
  "hostname",
  "indoc",
@@ -2680,12 +2696,14 @@ dependencies = [
 
 [[package]]
 name = "term-wm-core"
-version = "0.7.0-alpha"
+version = "0.8.0-alpha"
 dependencies = [
+ "crossbeam-channel",
  "crossterm",
  "linkify",
  "portable-pty",
  "ratatui",
+ "slotmap",
  "strum 0.28.0",
  "term-wm-layout-engine",
  "term-wm-pty-engine",
@@ -2694,11 +2712,11 @@ dependencies = [
 
 [[package]]
 name = "term-wm-layout-engine"
-version = "0.7.0-alpha"
+version = "0.8.0-alpha"
 
 [[package]]
 name = "term-wm-pty-engine"
-version = "0.7.0-alpha"
+version = "0.8.0-alpha"
 dependencies = [
  "arboard",
  "base64",
@@ -2712,7 +2730,7 @@ dependencies = [
 
 [[package]]
 name = "term-wm-sys-ui-components"
-version = "0.7.0-alpha"
+version = "0.8.0-alpha"
 dependencies = [
  "crossterm",
  "ratatui",
@@ -2723,7 +2741,7 @@ dependencies = [
 
 [[package]]
 name = "term-wm-ui-components"
-version = "0.7.0-alpha"
+version = "0.8.0-alpha"
 dependencies = [
  "crossterm",
  "indoc",

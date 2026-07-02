@@ -1172,16 +1172,15 @@ mod tests {
         let mut received_steps = Vec::new();
         for _ in 0..20 {
             while let Some(line) = subscriber.try_recv() {
-                if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                    if msg.get("catchup") == Some(&serde_json::Value::Bool(true)) {
-                        if let Some(steps) = msg.get("steps").and_then(|v| v.as_array()) {
-                            for step in steps {
-                                if let Some(fields) = step.as_object() {
-                                    for (k, v) in fields {
-                                        received_steps
-                                            .push((k.clone(), v.as_str().unwrap_or("").to_string()));
-                                    }
-                                }
+                if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line)
+                    && msg.get("catchup") == Some(&serde_json::Value::Bool(true))
+                    && let Some(steps) = msg.get("steps").and_then(|v| v.as_array())
+                {
+                    for step in steps {
+                        if let Some(fields) = step.as_object() {
+                            for (k, v) in fields {
+                                received_steps
+                                    .push((k.clone(), v.as_str().unwrap_or("").to_string()));
                             }
                         }
                     }
