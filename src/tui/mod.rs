@@ -542,7 +542,7 @@ impl AppState {
                 }
                 let items = build_trial_items(&self.trials);
                 if let Some(sv) = self.trials_sv() {
-                    sv.content.borrow_mut().set_items(items);
+                    sv.content.borrow_mut().update_items(items);
                 }
                 if let Some(tid) = prev_trial_id
                     && let Some(pos) = self.trials.iter().position(|t| t.trial_id == tid)

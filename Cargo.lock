@@ -2881,6 +2881,7 @@ dependencies = [
  "term-wm-vt100",
  "thiserror 2.0.18",
  "tracing",
+ "unicode-width",
  "webbrowser",
 ]
 
