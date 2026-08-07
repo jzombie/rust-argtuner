@@ -96,6 +96,9 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         (app.metrics_key, "Metrics"),
     ] {
         wm.set_window_title(k, t);
+        // The Watch TUI's panes are fixed views — never closable via the
+        // chrome ✕, palette, or any close path.
+        wm.set_closable(k, false);
     }
     app.apply_chart_mode();
 
