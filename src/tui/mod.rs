@@ -14,6 +14,7 @@ use ratatui::widgets::{
     canvas::{Canvas, Line as CanvasLine},
 };
 use rusqlite::{Connection, OpenFlags};
+use term_wm::component_context::ScrollHandle;
 use term_wm::components::AppRootComponent;
 use term_wm::events::{Event, KeyCode, KeyKind, KeyModifiers, MouseButton};
 use term_wm::helpers::{downcast_ratatui, layout_rect_to_clipped_rect};
@@ -22,15 +23,14 @@ use term_wm::keybindings::{KeyBindings, KeyCombo};
 use term_wm::prelude::{Component, ComponentContext, EventResult, TermWmAction};
 use term_wm::runner::{WindowManagerHost, run_with_defaults};
 use term_wm::term_wm_app::TermWmApp;
-use term_wm::component_context::ScrollHandle;
 use term_wm::window::{WindowKey, WindowManager, WindowState};
 use term_wm::wm_config::WmConfig;
 use term_wm::{
     AppContext, ListComponent, Rect as WmRect, ScrollKeyMode, ScrollViewComponent, ToggleItem,
     ToggleListComponent,
 };
-use term_wm_console::RenderBackend;
 use term_wm_console::RatatuiBackend;
+use term_wm_console::RenderBackend;
 use term_wm_console::console_event_source::ConsoleEventSource;
 use term_wm_console::console_render_target::ConsoleRenderTarget;
 use term_wm_core::hitbox_registry::HitboxRegistry;
@@ -39,23 +39,29 @@ use term_wm_ui_facade::{LayerComponent, OverlayComponent};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
-    let mut config = WmConfig::default();
-    config.keybindings = argtuner_keybindings();
+    let config = WmConfig {
+        keybindings: argtuner_keybindings(),
+        ..Default::default()
+    };
     let mut inner = TermWmApp::<AppComponent>::new_with_config(
         AppContext::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
         config,
     );
-    let trials_key = inner.open_window(AppRootComponent::Custom(AppComponent::Trials(mk_trials_sv())));
-    let charts_key = inner.open_window(AppRootComponent::Custom(AppComponent::Charts(mk_charts_sv())));
-    let details_key = inner.open_window(AppRootComponent::Custom(AppComponent::Details(mk_details_sv())));
-    let params_key =
-        inner.open_window(AppRootComponent::Custom(AppComponent::Params(ToggleListComponent::new(
-            "Hyperparameters",
-        ))));
-    let metrics_key =
-        inner.open_window(AppRootComponent::Custom(AppComponent::Metrics(ToggleListComponent::new(
-            "Metrics",
-        ))));
+    let trials_key = inner.open_window(AppRootComponent::Custom(AppComponent::Trials(
+        mk_trials_sv(),
+    )));
+    let charts_key = inner.open_window(AppRootComponent::Custom(AppComponent::Charts(
+        mk_charts_sv(),
+    )));
+    let details_key = inner.open_window(AppRootComponent::Custom(AppComponent::Details(
+        mk_details_sv(),
+    )));
+    let params_key = inner.open_window(AppRootComponent::Custom(AppComponent::Params(
+        ToggleListComponent::new("Hyperparameters"),
+    )));
+    let metrics_key = inner.open_window(AppRootComponent::Custom(AppComponent::Metrics(
+        ToggleListComponent::new("Metrics"),
+    )));
 
     let mut step_subscriber = StepSubscriber::new();
     let _ = step_subscriber.connect(argtuner_common::STEP_PUBLISHER_PORT);
@@ -263,8 +269,8 @@ impl ChartsView {
                 } else {
                     if let Some(h) = &self.scroll_handle {
                         let offset = h.scroll.borrow().offset_y;
-                        self.chart_selected = (offset / CHART_ITEM_HEIGHT as usize)
-                            .min(self.metrics_len - 1);
+                        self.chart_selected =
+                            (offset / CHART_ITEM_HEIGHT as usize).min(self.metrics_len - 1);
                     }
                     ChartView::Focused
                 }
@@ -331,7 +337,13 @@ enum AppComponent {
     Metrics(ToggleListComponent),
 }
 
-impl_component_delegate!(AppComponent { Trials, Charts, Details, Params, Metrics });
+impl_component_delegate!(AppComponent {
+    Trials,
+    Charts,
+    Details,
+    Params,
+    Metrics
+});
 
 struct AppState {
     inner: TermWmApp<AppComponent>,
@@ -600,6 +612,14 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
         self.inner.open_exit_confirm();
     }
 
+    fn open_command_palette(&mut self) {
+        self.inner.open_command_palette();
+    }
+
+    fn open_help_overlay(&mut self) {
+        self.inner.open_help_overlay();
+    }
+
     fn quit_requested(&self) -> bool {
         self.inner.quit_requested()
     }
@@ -628,7 +648,7 @@ const CHART_ITEM_HEIGHT: u16 = 7;
 const PARAM_AXIS_WIDTH: u16 = 6;
 
 fn argtuner_keybindings() -> KeyBindings {
-    let mut kb = KeyBindings::new();
+    let mut kb = KeyBindings::default();
     // App-level: quit + mode toggle.
     kb.add(
         TermWmAction::Quit,
@@ -712,7 +732,6 @@ fn argtuner_keybindings() -> KeyBindings {
     );
     kb
 }
-
 
 fn mk_trials_sv() -> ScrollViewComponent<ListComponent> {
     let mut sv = ScrollViewComponent::new(ListComponent::new("Trials"));
@@ -839,15 +858,14 @@ fn load_trial_rows(conn: &Connection, table: &str) -> Result<Vec<TrialRow>, Stri
     let rows = stmt
         .query_map([], |row| {
             let fields_json: String = row.get(4)?;
-            let fields: BTreeMap<String, String> = serde_json::from_str(&fields_json).map_err(
-                |err| {
+            let fields: BTreeMap<String, String> =
+                serde_json::from_str(&fields_json).map_err(|err| {
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Text,
                         Box::new(err),
                     )
-                },
-            )?;
+                })?;
             Ok(TrialRow {
                 trial_id: row.get(0)?,
                 status: row.get(1)?,
@@ -887,15 +905,14 @@ fn load_epoch_rows(conn: &Connection) -> Result<BTreeMap<i64, Vec<TrialRow>>, St
     let rows = stmt
         .query_map([], |row| {
             let fields_json: String = row.get(4)?;
-            let fields: BTreeMap<String, String> = serde_json::from_str(&fields_json).map_err(
-                |err| {
+            let fields: BTreeMap<String, String> =
+                serde_json::from_str(&fields_json).map_err(|err| {
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Text,
                         Box::new(err),
                     )
-                },
-            )?;
+                })?;
             Ok(TrialRow {
                 trial_id: row.get(0)?,
                 status: row.get(1)?,
@@ -936,15 +953,14 @@ fn load_step_rows(conn: &Connection) -> Result<TrialStepRows, String> {
     let rows = stmt
         .query_map([], |row| {
             let fields_json: String = row.get(4)?;
-            let fields: BTreeMap<String, String> = serde_json::from_str(&fields_json).map_err(
-                |err| {
+            let fields: BTreeMap<String, String> =
+                serde_json::from_str(&fields_json).map_err(|err| {
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Text,
                         Box::new(err),
                     )
-                },
-            )?;
+                })?;
             Ok(TrialRow {
                 trial_id: row.get(0)?,
                 status: row.get(1)?,
@@ -1093,7 +1109,14 @@ fn render_metric_charts(
                     width: area.width,
                     height: h,
                 };
-                render_metric_chart(backend, epochs, &metric_keys[abs_idx], rect, &x_axis, charts.chart_zoom);
+                render_metric_chart(
+                    backend,
+                    epochs,
+                    &metric_keys[abs_idx],
+                    rect,
+                    &x_axis,
+                    charts.chart_zoom,
+                );
             }
         }
         ChartView::Focused => {
@@ -1236,7 +1259,9 @@ fn render_details_content(
     area: Rect,
     ctx: &ComponentContext,
 ) {
-    let index = details.selected_trial_idx.min(details.trials.len().saturating_sub(1));
+    let index = details
+        .selected_trial_idx
+        .min(details.trials.len().saturating_sub(1));
     let Some(trial) = details.trials.get(index) else {
         Paragraph::new("No trial selected.").render(area, &mut backend.buffer);
         return;
