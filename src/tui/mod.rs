@@ -39,7 +39,7 @@ use term_wm_ui_facade::{LayerComponent, OverlayComponent};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
-    let mut config = WmConfig::standalone();
+    let mut config = WmConfig::default();
     config.keybindings = argtuner_keybindings();
     let mut inner = TermWmApp::<AppComponent>::new_with_config(
         AppContext::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
