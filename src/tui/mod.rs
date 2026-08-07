@@ -485,10 +485,7 @@ impl AppState {
         };
         let trial_id = trials.get(selected).map(|t| t.trial_id);
         let wm = self.inner.wm();
-        wm.set_window_title(self.trials_key, trial_id.map_or_else(
-            || "Trials".to_string(),
-            |id| format!("Trials - Trial {id}"),
-        ));
+        wm.set_window_title(self.trials_key, "Trials");
         wm.set_window_title(self.details_key, trial_id.map_or_else(
             || "Trial Details".to_string(),
             |id| format!("Trial {id} Details"),
@@ -640,16 +637,22 @@ fn charts_window_title(
             let total = metrics_len;
             let current = chart_selected.saturating_add(1);
             match trial_id {
-                Some(id) => format!("Metric Curve {current}/{total} - Trial {id}"),
+                Some(id) => format!("Trial {id} - Metric Curve {current}/{total}"),
                 None => format!("Metric Curve {current}/{total}"),
             }
         }
         ChartMode::Metrics => match trial_id {
-            Some(id) => format!("Metric Curves - Trial {id}"),
+            Some(id) => format!("Trial {id} - Metric Curves"),
             None => "Metric Curves".to_string(),
         },
-        ChartMode::HyperParams if charts_focused => "Hyperparameter Space".to_string(),
-        ChartMode::HyperParams => "Hyperparameter Space".to_string(),
+        ChartMode::HyperParams if charts_focused => match trial_id {
+            Some(id) => format!("Trial {id} - Hyperparameter Space"),
+            None => "Hyperparameter Space".to_string(),
+        },
+        ChartMode::HyperParams => match trial_id {
+            Some(id) => format!("Trial {id} - Hyperparameter Space"),
+            None => "Hyperparameter Space".to_string(),
+        },
     }
 }
 
@@ -659,6 +662,11 @@ const PARAM_AXIS_WIDTH: u16 = 6;
 /// Inline zoom-out footer for the Charts window, derived from the live
 /// keybindings so the shown keys always match the user's config.
 fn chart_keybindings_hint(kb: &KeyBindings) -> String {
+    let zoom_in = kb
+        .combos_for(TermWmAction::ZoomIn)
+        .first()
+        .cloned()
+        .unwrap_or_default();
     let zoom_out = kb
         .combos_for(TermWmAction::ZoomOut)
         .first()
@@ -674,7 +682,7 @@ fn chart_keybindings_hint(kb: &KeyBindings) -> String {
         .first()
         .cloned()
         .unwrap_or_default();
-    format!("[{zoom_out}] zoom out    [{reset}] reset    [{list}] list view")
+    format!("[{zoom_in}] zoom in    [{zoom_out}] zoom out    [{reset}] reset    [{list}] list view")
 }
 
 fn argtuner_keybindings() -> KeyBindings {
@@ -1113,20 +1121,15 @@ fn render_metric_charts(
     }
     let x_axis = select_x_axis_spec(epochs);
 
-    // When zoomed in, reserve the bottom row for the inline zoom-out hint.
-    let hint = if charts.chart_zoom < 1.0 {
-        Some(chart_keybindings_hint(&ctx.config().keybindings))
-    } else {
-        None
-    };
-    let chart_area = match hint {
-        Some(_) => Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width,
-            height: area.height.saturating_sub(1),
-        },
-        None => area,
+    // Always reserve the bottom row for the config-derived keybinding hint so
+    // the zoom/view keys are discoverable. The keys only act while the Charts
+    // window is focused (the WM enforces that on ChartsView::on_key).
+    let hint = chart_keybindings_hint(&ctx.config().keybindings);
+    let chart_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height.saturating_sub(1),
     };
 
     match charts.chart_view {
@@ -1180,19 +1183,17 @@ fn render_metric_charts(
         }
     }
 
-    if let Some(h) = hint {
-        Paragraph::new(h)
-            .style(Style::default().fg(Color::DarkGray))
-            .render(
-                Rect {
-                    x: area.x,
-                    y: area.y.saturating_add(chart_area.height),
-                    width: area.width,
-                    height: 1,
-                },
-                &mut backend.buffer,
-            );
-    }
+    Paragraph::new(hint)
+        .style(Style::default().fg(Color::DarkGray))
+        .render(
+            Rect {
+                x: area.x,
+                y: area.y.saturating_add(chart_area.height),
+                width: area.width,
+                height: 1,
+            },
+            &mut backend.buffer,
+        );
 }
 
 fn render_hyperparam_space(backend: &mut RatatuiBackend, charts: &mut ChartsView, area: Rect) {
