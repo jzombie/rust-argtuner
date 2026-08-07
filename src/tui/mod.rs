@@ -8,7 +8,7 @@ use argtuner::trial::store::StepSubscriber;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Widget,
     canvas::{Canvas, Line as CanvasLine},
@@ -26,8 +26,8 @@ use term_wm::term_wm_app::TermWmApp;
 use term_wm::window::{WindowKey, WindowManager, WindowState};
 use term_wm::wm_config::WmConfig;
 use term_wm::{
-    AppContext, ListComponent, Rect as WmRect, ScrollKeyMode, ScrollViewComponent, ToggleItem,
-    ToggleListComponent,
+    AppContext, ListComponent, Rect as WmRect, ScrollKeyMode, ScrollViewComponent,
+    TextRendererComponent, ToggleItem, ToggleListComponent,
 };
 use term_wm_console::RatatuiBackend;
 use term_wm_console::RenderBackend;
@@ -312,30 +312,10 @@ impl ChartsView {
     }
 }
 
-struct DetailsView {
-    trials: Vec<TrialRow>,
-    epoch_rows: BTreeMap<i64, Vec<TrialRow>>,
-    selected_trial_idx: usize,
-}
-
-impl Component<TermWmAction> for DetailsView {
-    fn render(
-        &mut self,
-        backend: &mut dyn RenderBackend,
-        area: WmRect,
-        ctx: &ComponentContext,
-        _registry: &mut HitboxRegistry,
-    ) {
-        let area = layout_rect_to_clipped_rect(area);
-        let backend = downcast_ratatui(backend);
-        render_details_content(backend, self, area, ctx);
-    }
-}
-
 enum AppComponent {
     Trials(ScrollViewComponent<ListComponent>),
     Charts(ScrollViewComponent<ChartsView>),
-    Details(ScrollViewComponent<DetailsView>),
+    Details(ScrollViewComponent<TextRendererComponent>),
     Params(ToggleListComponent),
     Metrics(ToggleListComponent),
 }
@@ -382,7 +362,7 @@ impl AppState {
         }
     }
 
-    fn details_sv(&mut self) -> Option<&mut ScrollViewComponent<DetailsView>> {
+    fn details_sv(&mut self) -> Option<&mut ScrollViewComponent<TextRendererComponent>> {
         match self.inner.wm().component_for_key_mut(self.details_key) {
             Some(AppRootComponent::Custom(AppComponent::Details(sv))) => Some(sv),
             _ => None,
@@ -481,13 +461,20 @@ impl AppState {
             c.enabled_axes = axes.clone();
         }
         if let Some(sv) = self.details_sv() {
-            let mut c = sv.content.borrow_mut();
-            c.trials = trials.clone();
-            c.epoch_rows = epochs.clone();
-            c.selected_trial_idx = selected;
+            let idx = selected.min(trials.len().saturating_sub(1));
+            let text = match trials.get(idx) {
+                Some(trial) => {
+                    let epoch_rows =
+                        epochs.get(&trial.trial_id).cloned().unwrap_or_default();
+                    Text::from(trial_detail_lines(trial, &epoch_rows))
+                }
+                None => Text::from(vec![Line::from("No trial selected.")]),
+            };
+            sv.content.borrow_mut().set_text(text);
         }
 
-        // Titles.
+        // Titles — standalone block AFTER all component borrows are dropped
+        // (each set_window_title needs &mut WindowManager).
         let charts_focused = self.inner.wm().focused_window() == self.charts_key;
         let (cv, cs, ml) = match self.charts_sv() {
             Some(sv) => {
@@ -496,8 +483,20 @@ impl AppState {
             }
             None => (ChartView::Summary, 0, 0),
         };
-        let title = charts_window_title(mode, cv, cs, ml, charts_focused);
-        self.inner.wm().set_window_title(self.charts_key, title);
+        let trial_id = trials.get(selected).map(|t| t.trial_id);
+        let wm = self.inner.wm();
+        wm.set_window_title(self.trials_key, trial_id.map_or_else(
+            || "Trials".to_string(),
+            |id| format!("Trials - Trial {id}"),
+        ));
+        wm.set_window_title(self.details_key, trial_id.map_or_else(
+            || "Trial Details".to_string(),
+            |id| format!("Trial {id} Details"),
+        ));
+        wm.set_window_title(
+            self.charts_key,
+            charts_window_title(mode, cv, cs, ml, charts_focused, trial_id),
+        );
     }
 
     fn refresh_trials(&mut self) {
@@ -634,14 +633,21 @@ fn charts_window_title(
     chart_selected: usize,
     metrics_len: usize,
     charts_focused: bool,
+    trial_id: Option<i64>,
 ) -> String {
     match chart_mode {
         ChartMode::Metrics if charts_focused && chart_view == ChartView::Focused => {
             let total = metrics_len;
             let current = chart_selected.saturating_add(1);
-            format!("Metric Curve {current}/{total}")
+            match trial_id {
+                Some(id) => format!("Metric Curve {current}/{total} - Trial {id}"),
+                None => format!("Metric Curve {current}/{total}"),
+            }
         }
-        ChartMode::Metrics => "Metric Curves".to_string(),
+        ChartMode::Metrics => match trial_id {
+            Some(id) => format!("Metric Curves - Trial {id}"),
+            None => "Metric Curves".to_string(),
+        },
         ChartMode::HyperParams if charts_focused => "Hyperparameter Space".to_string(),
         ChartMode::HyperParams => "Hyperparameter Space".to_string(),
     }
@@ -649,6 +655,27 @@ fn charts_window_title(
 
 const CHART_ITEM_HEIGHT: u16 = 7;
 const PARAM_AXIS_WIDTH: u16 = 6;
+
+/// Inline zoom-out footer for the Charts window, derived from the live
+/// keybindings so the shown keys always match the user's config.
+fn chart_keybindings_hint(kb: &KeyBindings) -> String {
+    let zoom_out = kb
+        .combos_for(TermWmAction::ZoomOut)
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    let reset = kb
+        .combos_for(TermWmAction::ResetZoom)
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    let list = kb
+        .combos_for(TermWmAction::CycleViewMode)
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    format!("[{zoom_out}] zoom out    [{reset}] reset    [{list}] list view")
+}
 
 fn argtuner_keybindings() -> KeyBindings {
     let mut kb = KeyBindings::default();
@@ -763,14 +790,15 @@ fn mk_charts_sv() -> ScrollViewComponent<ChartsView> {
     sv
 }
 
-fn mk_details_sv() -> ScrollViewComponent<DetailsView> {
-    let mut sv = ScrollViewComponent::new(DetailsView {
-        trials: Vec::new(),
-        epoch_rows: BTreeMap::new(),
-        selected_trial_idx: 0,
-    });
+fn mk_details_sv() -> ScrollViewComponent<TextRendererComponent> {
+    let mut sv = ScrollViewComponent::new(TextRendererComponent::new());
+    // Keep one field per line (no reflow) so the key = value layout is preserved;
+    // long values scroll horizontally if wider than the window.
+    sv.content.borrow_mut().set_wrap(false);
+    // Drag-to-select + copy-on-release via term-wm's selection/clipboard pipeline.
+    sv.content.borrow_mut().set_selection_enabled(true);
     // Full keyboard scroll: Up/Down/PageUp/PageDown/Home/End all scroll the
-    // details viewport. DetailsView has no key handling of its own.
+    // details viewport. TextRendererComponent has no key handling of its own.
     sv.set_keyboard_mode(ScrollKeyMode::Full);
     sv
 }
@@ -1084,18 +1112,35 @@ fn render_metric_charts(
         charts.chart_selected = metric_keys.len().saturating_sub(1);
     }
     let x_axis = select_x_axis_spec(epochs);
+
+    // When zoomed in, reserve the bottom row for the inline zoom-out hint.
+    let hint = if charts.chart_zoom < 1.0 {
+        Some(chart_keybindings_hint(&ctx.config().keybindings))
+    } else {
+        None
+    };
+    let chart_area = match hint {
+        Some(_) => Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: area.height.saturating_sub(1),
+        },
+        None => area,
+    };
+
     match charts.chart_view {
         ChartView::Summary => {
             let total_items = metric_keys.len();
             let content_h = total_items * CHART_ITEM_HEIGHT as usize;
             if let Some(handle) = ctx.scroll_handle() {
-                handle.set_content_size(area.width as usize, content_h);
+                handle.set_content_size(chart_area.width as usize, content_h);
             }
             let offset_y = ctx.viewport().offset_y;
-            let vp_h = area.height as usize;
+            let vp_h = chart_area.height as usize;
             let chart_item_h = CHART_ITEM_HEIGHT as usize;
-            let area_y = area.y as i32;
-            let area_bottom = (area.y + area.height) as i32;
+            let area_y = chart_area.y as i32;
+            let area_bottom = (chart_area.y + chart_area.height) as i32;
 
             let first_chart = (offset_y / chart_item_h).saturating_sub(1);
             let max_visible = vp_h.div_ceil(CHART_ITEM_HEIGHT as usize);
@@ -1111,9 +1156,9 @@ fn render_metric_charts(
                 let y = chart_top.max(area_y) as u16;
                 let h = (chart_bot.min(area_bottom) - y as i32) as u16;
                 let rect = Rect {
-                    x: area.x,
+                    x: chart_area.x,
                     y,
-                    width: area.width,
+                    width: chart_area.width,
                     height: h,
                 };
                 render_metric_chart(
@@ -1128,11 +1173,25 @@ fn render_metric_charts(
         }
         ChartView::Focused => {
             if let Some(handle) = ctx.scroll_handle() {
-                handle.set_content_size(area.width as usize, area.height as usize);
+                handle.set_content_size(chart_area.width as usize, chart_area.height as usize);
             }
             let key = &metric_keys[charts.chart_selected];
-            render_metric_chart(backend, epochs, key, area, &x_axis, charts.chart_zoom);
+            render_metric_chart(backend, epochs, key, chart_area, &x_axis, charts.chart_zoom);
         }
+    }
+
+    if let Some(h) = hint {
+        Paragraph::new(h)
+            .style(Style::default().fg(Color::DarkGray))
+            .render(
+                Rect {
+                    x: area.x,
+                    y: area.y.saturating_add(chart_area.height),
+                    width: area.width,
+                    height: 1,
+                },
+                &mut backend.buffer,
+            );
     }
 }
 
@@ -1258,35 +1317,6 @@ fn render_metric_chart(
                 .labels(y_labels),
         );
     chart.render(area, &mut backend.buffer);
-}
-
-fn render_details_content(
-    backend: &mut RatatuiBackend,
-    details: &mut DetailsView,
-    area: Rect,
-    ctx: &ComponentContext,
-) {
-    let index = details
-        .selected_trial_idx
-        .min(details.trials.len().saturating_sub(1));
-    let Some(trial) = details.trials.get(index) else {
-        Paragraph::new("No trial selected.").render(area, &mut backend.buffer);
-        return;
-    };
-    let epochs = details
-        .epoch_rows
-        .get(&trial.trial_id)
-        .cloned()
-        .unwrap_or_default();
-    let text = trial_detail_lines(trial, &epochs);
-    let total_lines = text.len();
-
-    if let Some(handle) = ctx.scroll_handle() {
-        handle.set_content_size(area.width as usize, total_lines);
-    }
-    let offset_y = ctx.viewport().offset_y;
-    let paragraph = Paragraph::new(text).scroll((offset_y as u16, 0));
-    paragraph.render(area, &mut backend.buffer);
 }
 
 fn collect_metric_keys_for_epochs(epochs: &[TrialRow]) -> Vec<String> {
