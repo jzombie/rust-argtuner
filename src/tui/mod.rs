@@ -5,41 +5,58 @@ use std::time::{Duration, Instant};
 
 use argtuner::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
 use argtuner::trial::store::StepSubscriber;
-use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
-use ratatui::prelude::{Constraint, Direction, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph,
+    Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Widget,
     canvas::{Canvas, Line as CanvasLine},
 };
 use rusqlite::{Connection, OpenFlags};
-use term_wm::components::{Component, ComponentContext};
+use term_wm::components::AppRootComponent;
+use term_wm::events::{Event, KeyCode, KeyKind, KeyModifiers, MouseButton};
+use term_wm::helpers::{downcast_ratatui, layout_rect_to_clipped_rect};
 use term_wm::io::RenderTarget;
-use term_wm::io::console::{ConsoleEventSource, ConsoleRenderTarget};
-use term_wm::layout::{LayoutNode, TilingLayout, rect_contains};
-use term_wm::runner::{WindowManagerHost, WindowProvider, run_window_app};
-use term_wm::ui::UiFrame;
-use term_wm::window::{WindowKey, WindowManager};
-use term_wm::{ListComponent, ScrollViewComponent, ToggleItem, ToggleListComponent, AppContext, WindowManagerExt};
+use term_wm::prelude::{Component, ComponentContext, EventResult, TermWmAction};
+use term_wm::runner::{WindowManagerHost, run_with_defaults};
+use term_wm::term_wm_app::TermWmApp;
+use term_wm::window::{WindowKey, WindowManager, WindowState};
+use term_wm::{
+    AppContext, ListComponent, Rect as WmRect, ScrollKeyMode, ScrollViewComponent, ToggleItem,
+    ToggleListComponent,
+};
+use term_wm_console::RenderBackend;
+use term_wm_console::RatatuiBackend;
+use term_wm_console::console_event_source::ConsoleEventSource;
+use term_wm_console::console_render_target::ConsoleRenderTarget;
+use term_wm_core::hitbox_registry::HitboxRegistry;
+use term_wm_core::impl_component_delegate;
+use term_wm_ui_facade::{LayerComponent, OverlayComponent};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
-    let mut wm = WindowManager::new_embedded(AppContext::new(
+    let mut inner = TermWmApp::<AppComponent>::embedded_custom(AppContext::new(
         env!("CARGO_PKG_NAME"),
         env!("CARGO_PKG_VERSION"),
     ));
-    let trials_key = wm.create_window();
-    let charts_key = wm.create_window();
-    let details_key = wm.create_window();
-    let params_key = wm.create_window();
-    let metrics_key = wm.create_window();
+    let trials_key = inner.open_window(AppRootComponent::Custom(AppComponent::Trials(mk_trials_sv())));
+    let charts_key = inner.open_window(AppRootComponent::Custom(AppComponent::Charts(mk_charts_sv())));
+    let details_key = inner.open_window(AppRootComponent::Custom(AppComponent::Details(mk_details_sv())));
+    let params_key =
+        inner.open_window(AppRootComponent::Custom(AppComponent::Params(ToggleListComponent::new(
+            "Hyperparameters",
+        ))));
+    let metrics_key =
+        inner.open_window(AppRootComponent::Custom(AppComponent::Metrics(ToggleListComponent::new(
+            "Metrics",
+        ))));
 
     let mut step_subscriber = StepSubscriber::new();
     let _ = step_subscriber.connect(argtuner_common::STEP_PUBLISHER_PORT);
 
     let mut app = AppState {
+        inner,
         db_path,
         poll,
         last_refresh: Instant::now()
@@ -50,59 +67,31 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         step_rows: BTreeMap::new(),
         step_subscriber,
         last_error: None,
-        windows: wm,
+        chart_mode: ChartMode::Metrics,
+        last_selected_trial: usize::MAX,
         trials_key,
         charts_key,
         details_key,
         params_key,
         metrics_key,
-        trials_scroll_view: {
-            let mut sv = ScrollViewComponent::new(ListComponent::new("Trials"));
-            sv.set_keyboard_enabled(false);
-            sv
-        },
-        charts_scroll_view: {
-            let mut sv = ScrollViewComponent::new(ChartsView {
-                trials: Vec::new(),
-                epoch_rows: BTreeMap::new(),
-                chart_mode: ChartMode::Metrics,
-                chart_view: ChartView::Summary,
-                chart_selected: 0,
-                metrics_len: 0,
-                chart_zoom: 1.0,
-                last_error: None,
-                selected_trial_idx: 0,
-                params_x_offset: 0,
-                enabled_axes: Vec::new(),
-            });
-            sv.set_keyboard_enabled(false);
-            sv
-        },
-        details_scroll_view: {
-            let mut sv = ScrollViewComponent::new(DetailsView {
-                trials: Vec::new(),
-                epoch_rows: BTreeMap::new(),
-                selected_trial_idx: 0,
-            });
-            sv.set_keyboard_enabled(false);
-            sv
-        },
-        chart_zoom: 1.0,
-        chart_view: ChartView::Summary,
-        chart_selected: 0,
-        metrics_len: 0,
-        chart_mode: ChartMode::Metrics,
-        params_list: ToggleListComponent::new("Hyperparameters"),
-        params_x_offset: 0,
-        metrics_list: ToggleListComponent::new("Metrics"),
     };
+
+    let wm = app.inner.wm();
+    for (k, t) in [
+        (app.trials_key, "Trials"),
+        (app.charts_key, "Charts"),
+        (app.details_key, "Trial Details"),
+        (app.params_key, "Hyperparameters"),
+        (app.metrics_key, "Metrics"),
+    ] {
+        wm.set_window_title(k, t);
+    }
+    app.apply_chart_mode();
 
     let mut output = ConsoleRenderTarget::new()?;
     let mut input = ConsoleEventSource::new();
     output.enter()?;
-
-    let result = run_window_app(&mut output, &mut input, &mut app);
-
+    let result = run_with_defaults(&mut output, &mut input, &mut app);
     output.exit()?;
     result
 }
@@ -120,6 +109,18 @@ type TrialEpochRows = BTreeMap<i64, Vec<TrialRow>>;
 type TrialStepRows = BTreeMap<i64, Vec<TrialRow>>;
 type TrialLoadResult = Result<(Vec<TrialRow>, TrialEpochRows, TrialStepRows), String>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChartMode {
+    Metrics,
+    HyperParams,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChartView {
+    Summary,
+    Focused,
+}
+
 struct ChartsView {
     trials: Vec<TrialRow>,
     epoch_rows: BTreeMap<i64, Vec<TrialRow>>,
@@ -134,9 +135,143 @@ struct ChartsView {
     enabled_axes: Vec<AxisKey>,
 }
 
-impl Component for ChartsView {
-    fn render(&mut self, frame: &mut UiFrame<'_>, area: Rect, ctx: &ComponentContext) {
-        render_charts_content(frame, self, area, ctx);
+impl Component<TermWmAction> for ChartsView {
+    fn render(
+        &mut self,
+        backend: &mut dyn RenderBackend,
+        area: WmRect,
+        ctx: &ComponentContext,
+        _registry: &mut HitboxRegistry,
+    ) {
+        let area = layout_rect_to_clipped_rect(area);
+        let backend = downcast_ratatui(backend);
+        render_charts_content(backend, self, area, ctx);
+    }
+
+    fn on_key(&mut self, event: &Event, ctx: &ComponentContext) -> EventResult<TermWmAction> {
+        let Event::Key(key) = event else {
+            return EventResult::Ignored;
+        };
+        if key.kind != KeyKind::Press {
+            return EventResult::Ignored;
+        }
+        match key.code {
+            KeyCode::Char('f') if self.chart_mode == ChartMode::Metrics => {
+                self.toggle_chart_view(ctx);
+                EventResult::Consumed
+            }
+            KeyCode::Enter | KeyCode::Char(' ') if self.chart_mode == ChartMode::Metrics => {
+                self.toggle_chart_view(ctx);
+                EventResult::Consumed
+            }
+            KeyCode::Char('+') | KeyCode::Char('=') if self.chart_mode == ChartMode::Metrics => {
+                self.chart_zoom = (self.chart_zoom * 0.8).clamp(0.1, 1.0);
+                EventResult::Consumed
+            }
+            KeyCode::Char('-') if self.chart_mode == ChartMode::Metrics => {
+                self.chart_zoom = (self.chart_zoom * 1.25).clamp(0.1, 1.0);
+                EventResult::Consumed
+            }
+            KeyCode::Char('0') if self.chart_mode == ChartMode::Metrics => {
+                self.chart_zoom = 1.0;
+                EventResult::Consumed
+            }
+            KeyCode::Right if self.chart_mode == ChartMode::HyperParams => {
+                self.pan_params(1);
+                EventResult::Consumed
+            }
+            KeyCode::Left if self.chart_mode == ChartMode::HyperParams => {
+                self.pan_params(-1);
+                EventResult::Consumed
+            }
+            KeyCode::Up | KeyCode::Char('k') if self.chart_view == ChartView::Focused => {
+                self.move_chart_selection(-1);
+                EventResult::Consumed
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.chart_view == ChartView::Focused => {
+                self.move_chart_selection(1);
+                EventResult::Consumed
+            }
+            KeyCode::PageUp if self.chart_view == ChartView::Focused => {
+                self.move_chart_selection(-5);
+                EventResult::Consumed
+            }
+            KeyCode::PageDown if self.chart_view == ChartView::Focused => {
+                self.move_chart_selection(5);
+                EventResult::Consumed
+            }
+            _ => EventResult::Ignored,
+        }
+    }
+
+    fn on_mouse_press(
+        &mut self,
+        _local_x: u16,
+        local_y: u16,
+        _button: MouseButton,
+        _modifiers: KeyModifiers,
+        ctx: &ComponentContext,
+    ) -> EventResult<TermWmAction> {
+        if self.chart_view == ChartView::Summary && self.chart_mode == ChartMode::Metrics {
+            let vp = ctx.viewport();
+            let click_y = vp.offset_y + local_y as usize;
+            let index = click_y / CHART_ITEM_HEIGHT as usize;
+            if index < self.metrics_len {
+                self.chart_selected = index;
+                self.chart_view = ChartView::Focused;
+                return EventResult::Consumed;
+            }
+        }
+        EventResult::Ignored
+    }
+}
+
+impl ChartsView {
+    fn toggle_chart_view(&mut self, ctx: &ComponentContext) {
+        self.chart_view = match self.chart_view {
+            ChartView::Summary => {
+                if self.metrics_len == 0 {
+                    ChartView::Summary
+                } else {
+                    if let Some(h) = ctx.scroll_handle() {
+                        let offset = h.scroll.borrow().offset_y;
+                        self.chart_selected = (offset / CHART_ITEM_HEIGHT as usize)
+                            .min(self.metrics_len - 1);
+                    }
+                    ChartView::Focused
+                }
+            }
+            ChartView::Focused => {
+                if self.metrics_len > 0 {
+                    let rows =
+                        self.chart_selected.min(self.metrics_len - 1) * CHART_ITEM_HEIGHT as usize;
+                    if let Some(h) = ctx.scroll_handle() {
+                        h.scroll_vertical_to(rows);
+                    }
+                }
+                ChartView::Summary
+            }
+        };
+    }
+
+    fn move_chart_selection(&mut self, delta: isize) {
+        if self.metrics_len == 0 {
+            return;
+        }
+        let max = (self.metrics_len - 1) as isize;
+        let next = (self.chart_selected as isize + delta).clamp(0, max) as usize;
+        self.chart_selected = next;
+    }
+
+    fn pan_params(&mut self, delta: isize) {
+        let enabled_len = self.enabled_axes.len();
+        if enabled_len == 0 {
+            self.params_x_offset = 0;
+            return;
+        }
+        let max = (enabled_len - 1) as isize;
+        let next = (self.params_x_offset as isize + delta).clamp(0, max) as usize;
+        self.params_x_offset = next;
     }
 }
 
@@ -146,13 +281,32 @@ struct DetailsView {
     selected_trial_idx: usize,
 }
 
-impl Component for DetailsView {
-    fn render(&mut self, frame: &mut UiFrame<'_>, area: Rect, ctx: &ComponentContext) {
-        render_details_content(frame, self, area, ctx);
+impl Component<TermWmAction> for DetailsView {
+    fn render(
+        &mut self,
+        backend: &mut dyn RenderBackend,
+        area: WmRect,
+        ctx: &ComponentContext,
+        _registry: &mut HitboxRegistry,
+    ) {
+        let area = layout_rect_to_clipped_rect(area);
+        let backend = downcast_ratatui(backend);
+        render_details_content(backend, self, area, ctx);
     }
 }
 
+enum AppComponent {
+    Trials(ScrollViewComponent<ListComponent>),
+    Charts(ScrollViewComponent<ChartsView>),
+    Details(ScrollViewComponent<DetailsView>),
+    Params(ToggleListComponent),
+    Metrics(ToggleListComponent),
+}
+
+impl_component_delegate!(AppComponent { Trials, Charts, Details, Params, Metrics });
+
 struct AppState {
+    inner: TermWmApp<AppComponent>,
     db_path: PathBuf,
     poll: Duration,
     last_refresh: Instant,
@@ -161,632 +315,314 @@ struct AppState {
     step_rows: BTreeMap<i64, Vec<TrialRow>>,
     step_subscriber: StepSubscriber,
     last_error: Option<String>,
-    windows: WindowManager,
+    chart_mode: ChartMode,
+    last_selected_trial: usize,
     trials_key: WindowKey,
     charts_key: WindowKey,
     details_key: WindowKey,
     params_key: WindowKey,
     metrics_key: WindowKey,
-    trials_scroll_view: ScrollViewComponent<ListComponent>,
-    charts_scroll_view: ScrollViewComponent<ChartsView>,
-    details_scroll_view: ScrollViewComponent<DetailsView>,
-    chart_zoom: f64,
-    chart_view: ChartView,
-    chart_selected: usize,
-    metrics_len: usize,
-    chart_mode: ChartMode,
-    params_list: ToggleListComponent,
-    params_x_offset: usize,
-    metrics_list: ToggleListComponent,
 }
 
-impl WindowProvider for AppState {
-    fn handle_app_event(&mut self, event: &Event) -> bool {
-        handle_event(self, event)
+impl AppState {
+    fn trials_sv(&mut self) -> Option<&mut ScrollViewComponent<ListComponent>> {
+        match self.inner.wm().component_for_key_mut(self.trials_key) {
+            Some(AppRootComponent::Custom(AppComponent::Trials(sv))) => Some(sv),
+            _ => None,
+        }
     }
 
-    fn enumerate_windows(&mut self) -> Vec<WindowKey> {
-        if self.last_refresh.elapsed() >= self.poll {
-            refresh_trials(self);
-            self.last_refresh = Instant::now();
+    fn charts_sv(&mut self) -> Option<&mut ScrollViewComponent<ChartsView>> {
+        match self.inner.wm().component_for_key_mut(self.charts_key) {
+            Some(AppRootComponent::Custom(AppComponent::Charts(sv))) => Some(sv),
+            _ => None,
         }
-        // Sync data into chart/detail views (clone first to avoid borrow conflict)
-        let charts_trials = self.trials.clone();
-        let charts_epochs = self.epoch_rows.clone();
-        let charts_selected_trial = self.trials_scroll_view.content.selected();
-        let charts_axes = enabled_axes(self);
-        let details_trials = self.trials.clone();
-        let details_epochs = self.epoch_rows.clone();
-        self.charts_scroll_view.content.trials = charts_trials;
-        self.charts_scroll_view.content.epoch_rows = charts_epochs;
-        self.charts_scroll_view.content.chart_mode = self.chart_mode;
-        self.charts_scroll_view.content.chart_view = self.chart_view;
-        self.charts_scroll_view.content.chart_selected = self.chart_selected;
-        self.charts_scroll_view.content.chart_zoom = self.chart_zoom;
-        self.charts_scroll_view.content.last_error = self.last_error.clone();
-        self.charts_scroll_view.content.selected_trial_idx = charts_selected_trial;
-        self.charts_scroll_view.content.params_x_offset = self.params_x_offset;
-        self.charts_scroll_view.content.enabled_axes = charts_axes;
-        self.details_scroll_view.content.trials = details_trials;
-        self.details_scroll_view.content.epoch_rows = details_epochs;
-        self.details_scroll_view.content.selected_trial_idx = charts_selected_trial;
-        // Sync metrics_len from previous render so event handlers are consistent
-        self.metrics_len = self.charts_scroll_view.content.metrics_len;
+    }
 
-        let windows = match self.chart_mode {
+    fn details_sv(&mut self) -> Option<&mut ScrollViewComponent<DetailsView>> {
+        match self.inner.wm().component_for_key_mut(self.details_key) {
+            Some(AppRootComponent::Custom(AppComponent::Details(sv))) => Some(sv),
+            _ => None,
+        }
+    }
+
+    fn params_list(&mut self) -> Option<&mut ToggleListComponent> {
+        match self.inner.wm().component_for_key_mut(self.params_key) {
+            Some(AppRootComponent::Custom(AppComponent::Params(l))) => Some(l),
+            _ => None,
+        }
+    }
+
+    fn metrics_list(&mut self) -> Option<&mut ToggleListComponent> {
+        match self.inner.wm().component_for_key_mut(self.metrics_key) {
+            Some(AppRootComponent::Custom(AppComponent::Metrics(l))) => Some(l),
+            _ => None,
+        }
+    }
+
+    fn apply_chart_mode(&mut self) {
+        let wm = self.inner.wm();
+        match self.chart_mode {
             ChartMode::Metrics => {
-                vec![self.trials_key, self.charts_key, self.details_key]
+                wm.transition_window(self.params_key, WindowState::Unmapped);
+                wm.transition_window(self.metrics_key, WindowState::Unmapped);
+                wm.transition_window(self.details_key, WindowState::Mapped);
             }
             ChartMode::HyperParams => {
-                vec![self.trials_key, self.charts_key, self.params_key, self.metrics_key]
+                wm.transition_window(self.details_key, WindowState::Unmapped);
+                wm.transition_window(self.params_key, WindowState::Mapped);
+                wm.transition_window(self.metrics_key, WindowState::Mapped);
             }
-        };
-        self.windows.set_window_title(self.trials_key, "Trials");
-        self.windows
-            .set_window_title(self.charts_key, charts_window_title(self));
-        self.windows
-            .set_window_title(self.details_key, "Trial Details");
-        self.windows
-            .set_window_title(self.params_key, "Hyperparameters");
-        self.windows
-            .set_window_title(self.metrics_key, "Metrics");
-        windows
+        }
+        wm.mark_layout_dirty();
     }
 
-    fn layout_for_windows(&mut self, windows: &[WindowKey]) -> Option<TilingLayout<WindowKey>> {
-        let has_params = windows.contains(&self.params_key);
-        let root = if has_params {
-            LayoutNode::split(
-                Direction::Horizontal,
-                vec![Constraint::Percentage(40), Constraint::Percentage(60)],
-                vec![
-                    LayoutNode::leaf(self.trials_key),
-                    LayoutNode::split(
-                        Direction::Vertical,
-                        vec![Constraint::Percentage(65), Constraint::Percentage(35)],
-                        vec![
-                            LayoutNode::leaf(self.charts_key),
-                            LayoutNode::split(
-                                Direction::Horizontal,
-                                vec![Constraint::Percentage(55), Constraint::Percentage(45)],
-                                vec![
-                                    LayoutNode::leaf(self.params_key),
-                                    LayoutNode::leaf(self.metrics_key),
-                                ],
-                            ),
-                        ],
-                    ),
-                ],
-            )
-        } else {
-            LayoutNode::split(
-                Direction::Horizontal,
-                vec![Constraint::Percentage(40), Constraint::Percentage(60)],
-                vec![
-                    LayoutNode::leaf(self.trials_key),
-                    LayoutNode::split(
-                        Direction::Vertical,
-                        vec![Constraint::Percentage(65), Constraint::Percentage(35)],
-                        vec![
-                            LayoutNode::leaf(self.charts_key),
-                            LayoutNode::leaf(self.details_key),
-                        ],
-                    ),
-                ],
-            )
-        };
-        Some(TilingLayout::new(root))
+    fn selected_trial_idx(&mut self) -> usize {
+        match self.trials_sv() {
+            Some(sv) => sv.content.borrow().selected(),
+            None => 0,
+        }
     }
 
-    fn window_component(&mut self, key: WindowKey) -> Option<&mut dyn Component> {
-        if key == self.trials_key {
-            Some(&mut self.trials_scroll_view)
-        } else if key == self.charts_key {
-            Some(&mut self.charts_scroll_view)
-        } else if key == self.details_key {
-            Some(&mut self.details_scroll_view)
-        } else if key == self.params_key {
-            Some(&mut self.params_list)
-        } else if key == self.metrics_key {
-            Some(&mut self.metrics_list)
-        } else {
-            None
+    fn enabled_axes(&mut self) -> Vec<AxisKey> {
+        let mut axes = Vec::new();
+        if let Some(list) = self.params_list() {
+            for item in list.items() {
+                if item.checked {
+                    axes.push(AxisKey {
+                        name: item.id.clone(),
+                    });
+                }
+            }
+        }
+        if let Some(list) = self.metrics_list() {
+            for item in list.items() {
+                if item.checked {
+                    axes.push(AxisKey {
+                        name: item.id.clone(),
+                    });
+                }
+            }
+        }
+        axes
+    }
+
+    fn push_data_to_components(&mut self) {
+        let trials = self.trials.clone();
+        let epochs = self.epoch_rows.clone();
+        let last_error = self.last_error.clone();
+        let selected = self.selected_trial_idx();
+        let axes = self.enabled_axes();
+        let mode = self.chart_mode;
+
+        // Scroll charts/details back to top when the selected trial changes.
+        if self.last_selected_trial != selected {
+            self.last_selected_trial = selected;
+            if let Some(sv) = self.charts_sv() {
+                let h = sv.scroll_handle();
+                h.scroll_vertical_to(0);
+            }
+            if let Some(sv) = self.details_sv() {
+                let h = sv.scroll_handle();
+                h.scroll_vertical_to(0);
+            }
+        }
+
+        if let Some(sv) = self.charts_sv() {
+            let mut c = sv.content.borrow_mut();
+            c.trials = trials.clone();
+            c.epoch_rows = epochs.clone();
+            c.chart_mode = mode;
+            c.last_error = last_error.clone();
+            c.selected_trial_idx = selected;
+            c.enabled_axes = axes.clone();
+        }
+        if let Some(sv) = self.details_sv() {
+            let mut c = sv.content.borrow_mut();
+            c.trials = trials.clone();
+            c.epoch_rows = epochs.clone();
+            c.selected_trial_idx = selected;
+        }
+
+        // Titles.
+        let charts_focused = self.inner.wm().focused_window() == self.charts_key;
+        let (cv, cs, ml) = match self.charts_sv() {
+            Some(sv) => {
+                let c = sv.content.borrow();
+                (c.chart_view, c.chart_selected, c.metrics_len)
+            }
+            None => (ChartView::Summary, 0, 0),
+        };
+        let title = charts_window_title(mode, cv, cs, ml, charts_focused);
+        self.inner.wm().set_window_title(self.charts_key, title);
+    }
+
+    fn refresh_trials(&mut self) {
+        while let Some(line) = self.step_subscriber.try_recv() {
+            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line)
+                && let (Some(trial_id), Some(steps)) = (
+                    msg.get("trial_id").and_then(|v| v.as_i64()),
+                    msg.get("steps").and_then(|v| v.as_array()),
+                )
+            {
+                let rows: Vec<TrialRow> = steps
+                    .iter()
+                    .filter_map(|s| s.as_object())
+                    .map(|fields| {
+                        let mut map = BTreeMap::new();
+                        for (k, v) in fields {
+                            map.insert(k.clone(), v.as_str().unwrap_or("").to_string());
+                        }
+                        TrialRow {
+                            trial_id,
+                            status: "running".to_string(),
+                            elapsed_ms: 0,
+                            error: None,
+                            fields: map,
+                        }
+                    })
+                    .collect();
+                self.step_rows.entry(trial_id).or_default().extend(rows);
+            }
+        }
+        match load_trials(&self.db_path) {
+            Ok((trials, epoch_rows, step_rows)) => {
+                let prev_sel = match self.trials_sv() {
+                    Some(sv) => sv.content.borrow().selected(),
+                    None => 0,
+                };
+                let prev_trial_id = self.trials.get(prev_sel).map(|t| t.trial_id);
+                self.trials = trials;
+                self.epoch_rows = epoch_rows;
+                for (trial_id, rows) in step_rows {
+                    self.step_rows.entry(trial_id).or_default().extend(rows);
+                }
+                let items = build_trial_items(&self.trials);
+                if let Some(sv) = self.trials_sv() {
+                    sv.content.borrow_mut().set_items(items);
+                }
+                if let Some(tid) = prev_trial_id
+                    && let Some(pos) = self.trials.iter().position(|t| t.trial_id == tid)
+                    && let Some(sv) = self.trials_sv()
+                {
+                    let sel = sv.content.borrow().selected();
+                    let delta = pos as isize - sel as isize;
+                    sv.content.borrow_mut().move_selection(delta);
+                }
+                sync_param_toggles(self);
+                self.last_error = None;
+            }
+            Err(err) => {
+                self.last_error = Some(err);
+            }
         }
     }
 }
 
-impl WindowManagerHost for AppState {
-    fn windows(&mut self) -> &mut WindowManager {
-        &mut self.windows
+impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayComponent>
+    for AppState
+{
+    fn wm(
+        &mut self,
+    ) -> &mut WindowManager<AppRootComponent<AppComponent>, LayerComponent, OverlayComponent> {
+        self.inner.wm()
+    }
+
+    fn handle_app_event(&mut self, event: &Event) -> bool {
+        if let Event::Key(key) = event
+            && key.kind == KeyKind::Press
+        {
+            match key.code {
+                KeyCode::Char('q') => {
+                    self.open_exit_confirm();
+                    return true;
+                }
+                KeyCode::Char('h') => {
+                    self.chart_mode = match self.chart_mode {
+                        ChartMode::Metrics => ChartMode::HyperParams,
+                        ChartMode::HyperParams => ChartMode::Metrics,
+                    };
+                    self.apply_chart_mode();
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        self.inner.handle_app_event(event)
+    }
+
+    fn render(&mut self, backend: &mut dyn RenderBackend) {
+        if self.last_refresh.elapsed() >= self.poll {
+            self.refresh_trials();
+            self.last_refresh = Instant::now();
+        }
+        self.push_data_to_components();
+        self.inner.render_app(backend);
     }
 
     fn open_exit_confirm(&mut self) {
-        let mut confirm = term_wm::ConfirmOverlayComponent::new();
-        confirm.open("Exit", "Exit the tuner?");
-        self.windows()
-            .open_overlay(term_wm::window::OverlayId::ExitConfirm, Some(Box::new(confirm)));
+        self.inner.open_exit_confirm();
+    }
+
+    fn quit_requested(&self) -> bool {
+        self.inner.quit_requested()
     }
 }
 
-fn charts_window_title(app: &AppState) -> String {
-    let focus = pane_focus(app);
-    match app.chart_mode {
-        ChartMode::Metrics
-            if focus == PaneFocus::Charts && app.chart_view == ChartView::Focused =>
-        {
-            let total = app.metrics_len;
-            let current = app.chart_selected.saturating_add(1);
+fn charts_window_title(
+    chart_mode: ChartMode,
+    chart_view: ChartView,
+    chart_selected: usize,
+    metrics_len: usize,
+    charts_focused: bool,
+) -> String {
+    match chart_mode {
+        ChartMode::Metrics if charts_focused && chart_view == ChartView::Focused => {
+            let total = metrics_len;
+            let current = chart_selected.saturating_add(1);
             format!("Metric Curve {current}/{total}")
         }
-        ChartMode::Metrics if focus == PaneFocus::Charts => "Metric Curves".to_string(),
         ChartMode::Metrics => "Metric Curves".to_string(),
-        ChartMode::HyperParams if focus == PaneFocus::Charts => "Hyperparameter Space".to_string(),
+        ChartMode::HyperParams if charts_focused => "Hyperparameter Space".to_string(),
         ChartMode::HyperParams => "Hyperparameter Space".to_string(),
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PaneFocus {
-    Trials,
-    Charts,
-    Details,
 }
 
 const CHART_ITEM_HEIGHT: u16 = 7;
 const PARAM_AXIS_WIDTH: u16 = 6;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChartMode {
-    Metrics,
-    HyperParams,
+fn mk_trials_sv() -> ScrollViewComponent<ListComponent> {
+    let mut sv = ScrollViewComponent::new(ListComponent::new("Trials"));
+    sv.set_keyboard_mode(ScrollKeyMode::None);
+    sv
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChartView {
-    Summary,
-    Focused,
+fn mk_charts_sv() -> ScrollViewComponent<ChartsView> {
+    let mut sv = ScrollViewComponent::new(ChartsView {
+        trials: Vec::new(),
+        epoch_rows: BTreeMap::new(),
+        chart_mode: ChartMode::Metrics,
+        chart_view: ChartView::Summary,
+        chart_selected: 0,
+        metrics_len: 0,
+        chart_zoom: 1.0,
+        last_error: None,
+        selected_trial_idx: 0,
+        params_x_offset: 0,
+        enabled_axes: Vec::new(),
+    });
+    sv.set_keyboard_mode(ScrollKeyMode::None);
+    sv
 }
 
-fn handle_event(app: &mut AppState, event: &Event) -> bool {
-    match event {
-        Event::Key(key) => match key.code {
-            KeyCode::Esc => false,
-            KeyCode::Char('q') => {
-                app.open_exit_confirm();
-                true
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                apply_focus_delta(app, -1);
-                true
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                apply_focus_delta(app, 1);
-                true
-            }
-            KeyCode::Char('h') => {
-                if pane_focus(app) == PaneFocus::Charts {
-                    app.chart_mode = match app.chart_mode {
-                        ChartMode::Metrics => ChartMode::HyperParams,
-                        ChartMode::HyperParams => ChartMode::Metrics,
-                    };
-                    if app.chart_mode == ChartMode::HyperParams
-                        && pane_focus(app) == PaneFocus::Details
-                    {
-                        app.windows.set_focus(app.params_key);
-                    } else if app.chart_mode == ChartMode::Metrics
-                        && (app.windows.focused_window() == app.params_key
-                            || app.windows.focused_window() == app.metrics_key)
-                    {
-                        app.windows.set_focus(app.details_key);
-                    }
-                }
-                true
-            }
-            KeyCode::Char('f')
-                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics =>
-            {
-                toggle_chart_view(app);
-                true
-            }
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics {
-                    toggle_chart_view(app);
-                    true
-                } else if pane_focus(app) == PaneFocus::Details
-                    && app.chart_mode == ChartMode::HyperParams
-                {
-                    match app.windows.focused_window() {
-                        key if key == app.params_key => toggle_param_selected(app),
-                        key if key == app.metrics_key => toggle_metric_selected(app),
-                        _ => toggle_param_selected(app),
-                    }
-                    true
-                } else {
-                    false
-                }
-            }
-            KeyCode::Char('+') | KeyCode::Char('=')
-                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics =>
-            {
-                zoom_charts(app, 0.8);
-                true
-            }
-            KeyCode::Char('-')
-                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics =>
-            {
-                zoom_charts(app, 1.25);
-                true
-            }
-            KeyCode::Char('0')
-                if pane_focus(app) == PaneFocus::Charts && app.chart_mode == ChartMode::Metrics =>
-            {
-                reset_chart_zoom(app);
-                true
-            }
-            KeyCode::PageDown | KeyCode::Char(']') => {
-                apply_focus_delta(app, 5);
-                true
-            }
-            KeyCode::PageUp | KeyCode::Char('[') => {
-                apply_focus_delta(app, -5);
-                true
-            }
-            KeyCode::Right
-                if app.chart_mode == ChartMode::HyperParams
-                    && pane_focus(app) == PaneFocus::Charts =>
-            {
-                pan_params(app, 1);
-                true
-            }
-            KeyCode::Left
-                if app.chart_mode == ChartMode::HyperParams
-                    && pane_focus(app) == PaneFocus::Charts =>
-            {
-                pan_params(app, -1);
-                true
-            }
-            _ => false,
-        },
-        Event::Mouse(mouse) => match mouse.kind {
-            MouseEventKind::ScrollUp => {
-                if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
-                    if pane == PaneFocus::Charts
-                        && mouse.modifiers.contains(KeyModifiers::CONTROL)
-                        && app.chart_mode == ChartMode::Metrics
-                    {
-                        zoom_charts(app, 0.8);
-                        return true;
-                    }
-                    if pane == PaneFocus::Details && app.chart_mode == ChartMode::HyperParams {
-                        update_details_focus_for_mouse(app, mouse.column, mouse.row);
-                    }
-                    // Mouse is over a pane — let term-wm hover-to-scroll
-                    // route the event to that window's component. Don't
-                    // scroll the focused pane here or both will scroll.
-                    return false;
-                }
-                apply_delta_for_pane(app, pane_focus(app), -1);
-                false
-            }
-            MouseEventKind::ScrollDown => {
-                if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
-                    if pane == PaneFocus::Charts
-                        && mouse.modifiers.contains(KeyModifiers::CONTROL)
-                        && app.chart_mode == ChartMode::Metrics
-                    {
-                        zoom_charts(app, 1.25);
-                        return true;
-                    }
-                    if pane == PaneFocus::Details && app.chart_mode == ChartMode::HyperParams {
-                        update_details_focus_for_mouse(app, mouse.column, mouse.row);
-                    }
-                    return false;
-                }
-                apply_delta_for_pane(app, pane_focus(app), 1);
-                false
-            }
-            MouseEventKind::ScrollLeft
-                if app.chart_mode == ChartMode::HyperParams
-                    && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts) =>
-            {
-                pan_params(app, -1);
-                false
-            }
-            MouseEventKind::ScrollRight
-                if app.chart_mode == ChartMode::HyperParams
-                    && pane_for_mouse(app, mouse.column, mouse.row) == Some(PaneFocus::Charts) =>
-            {
-                pan_params(app, 1);
-                false
-            }
-            MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(pane) = pane_for_mouse(app, mouse.column, mouse.row) {
-                    match pane {
-                        PaneFocus::Trials => {}
-                        PaneFocus::Charts => {
-                            if app.chart_mode == ChartMode::Metrics {
-                                handle_chart_click(app, mouse.column, mouse.row);
-                            }
-                        }
-                        PaneFocus::Details => {
-                            if app.chart_mode == ChartMode::HyperParams {
-                                update_details_focus_for_mouse(app, mouse.column, mouse.row);
-                                handle_details_click(app, mouse.column, mouse.row);
-                            }
-                        }
-                    }
-                }
-                false
-            }
-            _ => false,
-        },
-        _ => false,
-    }
-}
-
-fn apply_focus_delta(app: &mut AppState, delta: isize) {
-    apply_delta_for_pane(app, pane_focus(app), delta);
-}
-
-fn pane_focus(app: &AppState) -> PaneFocus {
-    let focused = app.windows.focused_window();
-    if focused == app.trials_key {
-        PaneFocus::Trials
-    } else if focused == app.charts_key {
-        PaneFocus::Charts
-    } else if focused == app.details_key || focused == app.params_key || focused == app.metrics_key
-    {
-        PaneFocus::Details
-    } else {
-        PaneFocus::Trials
-    }
-}
-
-fn apply_delta_for_pane(app: &mut AppState, pane: PaneFocus, delta: isize) {
-    match pane {
-        PaneFocus::Trials => move_trial_selection(app, delta),
-        PaneFocus::Charts => {
-            if app.chart_mode == ChartMode::HyperParams {
-                pan_params(app, delta);
-            } else if app.chart_view == ChartView::Focused {
-                move_chart_selection(app, delta);
-            } else {
-                let handle = app.charts_scroll_view.viewport_handle();
-                handle.scroll_vertical_by(delta);
-            }
-        }
-        PaneFocus::Details => {
-            if app.chart_mode == ChartMode::HyperParams {
-                match app.windows.focused_window() {
-                    key if key == app.metrics_key => move_metric_selection(app, delta),
-                    _ => move_param_selection(app, delta),
-                }
-            } else {
-                let handle = app.details_scroll_view.viewport_handle();
-                handle.scroll_vertical_by(delta);
-            }
-        }
-    }
-}
-
-fn zoom_charts(app: &mut AppState, factor: f64) {
-    let next = (app.chart_zoom * factor).clamp(0.1, 1.0);
-    app.chart_zoom = next;
-}
-
-fn reset_chart_zoom(app: &mut AppState) {
-    app.chart_zoom = 1.0;
-}
-
-fn toggle_chart_view(app: &mut AppState) {
-    app.chart_view = match app.chart_view {
-        ChartView::Summary => {
-            if app.metrics_len == 0 {
-                ChartView::Summary
-            } else {
-                let h = app.charts_scroll_view.viewport_handle();
-                let chart_offset = h.shared.borrow().offset_y / CHART_ITEM_HEIGHT as usize;
-                app.chart_selected = chart_offset.min(app.metrics_len - 1);
-                ChartView::Focused
-            }
-        }
-        ChartView::Focused => {
-            if app.metrics_len > 0 {
-                let h = app.charts_scroll_view.viewport_handle();
-                let rows = app.chart_selected.min(app.metrics_len - 1) * CHART_ITEM_HEIGHT as usize;
-                h.scroll_vertical_to(rows);
-            }
-            ChartView::Summary
-        }
-    };
-}
-
-fn move_chart_selection(app: &mut AppState, delta: isize) {
-    if app.metrics_len == 0 {
-        return;
-    }
-    let max = (app.metrics_len - 1) as isize;
-    let current = app.chart_selected as isize;
-    let next = (current + delta).clamp(0, max) as usize;
-    app.chart_selected = next;
-}
-
-fn pan_params(app: &mut AppState, delta: isize) {
-    let enabled_len = enabled_axis_count(app);
-    if enabled_len == 0 {
-        app.params_x_offset = 0;
-        return;
-    }
-    let max = enabled_len.saturating_sub(1) as isize;
-    let current = app.params_x_offset as isize;
-    let next = (current + delta).clamp(0, max) as usize;
-    app.params_x_offset = next;
-}
-
-fn move_param_selection(app: &mut AppState, delta: isize) {
-    app.params_list.move_selection(delta);
-}
-
-fn move_metric_selection(app: &mut AppState, delta: isize) {
-    app.metrics_list.move_selection(delta);
-}
-
-fn toggle_param_selected(app: &mut AppState) {
-    let _ = app.params_list.toggle_selected();
-}
-
-fn toggle_metric_selected(app: &mut AppState) {
-    let _ = app.metrics_list.toggle_selected();
-}
-
-fn update_details_focus_for_mouse(app: &mut AppState, column: u16, row: u16) {
-    if rect_contains(app.windows.region(app.params_key), column, row) {
-        app.windows.set_focus(app.params_key);
-    } else if rect_contains(app.windows.region(app.metrics_key), column, row) {
-        app.windows.set_focus(app.metrics_key);
-    }
-}
-
-fn pane_for_mouse(app: &AppState, column: u16, row: u16) -> Option<PaneFocus> {
-    if rect_contains(app.windows.region(app.trials_key), column, row) {
-        return Some(PaneFocus::Trials);
-    }
-    if rect_contains(app.windows.region(app.charts_key), column, row) {
-        return Some(PaneFocus::Charts);
-    }
-    if rect_contains(app.windows.region(app.details_key), column, row) {
-        return Some(PaneFocus::Details);
-    }
-    None
-}
-
-fn handle_chart_click(app: &mut AppState, column: u16, row: u16) {
-    if app.chart_view == ChartView::Focused {
-        return;
-    }
-    let inner = app.charts_scroll_view.viewport_area;
-    if inner.height == 0 || !rect_contains(inner, column, row) {
-        return;
-    }
-    let h = app.charts_scroll_view.viewport_handle();
-    let offset_y = h.shared.borrow().offset_y;
-    let click_abs_y = offset_y + (row - inner.y) as usize;
-    let index = click_abs_y / CHART_ITEM_HEIGHT as usize;
-    if index >= app.metrics_len {
-        return;
-    }
-    app.chart_selected = index;
-    app.chart_view = ChartView::Focused;
-}
-
-fn handle_details_click(app: &mut AppState, column: u16, row: u16) {
-    let focused = app.windows.focused_window();
-    if focused == app.params_key {
-        let inner = app.windows.region(app.params_key);
-        if inner.height == 0 || !rect_contains(inner, column, row) {
-            return;
-        }
-        let offset_row = row.saturating_sub(inner.y) as usize;
-        let index = app.params_list.selected().saturating_add(offset_row);
-        if index >= app.params_list.items().len() {
-            return;
-        }
-        app.params_list.set_selected(index);
-        let _ = app.params_list.toggle_selected();
-    } else {
-        let inner = app.windows.region(app.metrics_key);
-        if inner.height == 0 || !rect_contains(inner, column, row) {
-            return;
-        }
-        let offset_row = row.saturating_sub(inner.y) as usize;
-        let index = app.metrics_list.selected().saturating_add(offset_row);
-        if index >= app.metrics_list.items().len() {
-            return;
-        }
-        app.metrics_list.set_selected(index);
-        let _ = app.metrics_list.toggle_selected();
-    }
-}
-
-fn move_trial_selection(app: &mut AppState, delta: isize) {
-    let before = app.trials_scroll_view.content.selected();
-    app.trials_scroll_view.content.move_selection(delta);
-    if app.trials_scroll_view.content.selected() != before {
-        app.charts_scroll_view
-            .viewport_handle()
-            .scroll_vertical_to(0);
-        app.details_scroll_view
-            .viewport_handle()
-            .scroll_vertical_to(0);
-    }
-}
-
-fn refresh_trials(app: &mut AppState) {
-    while let Some(line) = app.step_subscriber.try_recv() {
-        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line)
-            && let (Some(trial_id), Some(steps)) = (
-                msg.get("trial_id").and_then(|v| v.as_i64()),
-                msg.get("steps").and_then(|v| v.as_array()),
-            )
-        {
-            let rows: Vec<TrialRow> = steps
-                .iter()
-                .filter_map(|s| s.as_object())
-                .map(|fields| {
-                    let mut map = BTreeMap::new();
-                    for (k, v) in fields {
-                        map.insert(k.clone(), v.as_str().unwrap_or("").to_string());
-                    }
-                    TrialRow {
-                        trial_id,
-                        status: "running".to_string(),
-                        elapsed_ms: 0,
-                        error: None,
-                        fields: map,
-                    }
-                })
-                .collect();
-            app.step_rows.entry(trial_id).or_default().extend(rows);
-        }
-    }
-    match load_trials(&app.db_path) {
-        Ok((trials, epoch_rows, step_rows)) => {
-            app.trials = trials;
-            app.epoch_rows = epoch_rows;
-            for (trial_id, rows) in step_rows {
-                app.step_rows.entry(trial_id).or_default().extend(rows);
-            }
-            let prev_trial_id = app
-                .trials
-                .get(app.trials_scroll_view.content.selected())
-                .map(|t| t.trial_id);
-            app.trials_scroll_view
-                .content
-                .set_items(build_trial_items(&app.trials));
-            if let Some(tid) = prev_trial_id
-                && let Some(pos) = app.trials.iter().position(|t| t.trial_id == tid)
-                && pos != app.trials_scroll_view.content.selected()
-            {
-                let delta = pos as isize - app.trials_scroll_view.content.selected() as isize;
-                app.trials_scroll_view.content.move_selection(delta);
-            }
-            let after = app.trials_scroll_view.content.selected();
-            let current_trial_id = app.trials.get(after).map(|t| t.trial_id);
-            if current_trial_id != prev_trial_id {
-                app.charts_scroll_view
-                    .viewport_handle()
-                    .scroll_vertical_to(0);
-                app.details_scroll_view
-                    .viewport_handle()
-                    .scroll_vertical_to(0);
-            }
-            sync_param_toggles(app);
-            app.last_error = None;
-        }
-        Err(err) => {
-            app.last_error = Some(err);
-        }
-    }
+fn mk_details_sv() -> ScrollViewComponent<DetailsView> {
+    let mut sv = ScrollViewComponent::new(DetailsView {
+        trials: Vec::new(),
+        epoch_rows: BTreeMap::new(),
+        selected_trial_idx: 0,
+    });
+    sv.set_keyboard_mode(ScrollKeyMode::None);
+    sv
 }
 
 fn sync_param_toggles(app: &mut AppState) {
@@ -808,16 +644,21 @@ fn sync_param_toggles(app: &mut AppState) {
         }
     }
     let mut existing = BTreeMap::new();
-    for param in app.params_list.items() {
-        existing.insert(param.id.clone(), param.checked);
+    if let Some(list) = app.params_list() {
+        for param in list.items() {
+            existing.insert(param.id.clone(), param.checked);
+        }
     }
     let mut existing_metrics = BTreeMap::new();
-    for metric in app.metrics_list.items() {
-        existing_metrics.insert(metric.id.clone(), metric.checked);
+    if let Some(list) = app.metrics_list() {
+        for metric in list.items() {
+            existing_metrics.insert(metric.id.clone(), metric.checked);
+        }
     }
+    let selected_trial = app.selected_trial_idx();
     let main_metric = app
         .trials
-        .get(app.trials_scroll_view.content.selected())
+        .get(selected_trial)
         .and_then(|trial| trial.fields.get(FIELD_METRIC))
         .map(|value| format!("metric.{value}"));
     let mut params = Vec::with_capacity(names.len());
@@ -845,10 +686,11 @@ fn sync_param_toggles(app: &mut AppState) {
             checked: enabled,
         });
     }
-    app.params_list.set_items(params);
-    app.metrics_list.set_items(metrics);
-    if app.params_x_offset > app.params_list.items().len().saturating_sub(1) {
-        app.params_x_offset = 0;
+    if let Some(list) = app.params_list() {
+        list.set_items(params);
+    }
+    if let Some(list) = app.metrics_list() {
+        list.set_items(metrics);
     }
 }
 
@@ -873,14 +715,15 @@ fn load_trial_rows(conn: &Connection, table: &str) -> Result<Vec<TrialRow>, Stri
     let rows = stmt
         .query_map([], |row| {
             let fields_json: String = row.get(4)?;
-            let fields: BTreeMap<String, String> =
-                serde_json::from_str(&fields_json).map_err(|err| {
+            let fields: BTreeMap<String, String> = serde_json::from_str(&fields_json).map_err(
+                |err| {
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Text,
                         Box::new(err),
                     )
-                })?;
+                },
+            )?;
             Ok(TrialRow {
                 trial_id: row.get(0)?,
                 status: row.get(1)?,
@@ -920,14 +763,15 @@ fn load_epoch_rows(conn: &Connection) -> Result<BTreeMap<i64, Vec<TrialRow>>, St
     let rows = stmt
         .query_map([], |row| {
             let fields_json: String = row.get(4)?;
-            let fields: BTreeMap<String, String> =
-                serde_json::from_str(&fields_json).map_err(|err| {
+            let fields: BTreeMap<String, String> = serde_json::from_str(&fields_json).map_err(
+                |err| {
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Text,
                         Box::new(err),
                     )
-                })?;
+                },
+            )?;
             Ok(TrialRow {
                 trial_id: row.get(0)?,
                 status: row.get(1)?,
@@ -968,14 +812,15 @@ fn load_step_rows(conn: &Connection) -> Result<TrialStepRows, String> {
     let rows = stmt
         .query_map([], |row| {
             let fields_json: String = row.get(4)?;
-            let fields: BTreeMap<String, String> =
-                serde_json::from_str(&fields_json).map_err(|err| {
+            let fields: BTreeMap<String, String> = serde_json::from_str(&fields_json).map_err(
+                |err| {
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Text,
                         Box::new(err),
                     )
-                })?;
+                },
+            )?;
             Ok(TrialRow {
                 trial_id: row.get(0)?,
                 status: row.get(1)?,
@@ -1044,24 +889,23 @@ fn build_trial_items(trials: &[TrialRow]) -> Vec<String> {
 }
 
 fn render_charts_content(
-    frame: &mut UiFrame<'_>,
+    backend: &mut RatatuiBackend,
     charts: &mut ChartsView,
     area: Rect,
     ctx: &ComponentContext,
 ) {
     if charts.chart_mode == ChartMode::HyperParams {
-        render_hyperparam_space(frame, charts, area);
+        render_hyperparam_space(backend, charts, area);
         return;
     }
     if let Some(err) = charts.last_error.as_ref() {
-        frame.render_widget(
-            Paragraph::new(err.clone()).style(Style::default().fg(Color::Red)),
-            area,
-        );
+        Paragraph::new(err.clone())
+            .style(Style::default().fg(Color::Red))
+            .render(area, &mut backend.buffer);
         return;
     }
     let Some(trial) = charts.trials.get(charts.selected_trial_idx) else {
-        frame.render_widget(Paragraph::new("No trials loaded."), area);
+        Paragraph::new("No trials loaded.").render(area, &mut backend.buffer);
         return;
     };
     let epochs = charts
@@ -1070,14 +914,14 @@ fn render_charts_content(
         .cloned()
         .unwrap_or_default();
     if epochs.is_empty() {
-        frame.render_widget(Paragraph::new("No epoch metrics for selected trial."), area);
+        Paragraph::new("No epoch metrics for selected trial.").render(area, &mut backend.buffer);
         return;
     }
-    render_metric_charts(frame, charts, &epochs, area, ctx);
+    render_metric_charts(backend, charts, &epochs, area, ctx);
 }
 
 fn render_metric_charts(
-    frame: &mut UiFrame<'_>,
+    backend: &mut RatatuiBackend,
     charts: &mut ChartsView,
     epochs: &[TrialRow],
     area: Rect,
@@ -1086,7 +930,7 @@ fn render_metric_charts(
     let metric_keys = collect_metric_keys_for_epochs(epochs);
     charts.metrics_len = metric_keys.len();
     if metric_keys.is_empty() {
-        frame.render_widget(Paragraph::new("No numeric metric curves."), area);
+        Paragraph::new("No numeric metric curves.").render(area, &mut backend.buffer);
         return;
     }
     if charts.chart_selected >= metric_keys.len() {
@@ -1097,7 +941,7 @@ fn render_metric_charts(
         ChartView::Summary => {
             let total_items = metric_keys.len();
             let content_h = total_items * CHART_ITEM_HEIGHT as usize;
-            if let Some(handle) = ctx.viewport_handle() {
+            if let Some(handle) = ctx.scroll_handle() {
                 handle.set_content_size(area.width as usize, content_h);
             }
             let offset_y = ctx.viewport().offset_y;
@@ -1125,20 +969,20 @@ fn render_metric_charts(
                     width: area.width,
                     height: h,
                 };
-                render_metric_chart(frame, epochs, &metric_keys[abs_idx], rect, &x_axis, charts.chart_zoom);
+                render_metric_chart(backend, epochs, &metric_keys[abs_idx], rect, &x_axis, charts.chart_zoom);
             }
         }
         ChartView::Focused => {
-            if let Some(handle) = ctx.viewport_handle() {
+            if let Some(handle) = ctx.scroll_handle() {
                 handle.set_content_size(area.width as usize, area.height as usize);
             }
             let key = &metric_keys[charts.chart_selected];
-            render_metric_chart(frame, epochs, key, area, &x_axis, charts.chart_zoom);
+            render_metric_chart(backend, epochs, key, area, &x_axis, charts.chart_zoom);
         }
     }
 }
 
-fn render_hyperparam_space(frame: &mut UiFrame<'_>, charts: &mut ChartsView, area: Rect) {
+fn render_hyperparam_space(backend: &mut RatatuiBackend, charts: &mut ChartsView, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -1146,7 +990,7 @@ fn render_hyperparam_space(frame: &mut UiFrame<'_>, charts: &mut ChartsView, are
     let selected = charts.selected_trial_idx;
     let enabled_axes: Vec<&AxisKey> = charts.enabled_axes.iter().collect();
     if enabled_axes.is_empty() {
-        frame.render_widget(Paragraph::new("No axes enabled."), area);
+        Paragraph::new("No axes enabled.").render(area, &mut backend.buffer);
         return;
     }
     let max_visible = (area.width / PARAM_AXIS_WIDTH).max(1) as usize;
@@ -1156,7 +1000,7 @@ fn render_hyperparam_space(frame: &mut UiFrame<'_>, charts: &mut ChartsView, are
     let visible = &enabled_axes[start..end];
     let visible_len = visible.len();
     if visible_len == 0 {
-        frame.render_widget(Paragraph::new("No parameters in view."), area);
+        Paragraph::new("No parameters in view.").render(area, &mut backend.buffer);
         return;
     }
     let domains = visible
@@ -1213,11 +1057,11 @@ fn render_hyperparam_space(frame: &mut UiFrame<'_>, charts: &mut ChartsView, are
                 }
             }
         });
-    frame.render_widget(canvas, area);
+    canvas.render(area, &mut backend.buffer);
 }
 
 fn render_metric_chart(
-    frame: &mut UiFrame<'_>,
+    backend: &mut RatatuiBackend,
     epochs: &[TrialRow],
     key: &str,
     area: Rect,
@@ -1259,18 +1103,18 @@ fn render_metric_chart(
                 .bounds([min_y, max_y])
                 .labels(y_labels),
         );
-    frame.render_widget(chart, area);
+    chart.render(area, &mut backend.buffer);
 }
 
 fn render_details_content(
-    frame: &mut UiFrame<'_>,
+    backend: &mut RatatuiBackend,
     details: &mut DetailsView,
     area: Rect,
     ctx: &ComponentContext,
 ) {
     let index = details.selected_trial_idx.min(details.trials.len().saturating_sub(1));
     let Some(trial) = details.trials.get(index) else {
-        frame.render_widget(Paragraph::new("No trial selected."), area);
+        Paragraph::new("No trial selected.").render(area, &mut backend.buffer);
         return;
     };
     let epochs = details
@@ -1281,12 +1125,12 @@ fn render_details_content(
     let text = trial_detail_lines(trial, &epochs);
     let total_lines = text.len();
 
-    if let Some(handle) = ctx.viewport_handle() {
+    if let Some(handle) = ctx.scroll_handle() {
         handle.set_content_size(area.width as usize, total_lines);
     }
     let offset_y = ctx.viewport().offset_y;
     let paragraph = Paragraph::new(text).scroll((offset_y as u16, 0));
-    frame.render_widget(paragraph, area);
+    paragraph.render(area, &mut backend.buffer);
 }
 
 fn collect_metric_keys_for_epochs(epochs: &[TrialRow]) -> Vec<String> {
@@ -1681,35 +1525,6 @@ fn display_axis_name(value: &str) -> String {
         return stripped.to_string();
     }
     value.to_string()
-}
-
-fn enabled_axes(app: &AppState) -> Vec<AxisKey> {
-    let mut axes = Vec::new();
-    for param in app.params_list.items() {
-        if param.checked {
-            axes.push(AxisKey {
-                name: param.id.clone(),
-            });
-        }
-    }
-    for metric in app.metrics_list.items() {
-        if metric.checked {
-            axes.push(AxisKey {
-                name: metric.id.clone(),
-            });
-        }
-    }
-    axes
-}
-
-fn enabled_axis_count(app: &AppState) -> usize {
-    app.params_list.items().iter().filter(|p| p.checked).count()
-        + app
-            .metrics_list
-            .items()
-            .iter()
-            .filter(|m| m.checked)
-            .count()
 }
 
 fn trial_detail_lines(trial: &TrialRow, epochs: &[TrialRow]) -> Vec<Line<'static>> {
