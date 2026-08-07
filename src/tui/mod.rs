@@ -754,7 +754,9 @@ fn mk_charts_sv() -> ScrollViewComponent<ChartsView> {
         enabled_axes: Vec::new(),
         scroll_handle: None,
     });
-    sv.set_keyboard_mode(ScrollKeyMode::None);
+    // PageUp/PageDown/Home/End scroll the chart list (the wrapper owns the
+    // viewport). Up/Down fall through to ChartsView for selection moves.
+    sv.set_keyboard_mode(ScrollKeyMode::PaginationOnly);
     sv
 }
 
@@ -764,7 +766,9 @@ fn mk_details_sv() -> ScrollViewComponent<DetailsView> {
         epoch_rows: BTreeMap::new(),
         selected_trial_idx: 0,
     });
-    sv.set_keyboard_mode(ScrollKeyMode::None);
+    // Full keyboard scroll: Up/Down/PageUp/PageDown/Home/End all scroll the
+    // details viewport. DetailsView has no key handling of its own.
+    sv.set_keyboard_mode(ScrollKeyMode::Full);
     sv
 }
 
