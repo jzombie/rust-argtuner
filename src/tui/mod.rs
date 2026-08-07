@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -18,10 +18,13 @@ use term_wm::components::AppRootComponent;
 use term_wm::events::{Event, KeyCode, KeyKind, KeyModifiers, MouseButton};
 use term_wm::helpers::{downcast_ratatui, layout_rect_to_clipped_rect};
 use term_wm::io::RenderTarget;
+use term_wm::keybindings::{KeyBindings, KeyCombo};
 use term_wm::prelude::{Component, ComponentContext, EventResult, TermWmAction};
 use term_wm::runner::{WindowManagerHost, run_with_defaults};
 use term_wm::term_wm_app::TermWmApp;
+use term_wm::component_context::ScrollHandle;
 use term_wm::window::{WindowKey, WindowManager, WindowState};
+use term_wm::wm_config::WmConfig;
 use term_wm::{
     AppContext, ListComponent, Rect as WmRect, ScrollKeyMode, ScrollViewComponent, ToggleItem,
     ToggleListComponent,
@@ -36,10 +39,12 @@ use term_wm_ui_facade::{LayerComponent, OverlayComponent};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
-    let mut inner = TermWmApp::<AppComponent>::new_custom(AppContext::new(
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_VERSION"),
-    ));
+    let mut config = WmConfig::standalone();
+    config.keybindings = argtuner_keybindings();
+    let mut inner = TermWmApp::<AppComponent>::new_with_config(
+        AppContext::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+        config,
+    );
     let trials_key = inner.open_window(AppRootComponent::Custom(AppComponent::Trials(mk_trials_sv())));
     let charts_key = inner.open_window(AppRootComponent::Custom(AppComponent::Charts(mk_charts_sv())));
     let details_key = inner.open_window(AppRootComponent::Custom(AppComponent::Details(mk_details_sv())));
@@ -133,6 +138,7 @@ struct ChartsView {
     selected_trial_idx: usize,
     params_x_offset: usize,
     enabled_axes: Vec<AxisKey>,
+    scroll_handle: Option<ScrollHandle>,
 }
 
 impl Component<TermWmAction> for ChartsView {
@@ -143,6 +149,7 @@ impl Component<TermWmAction> for ChartsView {
         ctx: &ComponentContext,
         _registry: &mut HitboxRegistry,
     ) {
+        self.scroll_handle = ctx.scroll_handle();
         let area = layout_rect_to_clipped_rect(area);
         let backend = downcast_ratatui(backend);
         render_charts_content(backend, self, area, ctx);
@@ -155,52 +162,56 @@ impl Component<TermWmAction> for ChartsView {
         if key.kind != KeyKind::Press {
             return EventResult::Ignored;
         }
-        match key.code {
-            KeyCode::Char('f') if self.chart_mode == ChartMode::Metrics => {
-                self.toggle_chart_view(ctx);
-                EventResult::Consumed
+        let kb = &ctx.config().keybindings;
+        let chart_actions = [
+            TermWmAction::ZoomIn,
+            TermWmAction::ZoomOut,
+            TermWmAction::ResetZoom,
+            TermWmAction::CycleViewMode,
+            TermWmAction::PanLeft,
+            TermWmAction::PanRight,
+            TermWmAction::MenuUp,
+            TermWmAction::MenuDown,
+            TermWmAction::ScrollPageUp,
+            TermWmAction::ScrollPageDown,
+            TermWmAction::ScrollHome,
+            TermWmAction::ScrollEnd,
+        ];
+        for action in chart_actions {
+            if kb.matches(action.clone(), key)
+                && action_allowed_in(self.chart_mode, self.chart_view, &action)
+            {
+                return EventResult::Action(action);
             }
-            KeyCode::Enter | KeyCode::Char(' ') if self.chart_mode == ChartMode::Metrics => {
-                self.toggle_chart_view(ctx);
-                EventResult::Consumed
+        }
+        EventResult::Ignored
+    }
+
+    fn update(
+        &mut self,
+        action: TermWmAction,
+        ctx: &ComponentContext,
+        _actions: &mut VecDeque<(WindowKey, TermWmAction)>,
+    ) {
+        if !action_allowed_in(self.chart_mode, self.chart_view, &action) {
+            return;
+        }
+        match action {
+            TermWmAction::ZoomIn => self.chart_zoom = (self.chart_zoom * 0.8).clamp(0.1, 1.0),
+            TermWmAction::ZoomOut => self.chart_zoom = (self.chart_zoom * 1.25).clamp(0.1, 1.0),
+            TermWmAction::ResetZoom => self.chart_zoom = 1.0,
+            TermWmAction::CycleViewMode => self.toggle_chart_view(ctx),
+            TermWmAction::PanLeft => self.pan_params(-1),
+            TermWmAction::PanRight => self.pan_params(1),
+            TermWmAction::MenuUp => self.move_chart_selection(-1),
+            TermWmAction::MenuDown => self.move_chart_selection(1),
+            TermWmAction::ScrollPageUp => self.move_chart_selection(-5),
+            TermWmAction::ScrollPageDown => self.move_chart_selection(5),
+            TermWmAction::ScrollHome => self.chart_selected = 0,
+            TermWmAction::ScrollEnd => {
+                self.chart_selected = self.metrics_len.saturating_sub(1);
             }
-            KeyCode::Char('+') | KeyCode::Char('=') if self.chart_mode == ChartMode::Metrics => {
-                self.chart_zoom = (self.chart_zoom * 0.8).clamp(0.1, 1.0);
-                EventResult::Consumed
-            }
-            KeyCode::Char('-') if self.chart_mode == ChartMode::Metrics => {
-                self.chart_zoom = (self.chart_zoom * 1.25).clamp(0.1, 1.0);
-                EventResult::Consumed
-            }
-            KeyCode::Char('0') if self.chart_mode == ChartMode::Metrics => {
-                self.chart_zoom = 1.0;
-                EventResult::Consumed
-            }
-            KeyCode::Right if self.chart_mode == ChartMode::HyperParams => {
-                self.pan_params(1);
-                EventResult::Consumed
-            }
-            KeyCode::Left if self.chart_mode == ChartMode::HyperParams => {
-                self.pan_params(-1);
-                EventResult::Consumed
-            }
-            KeyCode::Up | KeyCode::Char('k') if self.chart_view == ChartView::Focused => {
-                self.move_chart_selection(-1);
-                EventResult::Consumed
-            }
-            KeyCode::Down | KeyCode::Char('j') if self.chart_view == ChartView::Focused => {
-                self.move_chart_selection(1);
-                EventResult::Consumed
-            }
-            KeyCode::PageUp if self.chart_view == ChartView::Focused => {
-                self.move_chart_selection(-5);
-                EventResult::Consumed
-            }
-            KeyCode::PageDown if self.chart_view == ChartView::Focused => {
-                self.move_chart_selection(5);
-                EventResult::Consumed
-            }
-            _ => EventResult::Ignored,
+            _ => {}
         }
     }
 
@@ -226,14 +237,31 @@ impl Component<TermWmAction> for ChartsView {
     }
 }
 
+fn action_allowed_in(chart_mode: ChartMode, chart_view: ChartView, action: &TermWmAction) -> bool {
+    match action {
+        TermWmAction::ZoomIn
+        | TermWmAction::ZoomOut
+        | TermWmAction::ResetZoom
+        | TermWmAction::CycleViewMode => chart_mode == ChartMode::Metrics,
+        TermWmAction::PanLeft | TermWmAction::PanRight => chart_mode == ChartMode::HyperParams,
+        TermWmAction::MenuUp
+        | TermWmAction::MenuDown
+        | TermWmAction::ScrollPageUp
+        | TermWmAction::ScrollPageDown
+        | TermWmAction::ScrollHome
+        | TermWmAction::ScrollEnd => chart_view == ChartView::Focused,
+        _ => false,
+    }
+}
+
 impl ChartsView {
-    fn toggle_chart_view(&mut self, ctx: &ComponentContext) {
+    fn toggle_chart_view(&mut self, _ctx: &ComponentContext) {
         self.chart_view = match self.chart_view {
             ChartView::Summary => {
                 if self.metrics_len == 0 {
                     ChartView::Summary
                 } else {
-                    if let Some(h) = ctx.scroll_handle() {
+                    if let Some(h) = &self.scroll_handle {
                         let offset = h.scroll.borrow().offset_y;
                         self.chart_selected = (offset / CHART_ITEM_HEIGHT as usize)
                             .min(self.metrics_len - 1);
@@ -245,7 +273,7 @@ impl ChartsView {
                 if self.metrics_len > 0 {
                     let rows =
                         self.chart_selected.min(self.metrics_len - 1) * CHART_ITEM_HEIGHT as usize;
-                    if let Some(h) = ctx.scroll_handle() {
+                    if let Some(h) = &self.scroll_handle {
                         h.scroll_vertical_to(rows);
                     }
                 }
@@ -532,20 +560,18 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
         if let Event::Key(key) = event
             && key.kind == KeyKind::Press
         {
-            match key.code {
-                KeyCode::Char('q') => {
-                    self.open_exit_confirm();
-                    return true;
-                }
-                KeyCode::Char('h') => {
-                    self.chart_mode = match self.chart_mode {
-                        ChartMode::Metrics => ChartMode::HyperParams,
-                        ChartMode::HyperParams => ChartMode::Metrics,
-                    };
-                    self.apply_chart_mode();
-                    return true;
-                }
-                _ => {}
+            let kb = self.inner.wm().keybindings();
+            if kb.matches(TermWmAction::Quit, key) {
+                self.open_exit_confirm();
+                return true;
+            }
+            if kb.matches(TermWmAction::Custom(1), key) {
+                self.chart_mode = match self.chart_mode {
+                    ChartMode::Metrics => ChartMode::HyperParams,
+                    ChartMode::HyperParams => ChartMode::Metrics,
+                };
+                self.apply_chart_mode();
+                return true;
             }
         }
         self.inner.handle_app_event(event)
@@ -591,6 +617,93 @@ fn charts_window_title(
 const CHART_ITEM_HEIGHT: u16 = 7;
 const PARAM_AXIS_WIDTH: u16 = 6;
 
+fn argtuner_keybindings() -> KeyBindings {
+    let mut kb = KeyBindings::new();
+    // App-level: quit + mode toggle.
+    kb.add(
+        TermWmAction::Quit,
+        KeyCombo::new(KeyCode::Char('q'), KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::Custom(1),
+        KeyCombo::new(KeyCode::Char('h'), KeyModifiers::NONE),
+    );
+    // Chart view toggle (Metrics mode).
+    kb.add(
+        TermWmAction::CycleViewMode,
+        KeyCombo::new(KeyCode::Char('f'), KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::CycleViewMode,
+        KeyCombo::new(KeyCode::Enter, KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::CycleViewMode,
+        KeyCombo::new(KeyCode::Char(' '), KeyModifiers::NONE),
+    );
+    // Zoom.
+    kb.add(
+        TermWmAction::ZoomIn,
+        KeyCombo::new(KeyCode::Char('+'), KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::ZoomIn,
+        KeyCombo::new(KeyCode::Char('='), KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::ZoomOut,
+        KeyCombo::new(KeyCode::Char('-'), KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::ResetZoom,
+        KeyCombo::new(KeyCode::Char('0'), KeyModifiers::NONE),
+    );
+    // Pan params (HyperParams mode).
+    kb.add(
+        TermWmAction::PanLeft,
+        KeyCombo::new(KeyCode::Left, KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::PanRight,
+        KeyCombo::new(KeyCode::Right, KeyModifiers::NONE),
+    );
+    // Chart selection movement (Focused view).
+    kb.add(
+        TermWmAction::MenuUp,
+        KeyCombo::new(KeyCode::Up, KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::MenuUp,
+        KeyCombo::new(KeyCode::Char('k'), KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::MenuDown,
+        KeyCombo::new(KeyCode::Down, KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::MenuDown,
+        KeyCombo::new(KeyCode::Char('j'), KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::ScrollPageUp,
+        KeyCombo::new(KeyCode::PageUp, KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::ScrollPageDown,
+        KeyCombo::new(KeyCode::PageDown, KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::ScrollHome,
+        KeyCombo::new(KeyCode::Home, KeyModifiers::NONE),
+    );
+    kb.add(
+        TermWmAction::ScrollEnd,
+        KeyCombo::new(KeyCode::End, KeyModifiers::NONE),
+    );
+    kb
+}
+
+
 fn mk_trials_sv() -> ScrollViewComponent<ListComponent> {
     let mut sv = ScrollViewComponent::new(ListComponent::new("Trials"));
     sv.set_keyboard_mode(ScrollKeyMode::None);
@@ -610,6 +723,7 @@ fn mk_charts_sv() -> ScrollViewComponent<ChartsView> {
         selected_trial_idx: 0,
         params_x_offset: 0,
         enabled_axes: Vec::new(),
+        scroll_handle: None,
     });
     sv.set_keyboard_mode(ScrollKeyMode::None);
     sv
