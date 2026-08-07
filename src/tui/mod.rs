@@ -36,7 +36,7 @@ use term_wm_ui_facade::{LayerComponent, OverlayComponent};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
-    let mut inner = TermWmApp::<AppComponent>::embedded_custom(AppContext::new(
+    let mut inner = TermWmApp::<AppComponent>::bare_custom(AppContext::new(
         env!("CARGO_PKG_NAME"),
         env!("CARGO_PKG_VERSION"),
     ));
