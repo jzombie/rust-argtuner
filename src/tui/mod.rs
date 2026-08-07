@@ -578,6 +578,16 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
     }
 
     fn render(&mut self, backend: &mut dyn RenderBackend) {
+        // TODO(term-wm): This time-gated sqlite polling is a stopgap. Replace
+        // `refresh_trials()` with a recurring task scheduled through the core's
+        // `TaskScheduler` (it already supports `schedule_repeating`, see
+        // term-wm-core/src/task_scheduler.rs), or another core-provided app tick
+        // mechanism, instead of piggybacking on the 60fps render hook. That
+        // requires the runner to dispatch an app-level recurring payload — the
+        // current `SystemTask` enum only carries internal tasks (DragSnap,
+        // TemporalDwellTick, DismissNotification, ClearTabOutline), so a generic
+        // app callback/recurring task variant needs to be added to the core
+        // before this can be wired up.
         if self.last_refresh.elapsed() >= self.poll {
             self.refresh_trials();
             self.last_refresh = Instant::now();
