@@ -25,9 +25,9 @@ cargo run -p my-app -- --lr {lr} --steps {steps}
 
 Reserved placeholders injected automatically:
 - `{trial_id}`: the numeric trial id.
-- `{trial_dir}`: per-trial artifacts directory under `argtuner/<project>/artifacts/`.
-  When `trial.config_id` is present, argtuner uses `trial_<config_id>_b<bracket>` so
-  successive-halving rungs share the same directory.
+- `{trial_dir}`: per-trial artifacts directory, always `argtuner/<project>/artifacts/trial_{trial_id}`.
+  Successive-halving promotions copy the parent rung's artifacts into the child
+  trial's directory rather than sharing a directory across rungs.
 
 - Example template with artifacts:
 ```text
@@ -59,39 +59,66 @@ For example:
 ::ARGTUNER::{"type":"event","name":"model.early_stopped","fields":{}}
 ```
 
-```bash
- [project]
- metric_key = "metric"
- goal = "min"
- pruner = "none"
- inject_trial_placeholders = true
-- `trials.csv`
-- `artifacts/`
+## CLI subcommands
 
-Show the project config and template:
+argtuner ships four subcommands:
 
-```bash
-argtuner show ./argtuner/my-project
-```
-
-Rebuild `trials.csv` from `trials.sqlite` (for example, after manual edits or a corrupt CSV):
+- `run` — run an optimization campaign against a project.
+- `rebuild-csv` — rebuild `trials.csv` from `trials.sqlite` (for example, after
+  manual edits or a corrupt CSV). Tuning runs automatically rebuild this after
+  each trial.
+- `watch` — live TUI dashboard for monitoring trials and metrics as they run
+  (see [Watch](#watch-live-tui) below).
+- `plan` — show the scheduler plan for a project (optionally a specific config id).
 
 ```bash
+argtuner run ./argtuner/my-project
 argtuner rebuild-csv ./argtuner/my-project
-```
-
-*Note: Tuning runs will automatically rebuild this after each trial.*
-
-Show the scheduler plan for a project (optionally a specific config id):
-
-```bash
 argtuner plan ./argtuner/my-project
 argtuner plan ./argtuner/my-project --config-id 3
 ```
 
+## Watch (live TUI)
+
+`argtuner watch` opens a live terminal dashboard while a campaign is running.
+It monitors the SQLite database and prints the schedule/status of each trial.
+
+```bash
+argtuner watch --project ./argtuner/my-project
+argtuner watch --db path/to/trials.sqlite
+argtuner watch --project ./argtuner/my-project --poll-ms 5000
+```
+
+- `--poll-ms` controls how often the dashboard re-reads the database
+  (default **5000 ms**). The first poll fires immediately on launch; later
+  polls re-run on that interval.
+- The dashboard has five windows:
+  - **Trials** — the trial list (id, status, metric). Title is `Trials`.
+  - **Charts** — metric curves for the selected trial. Title is
+    `Trial {id} - Metric Curves` (`Trial {id} - Metric Curve {n}/{total}` while
+    a single curve is focused, or `Trial {id} - Hyperparameter Space` in
+    hyperparameter mode).
+  - **Trial Details** — per-trial fields/epochs. Title is `Trial {id} Details`.
+    Text is selectable/copyable: drag to select, release to copy.
+  - **Hyperparameters** / **Metrics** — toggled in hyperparameter mode (see
+    `h` below).
+- Keybindings:
+  - `q` — quit.
+  - `h` — toggle between Metric-curves mode and Hyperparameter-space mode.
+  - `f` / `Enter` / `Space` — toggle between the chart list and a single
+    focused metric curve.
+  - `+` / `=` — zoom in on a metric curve; `-` — zoom out; `0` — reset zoom.
+  - `Left` / `Right` — pan hyperparameter axes (hyperparameter mode).
+  - `Up` / `k` and `Down` / `j` — move the chart selection; `PageUp`/`PageDown`,
+    `Home`/`End` — scroll.
+- The bottom hint bar in the Charts window always shows the zoom/view keys.
+- The **Debug Log** is available from the command palette: press `Ctrl+A`, then
+  select "≣ Debug Log". It streams timestamped logs from the running campaign
+  (including each poll tick).
+
 ## Example: linear regression
 
-There is a runnable example in `crates/tuner/examples/linear_regression.rs`:
+There is a runnable example in `examples/linear_regression.rs`:
 
 ```bash
 cargo run -p argtuner --example linear_regression -- --lr 0.01 --steps 50
@@ -109,40 +136,9 @@ Run optimization:
 argtuner run ./argtuner/my-project
 ```
 
-Record a running trial:
-
-```bash
-argtuner trial ./argtuner/my-project start \
-  --trial-id 5 \
-  --value lr=0.001 \
-  --value steps=100
-```
-
-Finish a trial and update the row:
-
-```bash
-argtuner trial ./argtuner/my-project finish \
-  --trial-id 5 \
-  --status ok \
-  --elapsed-ms 1234 \
-  --value score=0.42
-```
-
-Show the rendered command for a trial:
-
-```bash
-argtuner trial ./argtuner/my-project command --trial-id 5
-```
-
-Show the rendered command with resolved placeholder values:
-
-```bash
-argtuner trial ./argtuner/my-project command --trial-id 5 --show-values
-```
-
 ## Example: guitar tuning demo
 
-The [guitar tuning demo](crates/tuner/examples/guitar_tuning/README.md) keeps a
+The [guitar tuning demo](examples/guitar_tuning/README.md) keeps a
 simple CLI, its `argtuner.toml`, and the generated `trials.csv` in the same
 directory. Each placeholder represents a candidate string frequency (E2 through
 E4). The CLI computes the mean absolute detuning, prints helpful diagnostics,
@@ -351,5 +347,5 @@ Notes:
 - Hyperparameters are stored under `hp.` and result payload fields use `metric.`.
 - If new keys appear, the CSV is rewritten with a superset header and all
   existing rows preserved.
-- The rendered command is not stored; use `argtuner trial <project> command --trial-id N`
-  to reconstruct it from the template and recorded values.
+- The rendered command is not stored; it is reconstructed from the template and
+  the recorded `hp.*` values at run time.
