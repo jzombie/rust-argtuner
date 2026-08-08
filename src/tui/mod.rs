@@ -44,17 +44,9 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         keybindings: argtuner_keybindings(),
         ..Default::default()
     };
-    let mut inner = TermWmApp::<AppComponent>::new_with_actions(
+    let mut inner = TermWmApp::<AppComponent>::new_with_config(
         AppContext::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
         config,
-        vec![
-            TermWmAction::CloseMenu,
-            TermWmAction::ToggleMouseCapture,
-            TermWmAction::ToggleClipboardMode,
-            TermWmAction::ToggleWindowSelection,
-            TermWmAction::ToggleDebugWindow,
-            TermWmAction::ExitUi,
-        ],
     );
 
     let trials_key = inner.open_window(AppRootComponent::Custom(AppComponent::Trials(
