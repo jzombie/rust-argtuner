@@ -474,8 +474,7 @@ impl AppState {
             let idx = selected.min(trials.len().saturating_sub(1));
             let text = match trials.get(idx) {
                 Some(trial) => {
-                    let epoch_rows =
-                        epochs.get(&trial.trial_id).cloned().unwrap_or_default();
+                    let epoch_rows = epochs.get(&trial.trial_id).cloned().unwrap_or_default();
                     Text::from(trial_detail_lines(trial, &epoch_rows))
                 }
                 None => Text::from(vec![Line::from("No trial selected.")]),
@@ -496,10 +495,13 @@ impl AppState {
         let trial_id = trials.get(selected).map(|t| t.trial_id);
         let wm = self.inner.wm();
         wm.set_window_title(self.trials_key, "Trials");
-        wm.set_window_title(self.details_key, trial_id.map_or_else(
-            || "Trial Details".to_string(),
-            |id| format!("Trial {id} Details"),
-        ));
+        wm.set_window_title(
+            self.details_key,
+            trial_id.map_or_else(
+                || "Trial Details".to_string(),
+                |id| format!("Trial {id} Details"),
+            ),
+        );
         wm.set_window_title(
             self.charts_key,
             charts_window_title(mode, cv, cs, ml, charts_focused, trial_id),
@@ -604,20 +606,22 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
     }
 
     /// Schedule the recurring SQLite refresh on the app-task scheduler. Called
-    /// by `run_with_defaults` before the event loop starts. An immediate
-    /// one-shot fires right away so the first poll doesn't wait a full
+    /// by `run_with_defaults` before the event loop starts. `fire_immediate`
+    /// runs the first poll right away so the initial load doesn't wait a full
     /// `--poll-ms` interval.
     fn on_app_scheduler_ready(&mut self, handle: TaskHandle<AppTask<Self>>) {
-        let poll = AppTask::new(|app: &mut Self| {
-            app.refresh_trials();
-            tracing::info!(
-                "poll tick: {} trials, {} epoch rows",
-                app.trials.len(),
-                app.epoch_rows.len()
-            );
-        });
-        let _ = handle.schedule_once(Duration::ZERO, poll.clone());
-        let _ = handle.schedule_repeating(self.poll, poll);
+        let _ = handle.schedule_repeating(
+            self.poll,
+            true,
+            AppTask::new(|app: &mut Self| {
+                app.refresh_trials();
+                tracing::info!(
+                    "refresh trials poll tick: {} trials, {} epoch rows",
+                    app.trials.len(),
+                    app.epoch_rows.len()
+                );
+            }),
+        );
     }
 
     fn toggle_debug_window(&mut self) {
