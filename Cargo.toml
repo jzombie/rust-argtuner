@@ -15,8 +15,6 @@ members = [
     "bindings/rust",
     "bindings/talkback-derive",
     "crates/common",
-    "crates/tooling/interactive-probe",
-    "crates/tooling/loss-pattern-generator",
 ]
 resolver = "2"
 
@@ -99,3 +97,4 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage
 
 [dev-dependencies]
 indoc.workspace = true
+indicatif.workspace = true

@@ -42,12 +42,9 @@ enum Commands {
     },
     /// Watch trials in a live TUI
     Watch {
-        /// Path to the project directory (uses its trials.sqlite)
+        /// Path to the project directory (watches <dir>/trials.sqlite)
         #[arg(long, value_name = "PROJECT_DIR")]
-        project: Option<PathBuf>,
-        /// Path to trials.sqlite (overrides --project)
-        #[arg(long, value_name = "PATH")]
-        db: Option<PathBuf>,
+        project: PathBuf,
         /// Polling interval (ms)
         #[arg(long, default_value_t = 5000)]
         poll_ms: u64,
@@ -94,20 +91,9 @@ fn main() {
                 }
             }
         }
-        Commands::Watch {
-            project,
-            db,
-            poll_ms,
-        } => {
-            let db_path = match (project, db) {
-                (_, Some(db)) => db.clone(),
-                (Some(project_dir), None) => {
-                    let project = Project::new(project_dir);
-                    project.trials_db_path()
-                }
-                (None, None) => PathBuf::from("trials.sqlite"),
-            };
-            if let Err(e) = tui::run(db_path, *poll_ms) {
+        Commands::Watch { project, poll_ms } => {
+            let project = Project::new(project);
+            if let Err(e) = tui::run(project.trials_db_path(), *poll_ms) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
@@ -146,5 +132,36 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn watch_requires_project() {
+        assert!(
+            Cli::try_parse_from(["argtuner", "watch"]).is_err(),
+            "watch without --project must fail"
+        );
+        assert!(
+            Cli::try_parse_from(["argtuner", "watch", "--project", "x"]).is_ok(),
+            "watch --project <dir> must parse"
+        );
+        assert!(
+            Cli::try_parse_from(["argtuner", "watch", "--db", "x"]).is_err(),
+            "--db flag no longer exists"
+        );
+    }
+
+    #[test]
+    fn watch_poll_ms_defaults_to_5000() {
+        let cli = Cli::try_parse_from(["argtuner", "watch", "--project", "x"]).expect("parses");
+        let super::Commands::Watch { poll_ms, .. } = cli.command else {
+            panic!("expected Watch command");
+        };
+        assert_eq!(poll_ms, 5000);
     }
 }

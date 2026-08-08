@@ -81,11 +81,11 @@ argtuner plan ./argtuner/my-project --config-id 3
 ## Watch (live TUI)
 
 `argtuner watch` opens a live terminal dashboard while a campaign is running.
-It monitors the SQLite database and prints the schedule/status of each trial.
+It monitors the project's `trials.sqlite` and prints the schedule/status of each
+trial. `--project` is required.
 
 ```bash
 argtuner watch --project ./argtuner/my-project
-argtuner watch --db path/to/trials.sqlite
 argtuner watch --project ./argtuner/my-project --poll-ms 5000
 ```
 
@@ -118,23 +118,23 @@ argtuner watch --project ./argtuner/my-project --poll-ms 5000
 
 ## Example: linear regression
 
-There is a runnable example in `examples/linear_regression.rs`:
+There is a runnable, self-contained example in `examples/linear_regression/`
+(main.rs + argtuner.toml + README).
+
+Run directly:
 
 ```bash
 cargo run -p argtuner --example linear_regression -- --lr 0.01 --steps 50
 ```
 
-You can tune it by creating a project with a template like:
-
-```text
-cargo run -p argtuner --example linear_regression -- --lr {lr} --steps {steps}
-```
-
-Run optimization:
+Tune it:
 
 ```bash
-argtuner run ./argtuner/my-project
+cargo run -p argtuner -- run examples/linear_regression
 ```
+
+The bundled `argtuner.toml` searches `lr` (log-scale) and `steps` over a small
+random budget.
 
 ## Example: guitar tuning demo
 
@@ -157,6 +157,29 @@ Or launch the bundled argtuner project (uses PSO with six float parameters):
 
 ```bash
 cargo run -p argtuner -- run examples/guitar_tuning
+```
+
+## Example: interactive probe
+
+The [interactive probe](examples/interactive_probe/README.md) is a REPL that
+lets you manually emit ARGTUNER event lines to drive the tuner and validate
+logging/UX (e.g. `result 0.42`, `event model.early_stopped`,
+`invalid <reason>`).
+
+```bash
+cargo run -p argtuner -- run examples/interactive_probe
+```
+
+## Example: loss-pattern generator
+
+The [loss-pattern generator](examples/loss_pattern_generator/README.md)
+simulates synthetic training runs (smooth decay, overfitting, spikes, noisy)
+and emits per-step and per-epoch loss events, so you can explore the tuner's
+visualization and `watch` TUI without training a real model.
+
+```bash
+cargo run -p argtuner -- run examples/loss_pattern_generator
+cargo run -p argtuner -- watch --project examples/loss_pattern_generator
 ```
 
 ## Optimization
