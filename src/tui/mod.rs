@@ -604,16 +604,20 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
     }
 
     /// Schedule the recurring SQLite refresh on the app-task scheduler. Called
-    /// by `run_with_defaults` before the event loop starts.
+    /// by `run_with_defaults` before the event loop starts. An immediate
+    /// one-shot fires right away so the first poll doesn't wait a full
+    /// `--poll-ms` interval.
     fn on_app_scheduler_ready(&mut self, handle: TaskHandle<AppTask<Self>>) {
-        let _ = handle.schedule_repeating(self.poll, AppTask::new(|app: &mut Self| {
+        let poll = AppTask::new(|app: &mut Self| {
             app.refresh_trials();
             tracing::info!(
                 "poll tick: {} trials, {} epoch rows",
                 app.trials.len(),
                 app.epoch_rows.len()
             );
-        }));
+        });
+        let _ = handle.schedule_once(Duration::ZERO, poll.clone());
+        let _ = handle.schedule_repeating(self.poll, poll);
     }
 
     fn toggle_debug_window(&mut self) {
