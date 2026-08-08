@@ -620,6 +620,10 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
         self.inner.toggle_debug_window();
     }
 
+    fn wm_new_terminal(&mut self) -> std::io::Result<()> {
+        self.inner.wm_new_terminal()
+    }
+
     fn open_exit_confirm(&mut self) {
         self.inner.open_exit_confirm();
     }
