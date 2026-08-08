@@ -311,7 +311,14 @@ impl CommandObjective {
             let epoch_results = payload.epoch_results.clone();
             let epoch_fields = payload.epoch_fields();
             let step_fields = payload.step_fields();
-            Ok((metric, score, extra_fields, epoch_results, epoch_fields, step_fields))
+            Ok((
+                metric,
+                score,
+                extra_fields,
+                epoch_results,
+                epoch_fields,
+                step_fields,
+            ))
         })();
         match result {
             Ok((metric, score, extra_fields, epoch_results, epoch_fields, step_fields)) => {

@@ -64,9 +64,10 @@ impl Tuner {
             store.ensure_project_config(&config_text, options.allow_config_change)?;
         }
         // Start step publisher for real-time TUI communication
-        if let Some((publisher, port)) =
-            StepPublisher::bind(argtuner_common::STEP_PUBLISHER_PORT, store.step_cache_handle())
-        {
+        if let Some((publisher, port)) = StepPublisher::bind(
+            argtuner_common::STEP_PUBLISHER_PORT,
+            store.step_cache_handle(),
+        ) {
             eprintln!("step publisher listening on port {port}");
             store = store.with_step_publisher(publisher);
         }

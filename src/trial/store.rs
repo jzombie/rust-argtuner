@@ -292,9 +292,10 @@ impl TrialStore {
                 && let Ok(json) = serde_json::to_string(&serde_json::json!({
                     "trial_id": trial_id,
                     "steps": steps.iter().map(|r| &r.fields).collect::<Vec<_>>(),
-                })) {
-                    publisher.push(&json);
-                }
+                }))
+            {
+                publisher.push(&json);
+            }
         }
         Ok(())
     }
@@ -1119,7 +1120,10 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(msg.is_some(), "should receive pushed message after flush_steps");
+        assert!(
+            msg.is_some(),
+            "should receive pushed message after flush_steps"
+        );
         let received = msg.unwrap();
         assert!(
             received.contains("trial_id"),
