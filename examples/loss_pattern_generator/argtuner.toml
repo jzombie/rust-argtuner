@@ -1,0 +1,33 @@
+template = "cargo run -q -p argtuner --example loss_pattern_generator -- --metric-key val_loss --checkpoint-dir {trial_dir} --pattern {pattern} --noise {noise} --spike-prob {spike_prob} --epoch-time {epoch_time}"
+
+[project]
+metric_key = "val_loss"
+goal = "min"
+
+[sampler]
+type = "random"
+
+[scheduler]
+type = "fixed"
+n_trials = 10
+
+[space]
+[[space.params]]
+name = "pattern"
+type = "Choice"
+values = ["smooth", "overfitting", "underfitting", "spikes", "noisy-smooth"]
+
+[[space.params]]
+name = "noise"
+min = 0.0
+max = 0.5
+
+[[space.params]]
+name = "spike_prob"
+min = 0.0
+max = 0.2
+
+[[space.params]]
+name = "epoch_time"
+min = 50.0
+max = 100.0

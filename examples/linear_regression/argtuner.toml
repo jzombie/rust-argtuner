@@ -1,0 +1,27 @@
+template = "cargo run -p argtuner --example linear_regression -- --lr {lr} --steps {steps} --checkpoint-dir {trial_dir}"
+
+[project]
+metric_key = "loss"
+goal = "min"
+inject_trial_placeholders = true
+
+[sampler]
+type = "random"
+
+[scheduler]
+type = "fixed"
+n_trials = 5
+seed = 42
+
+[space]
+[[space.params]]
+name = "lr"
+min = 0.001
+max = 0.1
+log_scale = true
+
+[[space.params]]
+name = "steps"
+min = 50
+max = 500
+step = 50

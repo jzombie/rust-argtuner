@@ -1,0 +1,14 @@
+template = "cargo run -q -p argtuner --example interactive_probe -- --metric-key metric --checkpoint-dir {trial_dir}"
+
+[project]
+metric_key = "metric"
+
+[sampler]
+type = "random"
+
+[scheduler]
+type = "fixed"
+n_trials = 5
+
+[space]
+params = []

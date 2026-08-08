@@ -3,6 +3,8 @@ name = "argtuner-common"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+
+# TODO: Figure out if this *should* be published (and refactor if so)
+publish = false
 
 [dependencies]
