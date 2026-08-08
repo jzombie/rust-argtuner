@@ -63,6 +63,7 @@ thiserror = "2.0.17"
 toml = "0.9.10"
 vt100 = "0.16.2"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+tracing = "0.1.44"
 
 [dependencies]
 argmin.workspace = true
@@ -92,6 +93,7 @@ term-wm-render.workspace = true
 term-wm-ui-facade.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+tracing.workspace = true
 vt100.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 

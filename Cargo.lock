@@ -172,6 +172,7 @@ dependencies = [
  "term-wm-ui-facade",
  "thiserror 2.0.18",
  "toml",
+ "tracing",
  "vt100",
  "windows-sys 0.61.2",
 ]

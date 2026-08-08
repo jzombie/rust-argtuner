@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use argtuner::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
 use argtuner::trial::store::StepSubscriber;
@@ -35,6 +35,7 @@ use term_wm_console::console_event_source::ConsoleEventSource;
 use term_wm_console::console_render_target::ConsoleRenderTarget;
 use term_wm_core::hitbox_registry::HitboxRegistry;
 use term_wm_core::impl_component_delegate;
+use term_wm_core::task_scheduler::{AppTask, TaskHandle};
 use term_wm_ui_facade::{LayerComponent, OverlayComponent};
 
 pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
@@ -43,10 +44,19 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         keybindings: argtuner_keybindings(),
         ..Default::default()
     };
-    let mut inner = TermWmApp::<AppComponent>::new_with_config(
+    let mut inner = TermWmApp::<AppComponent>::new_with_actions(
         AppContext::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
         config,
+        vec![
+            TermWmAction::CloseMenu,
+            TermWmAction::ToggleMouseCapture,
+            TermWmAction::ToggleClipboardMode,
+            TermWmAction::ToggleWindowSelection,
+            TermWmAction::ToggleDebugWindow,
+            TermWmAction::ExitUi,
+        ],
     );
+
     let trials_key = inner.open_window(AppRootComponent::Custom(AppComponent::Trials(
         mk_trials_sv(),
     )));
@@ -70,9 +80,6 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         inner,
         db_path,
         poll,
-        last_refresh: Instant::now()
-            .checked_sub(Duration::from_secs(60))
-            .unwrap_or_else(Instant::now),
         trials: Vec::new(),
         epoch_rows: BTreeMap::new(),
         step_rows: BTreeMap::new(),
@@ -101,6 +108,10 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         wm.set_closable(k, false);
     }
     app.apply_chart_mode();
+    // Create the hidden Debug Log window + install the logging subscriber so
+    // the Debug Log is available (palette-only, like term-wm's main.rs) and
+    // recurring app ticks can log into it.
+    app.inner.init_system_windows();
 
     let mut output = ConsoleRenderTarget::new()?;
     let mut input = ConsoleEventSource::new();
@@ -332,7 +343,6 @@ struct AppState {
     inner: TermWmApp<AppComponent>,
     db_path: PathBuf,
     poll: Duration,
-    last_refresh: Instant,
     trials: Vec<TrialRow>,
     epoch_rows: BTreeMap<i64, Vec<TrialRow>>,
     step_rows: BTreeMap<i64, Vec<TrialRow>>,
@@ -589,22 +599,25 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
     }
 
     fn render(&mut self, backend: &mut dyn RenderBackend) {
-        // TODO(term-wm): This time-gated sqlite polling is a stopgap. Replace
-        // `refresh_trials()` with a recurring task scheduled through the core's
-        // `TaskScheduler` (it already supports `schedule_repeating`, see
-        // term-wm-core/src/task_scheduler.rs), or another core-provided app tick
-        // mechanism, instead of piggybacking on the 60fps render hook. That
-        // requires the runner to dispatch an app-level recurring payload — the
-        // current `SystemTask` enum only carries internal tasks (DragSnap,
-        // TemporalDwellTick, DismissNotification, ClearTabOutline), so a generic
-        // app callback/recurring task variant needs to be added to the core
-        // before this can be wired up.
-        if self.last_refresh.elapsed() >= self.poll {
-            self.refresh_trials();
-            self.last_refresh = Instant::now();
-        }
         self.push_data_to_components();
         self.inner.render_app(backend);
+    }
+
+    /// Schedule the recurring SQLite refresh on the app-task scheduler. Called
+    /// by `run_with_defaults` before the event loop starts.
+    fn on_app_scheduler_ready(&mut self, handle: TaskHandle<AppTask<Self>>) {
+        let _ = handle.schedule_repeating(self.poll, AppTask::new(|app: &mut Self| {
+            app.refresh_trials();
+            tracing::info!(
+                "poll tick: {} trials, {} epoch rows",
+                app.trials.len(),
+                app.epoch_rows.len()
+            );
+        }));
+    }
+
+    fn toggle_debug_window(&mut self) {
+        self.inner.toggle_debug_window();
     }
 
     fn open_exit_confirm(&mut self) {
