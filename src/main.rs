@@ -49,7 +49,7 @@ enum Commands {
         #[arg(long, value_name = "PATH")]
         db: Option<PathBuf>,
         /// Polling interval (ms)
-        #[arg(long, default_value_t = 500)]
+        #[arg(long, default_value_t = 5000)]
         poll_ms: u64,
     },
     /// Show the scheduler plan for a project
