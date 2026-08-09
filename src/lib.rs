@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod checkpoint;
 pub mod command;
 pub mod constants;
+pub mod discover;
 pub mod lock;
 pub mod project;
 pub mod sampler;
@@ -16,6 +17,8 @@ pub mod workspace;
 pub use workspace::workspace_root;
 #[doc(hidden)]
 pub mod test_support;
+
+pub use discover::find_projects;
 
 pub use crate::command::template::{CommandTemplate, TemplateError};
 pub use project::{

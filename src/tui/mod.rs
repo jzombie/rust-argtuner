@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use argtuner::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
+use argtuner::project::Project;
 use argtuner::trial::store::StepSubscriber;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -38,8 +39,9 @@ use term_wm_core::impl_component_delegate;
 use term_wm_core::task_scheduler::{AppTask, TaskHandle};
 use term_wm_ui_facade::{LayerComponent, OverlayComponent};
 
-pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
+pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
+    let db_path = project.trials_db_path();
     let config = WmConfig {
         keybindings: argtuner_keybindings(),
         ..Default::default()
@@ -64,12 +66,16 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
     let metrics_key = inner.open_window(AppRootComponent::Custom(AppComponent::Metrics(
         ToggleListComponent::new("Metrics"),
     )));
+    let project_info_key = inner.open_window(AppRootComponent::Custom(AppComponent::ProjectInfo(
+        mk_project_info_sv(),
+    )));
 
     let mut step_subscriber = StepSubscriber::new();
     let _ = step_subscriber.connect(argtuner_common::STEP_PUBLISHER_PORT);
 
     let mut app = AppState {
         inner,
+        project,
         db_path,
         poll,
         trials: Vec::new(),
@@ -84,6 +90,7 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         details_key,
         params_key,
         metrics_key,
+        project_info_key,
     };
 
     let wm = app.inner.wm();
@@ -93,6 +100,7 @@ pub fn run(db_path: PathBuf, poll_ms: u64) -> io::Result<()> {
         (app.details_key, "Trial Details"),
         (app.params_key, "Hyperparameters"),
         (app.metrics_key, "Metrics"),
+        (app.project_info_key, "Project Info"),
     ] {
         wm.set_window_title(k, t);
         // The Watch TUI's panes are fixed views — never closable via the
@@ -321,6 +329,7 @@ enum AppComponent {
     Details(ScrollViewComponent<TextRendererComponent>),
     Params(ToggleListComponent),
     Metrics(ToggleListComponent),
+    ProjectInfo(ScrollViewComponent<TextRendererComponent>),
 }
 
 impl_component_delegate!(AppComponent {
@@ -328,11 +337,13 @@ impl_component_delegate!(AppComponent {
     Charts,
     Details,
     Params,
-    Metrics
+    Metrics,
+    ProjectInfo
 });
 
 struct AppState {
     inner: TermWmApp<AppComponent>,
+    project: Project,
     db_path: PathBuf,
     poll: Duration,
     trials: Vec<TrialRow>,
@@ -347,6 +358,7 @@ struct AppState {
     details_key: WindowKey,
     params_key: WindowKey,
     metrics_key: WindowKey,
+    project_info_key: WindowKey,
 }
 
 impl AppState {
@@ -381,6 +393,13 @@ impl AppState {
     fn metrics_list(&mut self) -> Option<&mut ToggleListComponent> {
         match self.inner.wm().component_for_key_mut(self.metrics_key) {
             Some(AppRootComponent::Custom(AppComponent::Metrics(l))) => Some(l),
+            _ => None,
+        }
+    }
+
+    fn project_info_sv(&mut self) -> Option<&mut ScrollViewComponent<TextRendererComponent>> {
+        match self.inner.wm().component_for_key_mut(self.project_info_key) {
+            Some(AppRootComponent::Custom(AppComponent::ProjectInfo(sv))) => Some(sv),
             _ => None,
         }
     }
@@ -472,6 +491,30 @@ impl AppState {
                 None => Text::from(vec![Line::from("No trial selected.")]),
             };
             sv.content.borrow_mut().set_text(text);
+        }
+        let project = &self.project;
+        let poll_ms = self.poll.as_millis();
+        let trial_count = self.trials.len();
+        let info_text = {
+            let lines = [
+                ("Project Root", project.root().display().to_string()),
+                (
+                    "Config File",
+                    project.unified_config_path().display().to_string(),
+                ),
+                ("Trials CSV", project.trials_path().display().to_string()),
+                (
+                    "Trials SQLite",
+                    project.trials_db_path().display().to_string(),
+                ),
+                ("Artifacts", project.artifacts_dir().display().to_string()),
+                ("Poll Interval", format!("{poll_ms}ms")),
+                ("Trial Count", trial_count.to_string()),
+            ];
+            project_info_text(&lines)
+        };
+        if let Some(sv) = self.project_info_sv() {
+            sv.content.borrow_mut().set_text(info_text);
         }
 
         // Titles — standalone block AFTER all component borrows are dropped
@@ -824,6 +867,16 @@ fn mk_details_sv() -> ScrollViewComponent<TextRendererComponent> {
     sv.content.borrow_mut().set_selection_enabled(true);
     // Full keyboard scroll: Up/Down/PageUp/PageDown/Home/End all scroll the
     // details viewport. TextRendererComponent has no key handling of its own.
+    sv.set_keyboard_mode(ScrollKeyMode::Full);
+    sv
+}
+
+fn mk_project_info_sv() -> ScrollViewComponent<TextRendererComponent> {
+    let mut sv = ScrollViewComponent::new(TextRendererComponent::new());
+    // Same presentation as Trial Details: one `key = value` line each, no
+    // reflow, full keyboard scroll.
+    sv.content.borrow_mut().set_wrap(false);
+    sv.content.borrow_mut().set_selection_enabled(true);
     sv.set_keyboard_mode(ScrollKeyMode::Full);
     sv
 }
@@ -1729,6 +1782,14 @@ fn display_axis_name(value: &str) -> String {
         return stripped.to_string();
     }
     value.to_string()
+}
+
+fn project_info_text(rows: &[(&str, String)]) -> Text<'static> {
+    Text::from(
+        rows.iter()
+            .map(|(k, v)| Line::from(format!("{k}: {v}")))
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn trial_detail_lines(trial: &TrialRow, epochs: &[TrialRow]) -> Vec<Line<'static>> {

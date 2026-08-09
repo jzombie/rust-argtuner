@@ -175,6 +175,7 @@ dependencies = [
  "toml",
  "tracing",
  "vt100",
+ "walkdir",
  "windows-sys 0.61.2",
 ]
 
