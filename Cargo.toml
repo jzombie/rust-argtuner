@@ -60,7 +60,6 @@ term-wm-ui-facade = { path = "../term-wm/crates/term-wm-ui-facade" }
 thiserror = "2.0.17"
 toml = "0.9.10"
 tracing = "0.1.44"
-vt100 = "0.16.2"
 ignore = "0.4.33"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
@@ -93,7 +92,6 @@ term-wm-ui-facade.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true
-vt100.workspace = true
 ignore.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
