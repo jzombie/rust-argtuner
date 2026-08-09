@@ -2222,3 +2222,86 @@ examples/
   two new examples.
 - All green: 71 lib + 2 CLI tests + integration/example suites; clippy clean (only pre-existing
   talkback warnings); `cargo test --workspace --all-features --lib --bins --tests --examples` passes.
+
+## AMENDMENT 20 — Gate the `h` (Custom(1)) mode toggle to built-in argtuner windows only
+
+### Problem (user feedback)
+The `h` key (bound to `TermWmAction::Custom(1)`, src/tui/mod.rs:713-714) toggles argtuner's
+Metrics ↔ HyperParams chart mode in `AppState::handle_app_event` (src/tui/mod.rs:583-591). It fires
+whenever the argtuner TUI owns the terminal, regardless of which window is focused. argtuner can
+open real **terminal windows** via `wm_new_terminal` (src/tui/mod.rs:623-626 → term-wm
+`TermWmApp::wm_new_terminal`, which creates `AppRootComponent::Core(CoreWmComponent::Terminal)`).
+When such a terminal app is focused, pressing `h` should go to that app — but argtuner intercepts it
+and flips the mode, interfering with the terminal app's input.
+
+### Root cause (verified)
+- argtuner's windows are `AppRootComponent::Custom(AppComponent::{Trials,Charts,Details,Params,Metrics})`
+  (src/tui/mod.rs:318-331).
+- Terminal windows (via `wm_new_terminal`) are `AppRootComponent::Core(CoreWmComponent::Terminal)`
+  (term-wm src/components.rs:9-13, src/term_wm_app.rs:248).
+- `AppState::handle_app_event` (src/tui/mod.rs:570-596) handles `Custom(1)` unconditionally; there is
+  no focus check.
+
+### Change (all in `/Volumes/2TB Storage Vault/rust-argtuner/src/tui/mod.rs`)
+Gate the `Custom(1)` branch on the focused window being a built-in argtuner (`Custom`) window. Only
+argtuner's own windows should respond to `h`; terminal (`Core`) windows must pass the key through.
+
+```rust
+fn handle_app_event(&mut self, event: &Event) -> bool {
+    if let Event::Key(key) = event
+        && key.kind == KeyKind::Press
+    {
+        let kb = self.inner.wm().keybindings();
+        if kb.matches(TermWmAction::Quit, key) {
+            self.open_exit_confirm();
+            return true;
+        }
+        // `h` (Metrics ↔ HyperParams) only applies to argtuner's built-in
+        // windows. When a terminal window is focused, let the key through so
+        // the underlying app receives it.
+        if kb.matches(TermWmAction::Custom(1), key)
+            && self.is_argtuner_window_focused()
+        {
+            self.chart_mode = match self.chart_mode {
+                ChartMode::Metrics => ChartMode::HyperParams,
+                ChartMode::HyperParams => ChartMode::Metrics,
+            };
+            self.apply_chart_mode();
+            return true;
+        }
+    }
+    self.inner.handle_app_event(event)
+}
+
+/// True when the focused window is one of argtuner's built-in windows
+/// (`AppRootComponent::Custom(...)`), i.e. NOT a terminal (`Core`) window.
+fn is_argtuner_window_focused(&self) -> bool {
+    let key = self.inner.wm().focused_window();
+    matches!(
+        self.inner.wm().component_for_key(key),
+        Some(AppRootComponent::Custom(_))
+    )
+}
+```
+
+Notes:
+- `WindowManager::focused_window()` returns the focused `WindowKey`; `component_for_key(&self, key)`
+  (term-wm mod.rs:2277) is the immutable accessor already used by term-wm internally — no mutable
+  borrow, so it composes with the existing `handle_app_event` flow.
+- `Quit` (`q`) stays global (exiting the TUI from anywhere is fine and intended).
+- No keybinding change: `h` remains the Metrics ↔ HyperParams toggle; it simply stops firing when a
+  terminal window has focus.
+
+### Files to modify
+- `/Volumes/2TB Storage Vault/rust-argtuner/src/tui/mod.rs` — focus gate in `handle_app_event` +
+  `is_argtuner_window_focused` helper.
+
+### Verification
+1. `cargo build` + `cargo clippy` + `cargo test` (71 lib + 2 CLI tests) — green.
+2. Manual (argtuner Watch):
+   - With a built-in window (Trials/Charts/Details) focused, press `h` → mode toggles (Metrics ↔
+     HyperParams) as before.
+   - Open a terminal window (`Ctrl+A` → New Window, or whatever `wm_new_terminal` is bound to);
+     focus it and press `h` → the mode does NOT toggle; the terminal app receives `h` (e.g. a shell
+     echoes nothing / a pager navigates), confirming the key is no longer intercepted.
+   - Press `q` anywhere → still quits.
