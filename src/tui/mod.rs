@@ -406,17 +406,6 @@ impl AppState {
         }
     }
 
-    /// True when the focused window is app-owned (`AppRootComponent::Custom`).
-    /// Core/system windows (Terminal, Debug Log, System Panel, …) own their own
-    /// input, so the app must not intercept global shortcuts for them.
-    fn focused_window_is_app(&mut self) -> bool {
-        let wm = self.inner.wm();
-        matches!(
-            wm.component_for_key(wm.focused_window()),
-            Some(AppRootComponent::Custom(_))
-        )
-    }
-
     fn apply_chart_mode(&mut self) {
         let wm = self.inner.wm();
         match self.chart_mode {
@@ -616,7 +605,9 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
     fn handle_app_event(&mut self, event: &Event) -> bool {
         // filter keeps this a single if-let: no let-chains (pre-1.88 stable)
         // and no `clippy::collapsible_if` from nesting an if inside an if-let.
-        if let Some(key) = pressed_key(event).filter(|_| self.focused_window_is_app()) {
+        // App shortcuts apply only while an app-owned (Custom) window is
+        // focused; core windows (Terminal, Debug Log, …) own their own input.
+        if let Some(key) = pressed_key(event).filter(|_| self.inner.focused_is_custom()) {
             let kb = self.inner.wm().keybindings();
             if kb.matches(TermWmAction::Quit, key) {
                 self.open_exit_confirm();
