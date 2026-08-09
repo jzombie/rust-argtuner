@@ -13,7 +13,18 @@ use ignore::WalkBuilder;
 /// hardcoded. Unreadable entries are skipped best-effort. Results are sorted
 /// and nested projects (a project inside another project's tree) are collapsed
 /// to the outermost one.
+fn normalize_root(root: &Path) -> &Path {
+    if root.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        root
+    }
+}
+
 pub fn find_projects(root: &Path) -> Vec<PathBuf> {
+    // Defensive: an empty root ("") yields undefined walker behavior and can
+    // break the starts_with dedup below; normalize to the current dir.
+    let root = normalize_root(root);
     let mut results = Vec::new();
     // Defaults already give hidden(true), parents(true), git_ignore(true),
     // git_global(true), git_exclude(true), ignore(true) — i.e. .gitignore/.ignore
@@ -24,9 +35,12 @@ pub fn find_projects(root: &Path) -> Vec<PathBuf> {
         let Ok(entry) = result else {
             continue;
         };
+        // Direct &OsStr == &str comparison (OsStr: PartialEq<str>); no UTF-8
+        // round-trip needed. Single if-let keeps this stable on pre-1.88
+        // toolchains (no let-chains) while satisfying clippy::collapsible_if.
         let is_config = entry.file_type().is_some_and(|ft| ft.is_file())
-            && entry.file_name().to_str() == Some(CONFIG_FILENAME);
-        if is_config && let Some(parent) = entry.path().parent() {
+            && entry.file_name() == CONFIG_FILENAME;
+        if let Some(parent) = is_config.then_some(entry.path()).and_then(Path::parent) {
             results.push(parent.to_path_buf());
         }
     }
@@ -120,6 +134,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         fs::create_dir_all(tmp.path().join("x/y")).unwrap();
         assert!(find_projects(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn empty_root_normalizes_to_current_dir() {
+        // "" must behave like "." (no panic, no broken dedup). Tested directly
+        // to avoid mutating the process cwd under parallel test execution.
+        assert_eq!(normalize_root(Path::new("")), Path::new("."));
+        assert_eq!(normalize_root(Path::new("x")), Path::new("x"));
     }
 
     #[test]

@@ -106,11 +106,11 @@ fn main() {
             }
         }
         Commands::Find { dir } => {
-            // `dir` here is `&Option<PathBuf>` (outer `match &cli.command`
-            // borrows), so borrow with `match &dir` and keep the owned
-            // `PathBuf` alive in the outer scope.
-            let root: Cow<Path> = match &dir {
-                Some(d) => Cow::Borrowed(d.as_path()),
+            // `dir` is `&Option<PathBuf>` (outer `match &cli.command` borrows);
+            // `.as_deref()` flattens to `Option<&Path>` so the Cow only owns
+            // the current_dir fallback.
+            let root: Cow<Path> = match dir.as_deref() {
+                Some(d) => Cow::Borrowed(d),
                 None => match std::env::current_dir() {
                     Ok(d) => Cow::Owned(d),
                     Err(e) => {

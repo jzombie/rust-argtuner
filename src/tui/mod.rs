@@ -73,9 +73,10 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
     let mut step_subscriber = StepSubscriber::new();
     let _ = step_subscriber.connect(argtuner_common::STEP_PUBLISHER_PORT);
 
+    let project_info_static = project_info_lines(&project, poll.as_millis());
+
     let mut app = AppState {
         inner,
-        project,
         db_path,
         poll,
         trials: Vec::new(),
@@ -91,6 +92,8 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         params_key,
         metrics_key,
         project_info_key,
+        project_info_static,
+        project_info_count: usize::MAX,
     };
 
     let wm = app.inner.wm();
@@ -343,7 +346,6 @@ impl_component_delegate!(AppComponent {
 
 struct AppState {
     inner: TermWmApp<AppComponent>,
-    project: Project,
     db_path: PathBuf,
     poll: Duration,
     trials: Vec<TrialRow>,
@@ -359,6 +361,10 @@ struct AppState {
     params_key: WindowKey,
     metrics_key: WindowKey,
     project_info_key: WindowKey,
+    /// Static Project Info lines (paths + poll) built once at startup.
+    project_info_static: Vec<Line<'static>>,
+    /// Last trial count rendered into the Project Info window.
+    project_info_count: usize,
 }
 
 impl AppState {
@@ -492,29 +498,15 @@ impl AppState {
             };
             sv.content.borrow_mut().set_text(text);
         }
-        let project = &self.project;
-        let poll_ms = self.poll.as_millis();
-        let trial_count = self.trials.len();
-        let info_text = {
-            let lines = [
-                ("Project Root", project.root().display().to_string()),
-                (
-                    "Config File",
-                    project.unified_config_path().display().to_string(),
-                ),
-                ("Trials CSV", project.trials_path().display().to_string()),
-                (
-                    "Trials SQLite",
-                    project.trials_db_path().display().to_string(),
-                ),
-                ("Artifacts", project.artifacts_dir().display().to_string()),
-                ("Poll Interval", format!("{poll_ms}ms")),
-                ("Trial Count", trial_count.to_string()),
-            ];
-            project_info_text(&lines)
-        };
-        if let Some(sv) = self.project_info_sv() {
-            sv.content.borrow_mut().set_text(info_text);
+        let count = self.trials.len();
+        if count != self.project_info_count {
+            self.project_info_count = count;
+            // Clone the cached static lines BEFORE borrowing the component.
+            let mut lines = self.project_info_static.clone();
+            lines.push(Line::from(format!("Trial Count: {count}")));
+            if let Some(sv) = self.project_info_sv() {
+                sv.content.borrow_mut().set_text(Text::from(lines));
+            }
         }
 
         // Titles — standalone block AFTER all component borrows are dropped
@@ -1784,12 +1776,21 @@ fn display_axis_name(value: &str) -> String {
     value.to_string()
 }
 
-fn project_info_text(rows: &[(&str, String)]) -> Text<'static> {
-    Text::from(
-        rows.iter()
-            .map(|(k, v)| Line::from(format!("{k}: {v}")))
-            .collect::<Vec<_>>(),
-    )
+fn project_info_lines(project: &Project, poll_ms: u128) -> Vec<Line<'static>> {
+    vec![
+        Line::from(format!("Project Root: {}", project.root().display())),
+        Line::from(format!(
+            "Config File: {}",
+            project.unified_config_path().display()
+        )),
+        Line::from(format!("Trials CSV: {}", project.trials_path().display())),
+        Line::from(format!(
+            "Trials SQLite: {}",
+            project.trials_db_path().display()
+        )),
+        Line::from(format!("Artifacts: {}", project.artifacts_dir().display())),
+        Line::from(format!("Poll Interval: {poll_ms}ms")),
+    ]
 }
 
 fn trial_detail_lines(trial: &TrialRow, epochs: &[TrialRow]) -> Vec<Line<'static>> {
