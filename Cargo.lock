@@ -2782,7 +2782,7 @@ dependencies = [
 
 [[package]]
 name = "term-wm"
-version = "0.9.15-alpha"
+version = "0.9.16-alpha"
 dependencies = [
  "clap",
  "crossbeam-channel",
@@ -2802,12 +2802,13 @@ dependencies = [
  "term-wm-ui-facade",
  "tracing",
  "tracing-subscriber",
+ "unicode-width",
  "webbrowser",
 ]
 
 [[package]]
 name = "term-wm-console"
-version = "0.9.15-alpha"
+version = "0.9.16-alpha"
 dependencies = [
  "crossbeam-channel",
  "crossterm",
@@ -2822,7 +2823,7 @@ dependencies = [
 
 [[package]]
 name = "term-wm-core"
-version = "0.9.15-alpha"
+version = "0.9.16-alpha"
 dependencies = [
  "bitflags 2.13.1",
  "console",
@@ -2844,7 +2845,7 @@ dependencies = [
 
 [[package]]
 name = "term-wm-crossterm-adapter"
-version = "0.9.15-alpha"
+version = "0.9.16-alpha"
 dependencies = [
  "crossterm",
  "term-wm-events",
@@ -2852,18 +2853,18 @@ dependencies = [
 
 [[package]]
 name = "term-wm-events"
-version = "0.9.15-alpha"
+version = "0.9.16-alpha"
 dependencies = [
  "term-wm-layout-engine",
 ]
 
 [[package]]
 name = "term-wm-layout-engine"
-version = "0.9.15-alpha"
+version = "0.9.16-alpha"
 
 [[package]]
 name = "term-wm-pty-engine"
-version = "0.9.15-alpha"
+version = "0.9.16-alpha"
 dependencies = [
  "arboard",
  "base64 0.23.1",
@@ -2880,11 +2881,11 @@ dependencies = [
 
 [[package]]
 name = "term-wm-render"
-version = "0.9.15-alpha"
+version = "0.9.16-alpha"
 
 [[package]]
 name = "term-wm-sys-ui-components"
-version = "0.9.15-alpha"
+version = "0.9.16-alpha"
 dependencies = [
  "crossterm",
  "ratatui",
@@ -2899,7 +2900,7 @@ dependencies = [
 
 [[package]]
 name = "term-wm-ui-components"
-version = "0.9.15-alpha"
+version = "0.9.16-alpha"
 dependencies = [
  "crossterm",
  "indoc",
@@ -2924,7 +2925,7 @@ dependencies = [
 
 [[package]]
 name = "term-wm-ui-facade"
-version = "0.9.15-alpha"
+version = "0.9.16-alpha"
 dependencies = [
  "term-wm-core",
  "term-wm-render",
