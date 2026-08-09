@@ -17,7 +17,7 @@ use ratatui::widgets::{
 use rusqlite::{Connection, OpenFlags};
 use term_wm::component_context::ScrollHandle;
 use term_wm::components::AppRootComponent;
-use term_wm::events::{Event, KeyCode, KeyKind, KeyModifiers, MouseButton};
+use term_wm::events::{Event, KeyCode, KeyEvent, KeyKind, KeyModifiers, MouseButton};
 use term_wm::helpers::{downcast_ratatui, layout_rect_to_clipped_rect};
 use term_wm::io::RenderTarget;
 use term_wm::keybindings::{KeyBindings, KeyCombo};
@@ -37,7 +37,7 @@ use term_wm_console::console_render_target::ConsoleRenderTarget;
 use term_wm_core::hitbox_registry::HitboxRegistry;
 use term_wm_core::impl_component_delegate;
 use term_wm_core::task_scheduler::{AppTask, TaskHandle};
-use term_wm_ui_facade::{LayerComponent, OverlayComponent};
+use term_wm_ui_facade::{CoreWmComponent, LayerComponent, OverlayComponent};
 
 pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
@@ -603,21 +603,32 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
     }
 
     fn handle_app_event(&mut self, event: &Event) -> bool {
-        if let Event::Key(key) = event
-            && key.kind == KeyKind::Press
-        {
-            let kb = self.inner.wm().keybindings();
-            if kb.matches(TermWmAction::Quit, key) {
-                self.open_exit_confirm();
-                return true;
-            }
-            if kb.matches(TermWmAction::Custom(1), key) {
-                self.chart_mode = match self.chart_mode {
-                    ChartMode::Metrics => ChartMode::HyperParams,
-                    ChartMode::HyperParams => ChartMode::Metrics,
-                };
-                self.apply_chart_mode();
-                return true;
+        if let Some(key) = pressed_key(event) {
+            // A Terminal pane is a live PTY (spawnable via the command
+            // palette): its raw key bytes must reach the child, never be
+            // stolen for app shortcuts. Gate Quit/Custom(1) on focus so q/h
+            // pass through to the shell/pager/editor.
+            let is_terminal = {
+                let wm = self.inner.wm();
+                matches!(
+                    wm.component_for_key(wm.focused_window()),
+                    Some(AppRootComponent::Core(CoreWmComponent::Terminal(_)))
+                )
+            };
+            if !is_terminal {
+                let kb = self.inner.wm().keybindings();
+                if kb.matches(TermWmAction::Quit, key) {
+                    self.open_exit_confirm();
+                    return true;
+                }
+                if kb.matches(TermWmAction::Custom(1), key) {
+                    self.chart_mode = match self.chart_mode {
+                        ChartMode::Metrics => ChartMode::HyperParams,
+                        ChartMode::HyperParams => ChartMode::Metrics,
+                    };
+                    self.apply_chart_mode();
+                    return true;
+                }
             }
         }
         self.inner.handle_app_event(event)
@@ -731,6 +742,16 @@ fn chart_keybindings_hint(kb: &KeyBindings) -> String {
         .cloned()
         .unwrap_or_default();
     format!("[{zoom_in}] zoom in    [{zoom_out}] zoom out    [{reset}] reset    [{list}] list view")
+}
+
+/// Returns the pressed key for key events; None for repeat/release or
+/// non-key events. Single match-guard form keeps this stable on pre-1.88
+/// toolchains and avoids `clippy::collapsible_if`.
+fn pressed_key(event: &Event) -> Option<&KeyEvent> {
+    match event {
+        Event::Key(key) if key.kind == KeyKind::Press => Some(key),
+        _ => None,
+    }
 }
 
 fn argtuner_keybindings() -> KeyBindings {
@@ -1840,4 +1861,43 @@ fn trial_detail_lines(trial: &TrialRow, epochs: &[TrialRow]) -> Vec<Line<'static
         }
     }
     lines
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    fn key(code: KeyCode, kind: KeyKind) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE, kind))
+    }
+
+    #[test]
+    fn pressed_key_returns_only_press_events() {
+        let press = key(KeyCode::Char('q'), KeyKind::Press);
+        assert_eq!(
+            pressed_key(&press).map(|k| k.code),
+            Some(KeyCode::Char('q'))
+        );
+        assert_eq!(
+            pressed_key(&press).map(|k| k.modifiers),
+            Some(KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn pressed_key_ignores_repeat_and_release() {
+        assert!(pressed_key(&key(KeyCode::Char('q'), KeyKind::Repeat)).is_none());
+        assert!(pressed_key(&key(KeyCode::Char('q'), KeyKind::Release)).is_none());
+    }
+
+    #[test]
+    fn pressed_key_ignores_non_key_events() {
+        let mouse = Event::Mouse(term_wm::events::MouseEvent {
+            kind: term_wm::events::MouseEventKind::Press(term_wm::events::MouseButton::Left),
+            row: 0,
+            column: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(pressed_key(&mouse).is_none());
+    }
 }
