@@ -111,10 +111,6 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         wm.set_closable(k, false);
     }
     app.apply_chart_mode();
-    // Create the hidden Debug Log window + install the logging subscriber so
-    // the Debug Log is available (palette-only, like term-wm's main.rs) and
-    // recurring app ticks can log into it.
-    app.inner.init_system_windows();
 
     let mut output = ConsoleRenderTarget::new()?;
     let mut input = ConsoleEventSource::new();
