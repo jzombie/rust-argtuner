@@ -37,7 +37,7 @@ use term_wm_console::console_render_target::ConsoleRenderTarget;
 use term_wm_core::hitbox_registry::HitboxRegistry;
 use term_wm_core::impl_component_delegate;
 use term_wm_core::task_scheduler::{AppTask, TaskHandle};
-use term_wm_ui_facade::{CoreWmComponent, LayerComponent, OverlayComponent};
+use term_wm_ui_facade::{LayerComponent, OverlayComponent};
 
 pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
     let poll = Duration::from_millis(poll_ms.max(16));
@@ -406,6 +406,17 @@ impl AppState {
         }
     }
 
+    /// True when the focused window is app-owned (`AppRootComponent::Custom`).
+    /// Core/system windows (Terminal, Debug Log, System Panel, …) own their own
+    /// input, so the app must not intercept global shortcuts for them.
+    fn focused_window_is_app(&mut self) -> bool {
+        let wm = self.inner.wm();
+        matches!(
+            wm.component_for_key(wm.focused_window()),
+            Some(AppRootComponent::Custom(_))
+        )
+    }
+
     fn apply_chart_mode(&mut self) {
         let wm = self.inner.wm();
         match self.chart_mode {
@@ -603,32 +614,21 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
     }
 
     fn handle_app_event(&mut self, event: &Event) -> bool {
-        if let Some(key) = pressed_key(event) {
-            // A Terminal pane is a live PTY (spawnable via the command
-            // palette): its raw key bytes must reach the child, never be
-            // stolen for app shortcuts. Gate Quit/Custom(1) on focus so q/h
-            // pass through to the shell/pager/editor.
-            let is_terminal = {
-                let wm = self.inner.wm();
-                matches!(
-                    wm.component_for_key(wm.focused_window()),
-                    Some(AppRootComponent::Core(CoreWmComponent::Terminal(_)))
-                )
-            };
-            if !is_terminal {
-                let kb = self.inner.wm().keybindings();
-                if kb.matches(TermWmAction::Quit, key) {
-                    self.open_exit_confirm();
-                    return true;
-                }
-                if kb.matches(TermWmAction::Custom(1), key) {
-                    self.chart_mode = match self.chart_mode {
-                        ChartMode::Metrics => ChartMode::HyperParams,
-                        ChartMode::HyperParams => ChartMode::Metrics,
-                    };
-                    self.apply_chart_mode();
-                    return true;
-                }
+        // filter keeps this a single if-let: no let-chains (pre-1.88 stable)
+        // and no `clippy::collapsible_if` from nesting an if inside an if-let.
+        if let Some(key) = pressed_key(event).filter(|_| self.focused_window_is_app()) {
+            let kb = self.inner.wm().keybindings();
+            if kb.matches(TermWmAction::Quit, key) {
+                self.open_exit_confirm();
+                return true;
+            }
+            if kb.matches(TermWmAction::Custom(1), key) {
+                self.chart_mode = match self.chart_mode {
+                    ChartMode::Metrics => ChartMode::HyperParams,
+                    ChartMode::HyperParams => ChartMode::Metrics,
+                };
+                self.apply_chart_mode();
+                return true;
             }
         }
         self.inner.handle_app_event(event)
