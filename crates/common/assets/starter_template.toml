@@ -1,4 +1,4 @@
-template = "__ARGTUNER_TEMPLATE__"
+template = __ARGTUNER_TEMPLATE__
 
 [project]
 metric_key = "metric"
