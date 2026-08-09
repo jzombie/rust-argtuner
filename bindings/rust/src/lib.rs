@@ -159,7 +159,7 @@ pub fn render_template_command<T: clap::CommandFactory>() -> String {
 #[cfg(feature = "clap")]
 pub fn render_template_toml<T: clap::CommandFactory>() -> String {
     let template = render_template_command::<T>();
-    argtuner_common::render_template_toml(&template)
+    argtuner_common::render_starter_toml(&template)
 }
 
 #[cfg(feature = "clap")]

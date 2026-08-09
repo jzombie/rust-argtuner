@@ -64,11 +64,15 @@ impl std::fmt::Display for EventKind {
 /// TCP port for the step publisher (real-time step data to TUI).
 pub const STEP_PUBLISHER_PORT: u16 = 45100;
 
-/// Render a starter argtuner.toml with the provided template command.
-pub fn render_template_toml(command: &str) -> String {
-    let template_bytes = include_bytes!("../assets/template.toml");
-    let template = String::from_utf8_lossy(template_bytes);
-    template.replace("__ARGTUNER_TEMPLATE__", &escape_toml_string(command))
+/// Starter `argtuner.toml` skeleton, shared by all bindings. Import as a
+/// string, or embed the canonical file at `crates/common/assets/template.toml`
+/// at build time from non-Rust bindings.
+pub const STARTER_TEMPLATE_TOML: &str = include_str!("../assets/starter_template.toml");
+
+/// Render a starter `argtuner.toml` with the provided template command
+/// substituted into the `template` line.
+pub fn render_starter_toml(command: &str) -> String {
+    STARTER_TEMPLATE_TOML.replace("__ARGTUNER_TEMPLATE__", &escape_toml_string(command))
 }
 
 fn escape_toml_string(value: &str) -> String {
