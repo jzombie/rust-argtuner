@@ -88,6 +88,23 @@ pub fn emit_result<T: Serialize>(value: &T) -> io::Result<()> {
     emit_json(&TalkbackMessage::Result { fields })
 }
 
+/// Milliseconds to hold the process open after flushing stdout so a PTY-based
+/// parent can drain buffered protocol lines before this process exits.
+pub const PTY_DRAIN_HOLD_MS: u64 = 50;
+
+/// Flush stdout and briefly hold the process open before exiting.
+///
+/// A parent reading this process's output through a PTY (e.g. the argtuner
+/// command runner) only drains the kernel's PTY output buffer while the slave
+/// side is open. If this process emits its final lines and exits immediately,
+/// that buffer can be destroyed before the parent reads it (most visible on
+/// macOS), losing the last `::ARGTUNER::` line. Call this after the last emit
+/// so the parent has time to drain.
+pub fn hold_stdout_open() {
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+    std::thread::sleep(std::time::Duration::from_millis(PTY_DRAIN_HOLD_MS));
+}
+
 pub fn args_map() -> BTreeMap<String, Vec<String>> {
     args_map_from(std::env::args())
 }
