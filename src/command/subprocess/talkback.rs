@@ -42,10 +42,8 @@ pub fn parse_output(output: &str, prefix: &str) -> Result<Vec<ParsedItem>, Strin
         if msg.is_empty() {
             continue;
         }
-        match parse_message(msg) {
-            Ok(mut v) => items.append(&mut v),
-            Err(e) => return Err(e),
-        }
+        let mut v = parse_message(msg)?;
+        items.append(&mut v);
     }
     Ok(items)
 }
@@ -65,10 +63,8 @@ pub fn parse_prefix_lines(output: &str, prefix: &str) -> Result<Vec<Vec<ParsedIt
         if msg.is_empty() {
             continue;
         }
-        match parse_message(msg) {
-            Ok(v) => lines_items.push(v),
-            Err(e) => return Err(e),
-        }
+        let v = parse_message(msg)?;
+        lines_items.push(v);
     }
     Ok(lines_items)
 }
