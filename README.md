@@ -159,6 +159,28 @@ For example:
 ::ARGTUNER::{"type":"event","name":"model.early_stopped","fields":{}}
 ```
 
+Extracting a payload from a stdout feed:
+- Tap the protocol by scanning each stdout line for the literal `::ARGTUNER::`
+  prefix: strip ANSI escape codes, find the first occurrence of the prefix, and
+  JSON-parse everything after it. Lines without the prefix are ignored.
+- Take this feed (`\x1b[` sequences are ANSI color codes):
+
+<!-- protocol.example.feed -->
+```text
+Epoch 1/10: train loss 0.5234, val loss 0.6102
+\x1b[36m::ARGTUNER::\x1b[0m{"type":"event","name":"model.epoch_end","fields":{"metric":"0.6102","epoch":"1"}}
+```
+
+- The second line, ANSI-stripped, is the prefix followed by one JSON message:
+
+<!-- protocol.example.parsed -->
+```json
+{"type":"event","name":"model.epoch_end","fields":{"metric":"0.6102","epoch":"1"}}
+```
+
+- `tests/protocol_schema.rs` runs the real parser on this exact feed and
+  asserts it produces exactly that message.
+
 ## CLI subcommands
 
 argtuner ships four subcommands:

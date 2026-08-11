@@ -68,19 +68,24 @@ fn framing_lives_outside_the_json_document() {
     );
 }
 
-/// Extract the schema echoed in the README: everything between the
-/// `<!-- protocol.schema.json -->` marker's following ` ```json ` fence and the
-/// closing ` ``` ` fence, line endings normalized to LF and trimmed.
-fn extract_readme_schema(readme: &str) -> Option<String> {
-    let marker = "<!-- protocol.schema.json -->";
+/// Extract a README fenced block: everything between the `marker` comment's
+/// following `` ```<fence_lang> `` fence and the closing `` ``` `` fence, line
+/// endings normalized to LF and trimmed.
+fn extract_fenced_block(readme: &str, marker: &str, fence_lang: &str) -> Option<String> {
     let marker_end = readme.find(marker)?.checked_add(marker.len())?;
     let rest = &readme[marker_end..];
-    let fence = rest.find("```json")?;
-    let after_fence = &rest[fence + "```json".len()..];
+    let fence = format!("```{fence_lang}");
+    let fence_start = rest.find(&fence)? + fence.len();
+    let after_fence = &rest[fence_start..];
     let after_fence = line_ending::LineEnding::normalize(after_fence);
     let content = after_fence.strip_prefix('\n')?;
     let close = content.find("\n```")?;
     Some(content[..close].trim().to_string())
+}
+
+/// Extract the schema echoed in the README.
+fn extract_readme_schema(readme: &str) -> Option<String> {
+    extract_fenced_block(readme, "<!-- protocol.schema.json -->", "json")
 }
 
 #[test]
@@ -101,4 +106,45 @@ fn readme_echoes_current_schema() {
          cargo run -p argtuner --bin print_protocol_schema \
          > crates/common/assets/protocol.schema.json"
     );
+}
+
+#[test]
+fn readme_example_extracts_payload() {
+    let readme = include_str!("../README.md");
+    let feed = extract_fenced_block(readme, "<!-- protocol.example.feed -->", "text")
+        .unwrap_or_else(|| {
+            panic!(
+                "README.md must embed the example feed in a ```text block prefixed by the \
+                 `<!-- protocol.example.feed -->` marker"
+            )
+        })
+        .replace("\\x1b", "\u{1b}");
+    let expected_json = extract_fenced_block(readme, "<!-- protocol.example.parsed -->", "json")
+        .unwrap_or_else(|| {
+            panic!(
+                "README.md must embed the expected payload in a ```json block prefixed by the \
+                 `<!-- protocol.example.parsed -->` marker"
+            )
+        });
+
+    let expected: argtuner_common::TalkbackMessage = serde_json::from_str(&expected_json)
+        .expect("README expected payload must be a valid TalkbackMessage");
+
+    let parsed = argtuner::command::subprocess::parse_prefix_lines(&feed, PREFIX)
+        .expect("example feed must parse cleanly");
+    match expected {
+        argtuner_common::TalkbackMessage::Event { name, fields } => {
+            assert_eq!(
+                parsed,
+                vec![vec![argtuner::command::subprocess::ParsedItem::Event {
+                    name,
+                    fields,
+                }]],
+                "the example feed must parse to exactly the README's expected message"
+            );
+        }
+        argtuner_common::TalkbackMessage::Result { .. } => {
+            panic!("README example must show an `event` payload");
+        }
+    }
 }
