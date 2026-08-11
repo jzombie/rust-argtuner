@@ -173,6 +173,7 @@ dependencies = [
  "indoc",
  "jsonschema",
  "libc",
+ "line-ending",
  "portable-pty",
  "rand 0.8.5",
  "ratatui",

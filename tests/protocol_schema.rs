@@ -67,3 +67,38 @@ fn framing_lives_outside_the_json_document() {
         "the raw line including the prefix is not itself a JSON document"
     );
 }
+
+/// Extract the schema echoed in the README: everything between the
+/// `<!-- protocol.schema.json -->` marker's following ` ```json ` fence and the
+/// closing ` ``` ` fence, line endings normalized to LF and trimmed.
+fn extract_readme_schema(readme: &str) -> Option<String> {
+    let marker = "<!-- protocol.schema.json -->";
+    let marker_end = readme.find(marker)?.checked_add(marker.len())?;
+    let rest = &readme[marker_end..];
+    let fence = rest.find("```json")?;
+    let after_fence = &rest[fence + "```json".len()..];
+    let after_fence = line_ending::LineEnding::normalize(after_fence);
+    let content = after_fence.strip_prefix('\n')?;
+    let close = content.find("\n```")?;
+    Some(content[..close].trim().to_string())
+}
+
+#[test]
+fn readme_echoes_current_schema() {
+    let readme = include_str!("../README.md");
+    let echoed = extract_readme_schema(readme).unwrap_or_else(|| {
+        panic!(
+            "README.md must embed the schema in a ```json block prefixed by the \
+             `<!-- protocol.schema.json -->` marker"
+        )
+    });
+    let asset = line_ending::LineEnding::normalize(SCHEMA);
+    assert_eq!(
+        echoed,
+        asset.trim(),
+        "the schema echoed in README.md is stale; regenerate crates/common/assets/\
+         protocol.schema.json and paste its contents into the README block:\n  \
+         cargo run -p argtuner --bin print_protocol_schema \
+         > crates/common/assets/protocol.schema.json"
+    );
+}

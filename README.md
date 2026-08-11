@@ -64,6 +64,95 @@ the current schema with `--print-protocol-schema`. The schema validates the
 JSON document after the prefix; the prefix/ANSI line framing is documented in
 its `x-argtuner` extension object.
 
+The canonical schema is echoed below, collapsed to keep this doc skimmable;
+`tests/protocol_schema.rs` asserts it is byte-identical to the generated
+schema, so it cannot go stale:
+
+<!-- protocol.schema.json -->
+<details>
+<summary>Canonical protocol JSON schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "argtuner talkback protocol",
+  "description": "Line-framed JSON protocol spoken over subprocess stdout. Each stdout line is ANSI-stripped; the first occurrence of the literal prefix `::ARGTUNER::` marks the start of a message, and the JSON document after the prefix must match this schema. Field values are always strings on the wire.",
+  "oneOf": [
+    {
+      "description": "A typed protocol event, e.g. `model.epoch_end`.",
+      "type": "object",
+      "properties": {
+        "fields": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "name": {
+          "title": "event name",
+          "description": "Canonical event name, or a legacy un-namespaced alias.",
+          "type": "string",
+          "enum": [
+            "binding_version",
+            "early_stopped",
+            "epoch_end",
+            "invalid_config",
+            "model.early_stopped",
+            "model.epoch_end",
+            "model.invalid_config",
+            "model.step_end",
+            "step_end",
+            "tuner.binding_version"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "event"
+        }
+      },
+      "required": [
+        "type",
+        "name"
+      ]
+    },
+    {
+      "description": "A flat result dump. No `name`; each field becomes a top-level trial field on the tuner side.",
+      "type": "object",
+      "properties": {
+        "fields": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "type": {
+          "type": "string",
+          "const": "result"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    }
+  ],
+  "x-argtuner": {
+    "linePattern": "^.*::ARGTUNER::.*$",
+    "namespaces": [
+      "metric",
+      "model",
+      "tuner"
+    ],
+    "prefix": "::ARGTUNER::",
+    "protocol": "argtuner.talkback",
+    "stripAnsi": true
+  }
+}
+```
+
+</details>
+
 For example:
 ```
 ::ARGTUNER::{"type":"event","name":"model.epoch_end","fields":{"metric":"0.123","aux":"42","epoch":"1"}}
