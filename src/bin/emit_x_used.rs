@@ -1,3 +1,9 @@
+//! Mock subprocess that echoes back a specific sampled hyperparameter.
+//!
+//! Reads `--x <value>` (or the first positional argument) and includes it as
+//! `x_used` in a `model.epoch_end` event, so tests can confirm a given
+//! search-space parameter is actually passed to the command.
+
 use std::collections::BTreeMap;
 
 fn main() {

@@ -1,3 +1,9 @@
+//! Mock subprocess for the binding-version handshake.
+//!
+//! Emits `tuner.binding_version` (default `0.0.0`, override with `--version`)
+//! plus a `model.epoch_end`, so tests can exercise the tuner's version gate
+//! (see `tests/binding_version_mismatch.rs`).
+
 use std::collections::BTreeMap;
 
 #[derive(serde::Serialize)]

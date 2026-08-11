@@ -1,3 +1,9 @@
+//! Mock subprocess that verifies argtuner's environment-variable injection.
+//!
+//! Reads `ARGTUNER_TRIAL_ID` and `ARGTUNER_TRIAL_DIR` and echoes them back as
+//! `trial_id_env` / `trial_dir_env` inside a `model.epoch_end` event, so tests
+//! can assert the tuner exported the expected values.
+
 use std::collections::BTreeMap;
 
 fn main() {

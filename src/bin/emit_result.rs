@@ -1,3 +1,10 @@
+//! Mock "successful trial" subprocess for the test harness.
+//!
+//! Emits a `model.epoch_end` event (`metric` = 0.42, `last_epoch` = 7) followed
+//! by `model.early_stopped` — a deterministic, successful evaluation. Used as
+//! the template command by most end-to-end tests (trial flow, tuner resume,
+//! checkpointing, PSO, dry run, duplicate configs, artifact preservation).
+
 use std::collections::BTreeMap;
 
 fn main() {

@@ -1,3 +1,11 @@
+//! Mock subprocess that records it ran by appending to a marker file.
+//!
+//! Emits a successful `model.epoch_end` + `model.early_stopped` and, when given
+//! `--marker <path>`, appends a line to that file so a test can detect that the
+//! command was actually invoked.
+//!
+//! Currently not referenced by the test suite (manual/debugging helper).
+
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
