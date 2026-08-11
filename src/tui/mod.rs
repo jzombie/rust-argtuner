@@ -47,7 +47,12 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         ..Default::default()
     };
     let mut inner = TermWmApp::<AppComponent>::new_with_config(
-        AppContext::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+        AppContext::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")).with_hostname(
+            &hostname::get()
+                .ok()
+                .and_then(|s| s.into_string().ok())
+                .unwrap_or_else(|| "unknown-host".to_string()),
+        ),
         config,
     );
 

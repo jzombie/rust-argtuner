@@ -64,6 +64,7 @@ tracing = "0.1.44"
 ignore = "0.4.33"
 jsonschema = { version = "0.49.9", default-features = false }
 line-ending = "1.5.1"
+hostname = "0.4.2"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [dependencies]
@@ -96,6 +97,7 @@ thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true
 ignore.workspace = true
+hostname.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [dev-dependencies]
