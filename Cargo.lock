@@ -216,6 +216,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "argtuner-mock-bin"
+version = "0.1.0-alpha"
+dependencies = [
+ "argtuner-common",
+ "argtuner-talkback",
+ "serde",
+]
+
+[[package]]
 name = "argtuner-talkback"
 version = "0.1.0-alpha"
 dependencies = [

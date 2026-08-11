@@ -13,18 +13,7 @@ fn binding_version_mismatch_exits_with_message() {
     } else {
         "argtuner"
     });
-    let emit_bin = target_dir.join(if cfg!(windows) {
-        "emit_binding_version.exe"
-    } else {
-        "emit_binding_version"
-    });
-    if !emit_bin.exists() {
-        let status = Command::new("cargo")
-            .args(["build", "-p", "argtuner", "--bin", "emit_binding_version"])
-            .status()
-            .expect("build emit_binding_version");
-        assert!(status.success(), "failed to build emit_binding_version");
-    }
+    let emit_bin = argtuner::test_support::bin_path("emit_binding_version");
     assert!(
         argtuner_bin.exists(),
         "argtuner bin not found at {}",

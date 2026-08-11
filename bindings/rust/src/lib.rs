@@ -92,6 +92,9 @@ pub fn emit_result<T: Serialize>(value: &T) -> io::Result<()> {
 /// parent can drain buffered protocol lines before this process exits.
 pub const PTY_DRAIN_HOLD_MS: u64 = 50;
 
+// TODO: This timer condition seems like a potential data loss issue. Is there a better
+// way rather than relying on a timer?
+//
 /// Flush stdout and briefly hold the process open before exiting.
 ///
 /// A parent reading this process's output through a PTY (e.g. the argtuner

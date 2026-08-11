@@ -11,7 +11,7 @@ default-run = "argtuner"
 normal = ["windows-sys"]
 
 [workspace]
-members = ["bindings/rust", "bindings/talkback-derive", "crates/common"]
+members = ["bindings/rust", "bindings/talkback-derive", "crates/common", "crates/mock-bin"]
 resolver = "2"
 
 [workspace.package]
