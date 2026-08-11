@@ -2,6 +2,8 @@
 name = "argtuner-common"
 version.workspace = true
 edition.workspace = true
+description = "Shared constants and protocol types for the argtuner workspace."
+repository.workspace = true
 license.workspace = true
 publish.workspace = true
 
