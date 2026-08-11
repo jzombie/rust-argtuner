@@ -206,7 +206,8 @@ mod tests {
         let generated = protocol_schema_string();
         let committed = include_str!("../assets/protocol.schema.json");
         assert_eq!(
-            generated, committed,
+            line_ending::LineEnding::normalize(&generated),
+            line_ending::LineEnding::normalize(committed),
             "protocol.schema.json is stale; regenerate it with: \
              cargo run -p argtuner --bin print_protocol_schema > crates/common/assets/protocol.schema.json"
         );

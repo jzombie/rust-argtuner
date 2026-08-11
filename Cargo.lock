@@ -199,6 +199,7 @@ dependencies = [
 name = "argtuner-common"
 version = "0.1.0-alpha"
 dependencies = [
+ "line-ending",
  "schemars",
  "serde",
  "serde_json",
