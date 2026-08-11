@@ -885,12 +885,22 @@ mod tests {
     }
 
     fn json_event(name: &str, fields: serde_json::Value) -> String {
-        let payload = serde_json::json!({
-            "type": "event",
-            "name": name,
-            "fields": fields,
-        });
-        crate::command::template::CommandTemplate::embed_json(&payload)
+        let mut field_map = std::collections::BTreeMap::new();
+        if let Some(obj) = fields.as_object() {
+            for (key, value) in obj {
+                let value = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                field_map.insert(key.clone(), value);
+            }
+        }
+        let payload = argtuner_common::TalkbackMessage::Event {
+            name: name.to_string(),
+            fields: field_map,
+        };
+        let json = serde_json::to_value(&payload).expect("talkback event serializes");
+        crate::command::template::CommandTemplate::embed_json(&json)
     }
 
     // -----------------------------------------------------------------------

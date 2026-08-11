@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,26 +12,14 @@ pub enum ParsedItem {
     },
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-enum JsonMessage {
-    Event {
-        name: String,
-        #[serde(default)]
-        fields: BTreeMap<String, String>,
-    },
-    Result {
-        #[serde(default)]
-        fields: BTreeMap<String, String>,
-    },
-}
-
 fn parse_message(input: &str) -> Result<Vec<ParsedItem>, String> {
-    let message: JsonMessage =
+    let message: argtuner_common::TalkbackMessage =
         serde_json::from_str(input).map_err(|e| format!("parse failed: {e}"))?;
     match message {
-        JsonMessage::Event { name, fields } => Ok(vec![ParsedItem::Event { name, fields }]),
-        JsonMessage::Result { fields } => Ok(fields
+        argtuner_common::TalkbackMessage::Event { name, fields } => {
+            Ok(vec![ParsedItem::Event { name, fields }])
+        }
+        argtuner_common::TalkbackMessage::Result { fields } => Ok(fields
             .into_iter()
             .map(|(name, value)| ParsedItem::Result { name, value })
             .collect()),

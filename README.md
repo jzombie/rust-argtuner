@@ -50,8 +50,19 @@ Result fields / event protocol:
 - Messages are JSON after the prefix. Supported payloads are:
   - `{"type":"event","name":"model.epoch_end","fields":{...}}` (each event appends a trial row; the last one drives scoring)
   - `{"type":"event","name":"model.early_stopped","fields":{...}}`
+  - `{"type":"event","name":"model.step_end","fields":{...}}` (per-step metrics streamed live to the TUI)
+  - `{"type":"event","name":"model.invalid_config","fields":{"error":"..."}}` (marks the trial `error`)
+  - `{"type":"event","name":"tuner.binding_version","fields":{"version":"..."}}` (version handshake at startup)
+  - `{"type":"result","fields":{...}}` (a flat result dump; each field becomes a top-level trial field)
 - argtuner exports environment variables to the command:
   - `ARGTUNER_TRIAL_ID` / `ARGTUNER_TRIAL_DIR`
+
+The protocol is **self-describing**: a JSON Schema generated from the shared
+`argtuner_common::TalkbackMessage` type is committed at
+`crates/common/assets/protocol.schema.json`, and any talkback binary can print
+the current schema with `--print-protocol-schema`. The schema validates the
+JSON document after the prefix; the prefix/ANSI line framing is documented in
+its `x-argtuner` extension object.
 
 For example:
 ```
