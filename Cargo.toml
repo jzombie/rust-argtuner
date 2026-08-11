@@ -52,11 +52,11 @@ serde_json = "1.0.148"
 shell-words = "1.1.1"
 similar = "2.7.0"
 tempfile = "3.10"
-term-wm = { path = "../term-wm" }
-term-wm-console = { path = "../term-wm/crates/term-wm-console" }
-term-wm-core = { path = "../term-wm/crates/term-wm-core" }
-term-wm-render = { path = "../term-wm/crates/term-wm-render" }
-term-wm-ui-facade = { path = "../term-wm/crates/term-wm-ui-facade" }
+term-wm = "0.9.21-alpha"
+term-wm-console = "0.9.21-alpha"
+term-wm-core = "0.9.21-alpha"
+term-wm-render = "0.9.21-alpha"
+term-wm-ui-facade = "0.9.21-alpha"
 thiserror = "2.0.17"
 toml = "1.1"
 tracing = "0.1.44"
