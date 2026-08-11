@@ -18,7 +18,4 @@ fn main() {
         argtuner_common::EventKind::EarlyStopped,
         &BTreeMap::<String, String>::new(),
     );
-
-    // Keep the PTY slave open so the parent drains the buffered lines.
-    argtuner_talkback::hold_stdout_open();
 }

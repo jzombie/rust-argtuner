@@ -7,6 +7,10 @@ pub use protocol::{TalkbackMessage, protocol_schema, protocol_schema_string};
 /// Command stdout parser prefix for result/event messages.
 pub const RESULT_PREFIX: &str = "::ARGTUNER::";
 
+/// When present in the child envs or the argtuner process environment,
+/// `CommandRunner` uses piped stdio instead of a PTY (test-only).
+pub const FORCE_PIPES_ENV: &str = "ARGTUNER_FORCE_PIPES";
+
 /// Namespaces for payload keys.
 pub const METRIC_NAMESPACE: &str = "metric";
 pub const MODEL_NAMESPACE: &str = "model";

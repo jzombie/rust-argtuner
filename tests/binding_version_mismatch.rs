@@ -56,6 +56,7 @@ fn binding_version_mismatch_exits_with_message() {
     let output = Command::new(argtuner_bin)
         .arg("run")
         .arg(project_root)
+        .env(argtuner_common::FORCE_PIPES_ENV, "1")
         .output()
         .expect("run argtuner");
 

@@ -24,6 +24,11 @@ use std::path::PathBuf;
 ///
 /// Panics with a clear message if neither is available.
 pub fn bin_path(bin: &str) -> PathBuf {
+    // Run mock subprocesses over pipes instead of a PTY: POSIX pipes deliver
+    // all bytes before EOF, so there is no macOS PTY buffer-destruction race on
+    // child exit (and no need for a timer-based hold in the mock binaries).
+    crate::command::subprocess::CommandRunner::force_pipes_for_tests();
+
     let env_key = format!("CARGO_BIN_EXE_{bin}");
     if let Ok(path) = std::env::var(&env_key) {
         return PathBuf::from(path);
