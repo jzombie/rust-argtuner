@@ -234,6 +234,14 @@ impl CommandRunner {
     /// Test-only: force all subprocesses in this process to use piped stdio
     /// instead of a PTY (avoids the macOS PTY buffer-destruction race on child
     /// exit). Idempotent; safe to call from any test thread.
+    /// Test-only: force all subprocesses in this process to use piped stdio
+    /// instead of a PTY (avoids the macOS PTY buffer-destruction race on child
+    /// exit). Idempotent; safe to call from any test thread. No-op on Windows,
+    /// where subprocesses always run over pipes.
+    #[cfg(windows)]
+    #[doc(hidden)]
+    pub fn force_pipes_for_tests() {}
+
     #[cfg(not(windows))]
     #[doc(hidden)]
     pub fn force_pipes_for_tests() {

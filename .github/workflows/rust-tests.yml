@@ -74,6 +74,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-${{ steps.rustc.outputs.hash }}-${{ steps.lockfile.outputs.hash }}-
 
+      # Build the workspace binaries (incl. the argtuner-mock-bin subprocesses)
+      # as regular artifacts under target/debug/ — `cargo test --bins` only
+      # compiles them as test harnesses under target/debug/deps/.
+      - name: Build mock binaries
+        run: cargo build --workspace --all-features --bins
+
       - name: Test
         run: cargo test --workspace --all-features --lib --bins --tests --examples -- --include-ignored
 
