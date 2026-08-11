@@ -301,9 +301,12 @@ impl CommandObjective {
                     fields: extra_fields,
                 });
             }
-            let metric = payload
-                .get_metric(&self.metric_key)
-                .map_err(EvalError::Other)?;
+            let metric = payload.get_metric(&self.metric_key).map_err(|err| {
+                EvalError::Other(format!(
+                    "{err} (stdout tail: {:?})",
+                    tail_lines(&output.stdout, 3)
+                ))
+            })?;
             let score = match self.goal {
                 Goal::Min => metric,
                 Goal::Max => -metric,
