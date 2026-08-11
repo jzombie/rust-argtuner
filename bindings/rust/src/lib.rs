@@ -5,11 +5,13 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub use argtuner_common::EventKind;
+use argtuner_common::TalkbackMessage;
 
 pub const PREFIX: &str = argtuner_common::RESULT_PREFIX;
 pub const BINDING_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PRINT_TEMPLATE_FLAG: &str = "--print-template";
 pub const PRINT_TEMPLATE_TOML_FLAG: &str = "--print-template-toml";
+pub const PRINT_PROTOCOL_SCHEMA_FLAG: &str = "--print-protocol-schema";
 
 #[derive(Debug, Clone)]
 pub struct Talkback {
@@ -64,12 +66,10 @@ pub fn emit_event<T: Serialize>(event: argtuner_common::EventKind, value: &T) ->
         return emit_result(value);
     }
     let fields = fields_from_value(value)?;
-    let payload = serde_json::json!({
-        "type": "event",
-        "name": event.as_str(),
-        "fields": fields,
-    });
-    emit_json(payload)
+    emit_json(&TalkbackMessage::Event {
+        name: event.as_str().to_string(),
+        fields,
+    })
 }
 
 pub fn emit_epoch_end<T: Serialize>(value: &T) -> io::Result<()> {
@@ -85,11 +85,24 @@ pub fn emit_result<T: Serialize>(value: &T) -> io::Result<()> {
     if fields.is_empty() {
         return Ok(());
     }
-    let payload = serde_json::json!({
-        "type": "result",
-        "fields": fields,
-    });
-    emit_json(payload)
+    emit_json(&TalkbackMessage::Result { fields })
+}
+
+/// Milliseconds to hold the process open after flushing stdout so a PTY-based
+/// parent can drain buffered protocol lines before this process exits.
+pub const PTY_DRAIN_HOLD_MS: u64 = 50;
+
+/// Flush stdout and briefly hold the process open before exiting.
+///
+/// A parent reading this process's output through a PTY (e.g. the argtuner
+/// command runner) only drains the kernel's PTY output buffer while the slave
+/// side is open. If this process emits its final lines and exits immediately,
+/// that buffer can be destroyed before the parent reads it (most visible on
+/// macOS), losing the last `::ARGTUNER::` line. Call this after the last emit
+/// so the parent has time to drain.
+pub fn hold_stdout_open() {
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+    std::thread::sleep(std::time::Duration::from_millis(PTY_DRAIN_HOLD_MS));
 }
 
 pub fn args_map() -> BTreeMap<String, Vec<String>> {
@@ -132,7 +145,7 @@ pub fn render_template_command<T: clap::CommandFactory>() -> String {
     for arg in command.get_arguments() {
         if matches!(
             arg.get_long(),
-            Some("print-template") | Some("print-template-toml")
+            Some("print-template") | Some("print-template-toml") | Some("print-protocol-schema")
         ) {
             continue;
         }
@@ -215,10 +228,27 @@ fn try_target_bin(stem: &str) -> Option<String> {
 
 #[cfg(feature = "clap")]
 pub fn init_with_args<T: clap::Parser + clap::CommandFactory>() -> (Talkback, T) {
+    maybe_print_protocol_schema_and_exit();
     maybe_print_template_and_exit::<T>();
     let talkback = Talkback::init();
     let args = T::parse();
     (talkback, args)
+}
+
+/// Print the talkback protocol JSON Schema to stdout and exit if the
+/// `--print-protocol-schema` flag is present on argv. Call early (before any
+/// protocol messages are emitted) so stdout stays clean.
+pub fn maybe_print_protocol_schema_and_exit() {
+    if !std::env::args().any(|arg| arg == PRINT_PROTOCOL_SCHEMA_FLAG) {
+        return;
+    }
+    print_protocol_schema();
+    std::process::exit(0);
+}
+
+/// Print the talkback protocol JSON Schema to stdout.
+pub fn print_protocol_schema() {
+    print!("{}", argtuner_common::protocol_schema_string());
 }
 
 pub fn parse_args_from_map<T: DeserializeOwned>(
@@ -314,6 +344,8 @@ fn emit_line(line: String) -> io::Result<()> {
     Ok(())
 }
 
-fn emit_json(value: serde_json::Value) -> io::Result<()> {
-    emit_line(format!("{PREFIX}{value}"))
+fn emit_json<T: Serialize>(value: &T) -> io::Result<()> {
+    let json = serde_json::to_value(value)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    emit_line(format!("{PREFIX}{json}"))
 }

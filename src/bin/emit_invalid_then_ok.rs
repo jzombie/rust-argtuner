@@ -1,3 +1,11 @@
+//! Mock subprocess whose behavior changes across invocations via a marker file.
+//!
+//! On the first run (no marker file) it emits `model.invalid_config`; on later
+//! runs it emits a successful `model.epoch_end`. This lets tests exercise the
+//! retry behavior across repeated invocations.
+//!
+//! Currently not referenced by the test suite (manual/debugging helper).
+
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
@@ -48,4 +56,7 @@ fn main() {
             epoch: 1,
         });
     }
+
+    // Keep the PTY slave open so the parent drains the buffered lines.
+    argtuner_talkback::hold_stdout_open();
 }

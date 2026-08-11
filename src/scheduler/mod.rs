@@ -91,7 +91,7 @@ impl<'a> SchedulerBinding<'a> {
     }
 }
 fn sample_unit(rng: &mut rand::rngs::StdRng, dims: usize) -> Vec<f64> {
-    use rand::Rng;
+    use rand::RngExt;
 
-    (0..dims).map(|_| rng.gen_range(0.0..=1.0)).collect()
+    (0..dims).map(|_| rng.random_range(0.0..=1.0)).collect()
 }

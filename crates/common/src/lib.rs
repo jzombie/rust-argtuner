@@ -1,5 +1,9 @@
 //! Shared constants for argtuner crates.
 
+pub mod protocol;
+
+pub use protocol::{TalkbackMessage, protocol_schema, protocol_schema_string};
+
 /// Command stdout parser prefix for result/event messages.
 pub const RESULT_PREFIX: &str = "::ARGTUNER::";
 

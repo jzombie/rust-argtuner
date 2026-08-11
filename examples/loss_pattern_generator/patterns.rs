@@ -1,4 +1,4 @@
-use rand::Rng;
+use rand::RngExt;
 
 pub trait LossPattern {
     fn generate(&mut self, step: usize, total_steps: usize) -> f64;
@@ -86,8 +86,8 @@ impl Underfitting {
 
 impl LossPattern for Underfitting {
     fn generate(&mut self, _step: usize, _total_steps: usize) -> f64 {
-        let mut rng = rand::thread_rng();
-        let noise = rng.gen_range(-self.noise_level..self.noise_level);
+        let mut rng = rand::rng();
+        let noise = rng.random_range(-self.noise_level..self.noise_level);
         self.constant_loss + noise
     }
 
@@ -119,10 +119,10 @@ impl Spikes {
 impl LossPattern for Spikes {
     fn generate(&mut self, step: usize, total_steps: usize) -> f64 {
         let base_loss = self.base_pattern.generate(step, total_steps);
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
-        if rng.gen_bool(self.spike_probability) {
-            base_loss + rng.gen_range(0.0..self.spike_magnitude)
+        if rng.random_bool(self.spike_probability) {
+            base_loss + rng.random_range(0.0..self.spike_magnitude)
         } else {
             base_loss
         }
@@ -150,8 +150,8 @@ impl Noisy {
 impl LossPattern for Noisy {
     fn generate(&mut self, step: usize, total_steps: usize) -> f64 {
         let base_loss = self.base_pattern.generate(step, total_steps);
-        let mut rng = rand::thread_rng();
-        let noise = rng.gen_range(-self.noise_level..self.noise_level);
+        let mut rng = rand::rng();
+        let noise = rng.random_range(-self.noise_level..self.noise_level);
         base_loss + noise
     }
 

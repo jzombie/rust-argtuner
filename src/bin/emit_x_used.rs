@@ -1,3 +1,9 @@
+//! Mock subprocess that echoes back a specific sampled hyperparameter.
+//!
+//! Reads `--x <value>` (or the first positional argument) and includes it as
+//! `x_used` in a `model.epoch_end` event, so tests can confirm a given
+//! search-space parameter is actually passed to the command.
+
 use std::collections::BTreeMap;
 
 fn main() {
@@ -17,4 +23,7 @@ fn main() {
     fields.insert("x_used".to_string(), x_value);
     fields.insert("epoch".to_string(), "1".to_string());
     let _ = argtuner_talkback::emit_event(argtuner_common::EventKind::EpochEnd, &fields);
+
+    // Keep the PTY slave open so the parent drains the buffered lines.
+    argtuner_talkback::hold_stdout_open();
 }

@@ -301,9 +301,12 @@ impl CommandObjective {
                     fields: extra_fields,
                 });
             }
-            let metric = payload
-                .get_metric(&self.metric_key)
-                .map_err(EvalError::Other)?;
+            let metric = payload.get_metric(&self.metric_key).map_err(|err| {
+                EvalError::Other(format!(
+                    "{err} (stdout tail: {:?})",
+                    tail_lines(&output.stdout, 3)
+                ))
+            })?;
             let score = match self.goal {
                 Goal::Min => metric,
                 Goal::Max => -metric,
@@ -885,12 +888,22 @@ mod tests {
     }
 
     fn json_event(name: &str, fields: serde_json::Value) -> String {
-        let payload = serde_json::json!({
-            "type": "event",
-            "name": name,
-            "fields": fields,
-        });
-        crate::command::template::CommandTemplate::embed_json(&payload)
+        let mut field_map = std::collections::BTreeMap::new();
+        if let Some(obj) = fields.as_object() {
+            for (key, value) in obj {
+                let value = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                field_map.insert(key.clone(), value);
+            }
+        }
+        let payload = argtuner_common::TalkbackMessage::Event {
+            name: name.to_string(),
+            fields: field_map,
+        };
+        let json = serde_json::to_value(&payload).expect("talkback event serializes");
+        crate::command::template::CommandTemplate::embed_json(&json)
     }
 
     // -----------------------------------------------------------------------
