@@ -20,9 +20,13 @@ Use argtuner when:
 **1. Declare your parameters once, in Rust.** Add `argtuner-talkback` (with the
 `clap` feature) and `argtuner-talkback-derive` to your app:
 
-```rust
+```rust,no_run
 use argtuner_talkback::{emit_metrics, init};
 use argtuner_talkback_derive::talkback_args;
+
+fn train(lr: f64, steps: usize) -> f64 {
+    0.0 // your training logic
+}
 
 #[talkback_args]
 struct Params {
@@ -43,7 +47,7 @@ fn main() {
     // ... your training logic using params.lr, params.steps ...
     let val_loss = train(params.lr, params.steps);
 
-    emit_metrics!("val_loss" => val_loss, "epoch" => params.steps);
+    let _ = emit_metrics!("val_loss" => val_loss, "epoch" => params.steps);
 }
 ```
 The derive generates the full CLI (`--help`, defaults, validation) and the
@@ -405,7 +409,7 @@ schema, so it cannot go stale:
 </details>
 
 For example:
-```
+```text
 ::ARGTUNER::{"type":"event","name":"model.epoch_end","fields":{"metric":"0.123","aux":"42","epoch":"1"}}
 ::ARGTUNER::{"type":"event","name":"model.early_stopped","fields":{}}
 ```
@@ -506,7 +510,7 @@ The command is executed directly (program + args) with stdout/stderr streamed
 to your terminal. Any stdout line can emit an ARGTUNER event with the configured
 prefix; the tuner parses the last `model.epoch_end` event. For example:
 
-```
+```text
 ::ARGTUNER::{"type":"event","name":"model.epoch_end","fields":{"metric":"0.123","aux":"42","epoch":"1"}}
 ```
 
