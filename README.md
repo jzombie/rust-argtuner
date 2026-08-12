@@ -15,6 +15,58 @@ Use argtuner when:
 - You want a simple, project-based workflow that logs trials and lets you re-run exact commands.
 - You want black-box tuning: `argtuner` never instruments your model's internals (no gradients, no layer access). Integration happens strictly at the process boundary—your app simply emits `::ARGTUNER::` JSON events on stdout, manually or via the optional `argtuner-talkback` Rust binding.
 
+## Quickstart
+
+**1. Declare your parameters once, in Rust.** Add `argtuner-talkback` (with the
+`clap` feature) and `argtuner-talkback-derive` to your app:
+
+```rust
+use argtuner_talkback::{emit_metrics, init};
+use argtuner_talkback_derive::talkback_args;
+
+#[talkback_args]
+struct Params {
+    /// Learning rate
+    #[param(default = 0.001, min = 0.0001, max = 0.1, log = true)]
+    lr: f64,
+    /// Training steps
+    #[param(default = 100, min = 10, max = 1000)]
+    steps: usize,
+    /// Checkpoint directory (reserved: trial_dir)
+    #[param(value_name = "trial_dir")]
+    checkpoint_dir: Option<String>,
+}
+
+fn main() {
+    let (_talkback, params) = init::<Params>();
+
+    // ... your training logic using params.lr, params.steps ...
+    let val_loss = train(params.lr, params.steps);
+
+    emit_metrics!("val_loss" => val_loss, "epoch" => params.steps);
+}
+```
+The derive generates the full CLI (`--help`, defaults, validation) and the
+argtuner command template.
+
+**2. Auto-generate your project configuration.** Run your binary with
+`--print-template-toml` — argtuner writes the command template and a populated
+`[space]` for you:
+
+```bash
+./my_model --print-template-toml > argtuner.toml
+# set [project] metric_key to the key your app emits, e.g. "val_loss"
+```
+
+**3. Run the optimization campaign.**
+
+```bash
+argtuner run .
+```
+
+Run the binary directly anytime for a normal CLI — emission silently no-ops
+when not under argtuner.
+
 ## Installation
 
 Building from source requires a **stable** Rust toolchain (1.85+ for edition 2024) and a C compiler for the bundled SQLite (`rusqlite` builds it from source): Xcode command-line tools on macOS, `build-essential` on Linux, or the MSVC Build Tools on Windows.

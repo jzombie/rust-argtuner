@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 pub mod analysis;
 pub mod checkpoint;
 #[cfg(feature = "cli")]
@@ -28,10 +30,10 @@ pub use discover::find_projects;
 // the argtuner command template, and a real search space. Only
 // `argtuner-talkback` + `argtuner-talkback-derive` are needed — no clap/serde
 // in your `Cargo.toml`.
-pub use argtuner_talkback::init;
 pub use argtuner_talkback::Params;
 pub use argtuner_talkback::Talkback;
 pub use argtuner_talkback::emit_metrics;
+pub use argtuner_talkback::init;
 pub use argtuner_talkback_derive::talkback_args;
 
 pub use crate::command::template::{CommandTemplate, TemplateError};
