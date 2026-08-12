@@ -538,6 +538,12 @@ range bins with best/median scores, highlighting an estimated elbow where improv
 - The rendered command is not stored; it is reconstructed from the template and
   the recorded `hp.*` values at run time.
 
+## License
+
+`term-wm` is primarily distributed under the terms of both the MIT license and the Apache License (Version 2.0).
+
+See [LICENSE-APACHE](./LICENSE-APACHE) and [LICENSE-MIT](./LICENSE-MIT) for details.
+
 [ci]: https://github.com/jzombie/argtuner/actions
 [macos-badge]: https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white
 [linux-badge]: https://img.shields.io/badge/Linux-FCC624?style=flat-square&logo=linux&logoColor=black
