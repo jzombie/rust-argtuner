@@ -19,7 +19,7 @@ struct ExampleArgs {
 }
 
 fn main() {
-    let (_talkback, args) = argtuner_talkback::init_with_args::<ExampleArgs>();
+    let (talkback, args) = argtuner_talkback::init::<ExampleArgs>();
     let lr = args.lr.unwrap_or(0.01_f64);
     let steps = args.steps.unwrap_or(100_usize);
     let _ = args.checkpoint_dir;
@@ -55,7 +55,7 @@ fn main() {
         mse += err * err;
     }
     mse /= data.len() as f64;
-    let _ = argtuner_talkback::emit_epoch_end(&LinearRegressionResult {
+    let _ = talkback.emit_epoch_end(&LinearRegressionResult {
         loss: mse,
         epoch: steps,
     });

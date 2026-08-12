@@ -69,7 +69,7 @@ fn pattern_label(pattern: PatternType) -> &'static str {
 }
 
 fn main() {
-    let (talkback, args) = argtuner_talkback::init_with_args::<Args>();
+    let (talkback, args) = argtuner_talkback::init::<Args>();
     let pattern_name = pattern_label(args.pattern).to_string();
 
     let mut train_pattern: Box<dyn LossPattern> = match args.pattern {
@@ -131,7 +131,7 @@ fn main() {
         let train_loss = train_pattern.generate(step, args.steps);
         let val_loss = val_pattern.generate(step, args.steps);
         println!("{},{:.6},{:.6}", step, train_loss, val_loss);
-        let _ = argtuner_talkback::emit_step_end(&LossStep {
+        let _ = talkback.emit_step_end(&LossStep {
             loss: train_loss,
             train_loss,
             val_loss,
@@ -140,7 +140,7 @@ fn main() {
         });
         // Emit epoch event every `epoch_every` steps
         if (step + 1) % epoch_every == 0 || step == args.steps - 1 {
-            let _ = argtuner_talkback::emit_epoch_end(&LossStep {
+            let _ = talkback.emit_epoch_end(&LossStep {
                 loss: train_loss,
                 train_loss,
                 val_loss,

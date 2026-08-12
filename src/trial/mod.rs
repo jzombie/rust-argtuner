@@ -86,6 +86,12 @@ pub fn render_trial_command_with_overrides(
             .or_insert_with(|| dir.to_string_lossy().to_string());
         trial_dir = Some(dir);
     }
+    // Always mark this subprocess as an argtuner-managed trial so the talkback
+    // binding can suppress stdout emission for standalone (non-argtuner) runs.
+    env.insert(
+        argtuner_common::TUNING_MARKER_ENV.to_string(),
+        argtuner_common::TUNING_MARKER_VALUE.to_string(),
+    );
     let command = template.render(&values)?;
     Ok(RenderedTrial {
         command,
@@ -187,6 +193,13 @@ mod tests {
         assert_eq!(
             rendered.env.get(ENV_TRIAL_DIR).map(String::as_str),
             Some(expected.as_str())
+        );
+        assert_eq!(
+            rendered
+                .env
+                .get(argtuner_common::TUNING_MARKER_ENV)
+                .map(String::as_str),
+            Some(argtuner_common::TUNING_MARKER_VALUE)
         );
         assert!(rendered.command.contains(&expected));
     }

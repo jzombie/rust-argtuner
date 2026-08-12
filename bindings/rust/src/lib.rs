@@ -13,12 +13,28 @@ pub const PRINT_TEMPLATE_FLAG: &str = "--print-template";
 pub const PRINT_TEMPLATE_TOML_FLAG: &str = "--print-template-toml";
 pub const PRINT_PROTOCOL_SCHEMA_FLAG: &str = "--print-protocol-schema";
 
+/// Returns true when the process is running under argtuner, i.e. the tuner
+/// exported [`argtuner_common::TUNING_MARKER_ENV`] to this subprocess.
+///
+/// All `emit_*` helpers no-op when this is false, so the same binary run
+/// standalone (a human, a test, production inference) keeps `stdout` free of
+/// `::ARGTUNER::` lines. The result is cached on first call.
+pub fn is_tuning_active() -> bool {
+    static ACTIVE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ACTIVE.get_or_init(|| std::env::var_os(argtuner_common::TUNING_MARKER_ENV).is_some())
+}
+
 #[derive(Debug, Clone)]
 pub struct Talkback {
     args_map: BTreeMap<String, Vec<String>>,
 }
 
 impl Talkback {
+    /// Capture argv and emit the binding-version handshake.
+    ///
+    /// All [`Talkback`] `emit_*` methods (and the free `emit_*` functions) no-op
+    /// when the process is not running under argtuner, so a standalone run of
+    /// the binary keeps stdout clean. [`is_tuning_active`] reports the state.
     pub fn init() -> Self {
         let mut fields = BTreeMap::new();
         fields.insert(
@@ -62,6 +78,9 @@ impl Talkback {
 }
 
 pub fn emit_event<T: Serialize>(event: argtuner_common::EventKind, value: &T) -> io::Result<()> {
+    if !is_tuning_active() {
+        return Ok(());
+    }
     if matches!(event, argtuner_common::EventKind::Result) {
         return emit_result(value);
     }
@@ -81,6 +100,9 @@ pub fn emit_step_end<T: Serialize>(value: &T) -> io::Result<()> {
 }
 
 pub fn emit_result<T: Serialize>(value: &T) -> io::Result<()> {
+    if !is_tuning_active() {
+        return Ok(());
+    }
     let fields = fields_from_value(value)?;
     if fields.is_empty() {
         return Ok(());
@@ -207,6 +229,23 @@ fn try_target_bin(stem: &str) -> Option<String> {
         return Some(bin.display().to_string());
     }
     None
+}
+
+#[cfg(feature = "clap")]
+/// Unified entry point for a clap-based CLI.
+///
+/// Declare your algorithm's parameters once as a clap `Parser` struct, add
+/// `#[talkback_args]`, and call `init` — argtuner gets a tunable target and you
+/// get a production CLI from the same definition. `init`:
+///
+/// 1. intercepts the injected `--print-template`, `--print-template-toml`, and
+///    `--print-protocol-schema` flags (generating config text to stdout and
+///    exiting before your logic runs),
+/// 2. emits the `::ARGTUNER::` binding-version handshake when running under
+///    argtuner (suppressed on standalone runs),
+/// 3. parses the remaining flags with clap and returns `(Talkback, T)`.
+pub fn init<T: clap::Parser + clap::CommandFactory>() -> (Talkback, T) {
+    init_with_args::<T>()
 }
 
 #[cfg(feature = "clap")]

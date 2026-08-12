@@ -14,7 +14,7 @@ struct ProbeArgs {
 }
 
 fn main() -> io::Result<()> {
-    let (talkback, parsed) = argtuner_talkback::init_with_args::<ProbeArgs>();
+    let (talkback, parsed) = argtuner_talkback::init::<ProbeArgs>();
     let metric_key = parsed.metric_key.as_deref().unwrap_or("metric");
     let checkpoint_dir = parsed.checkpoint_dir.as_deref();
     let mut reader = input_reader();

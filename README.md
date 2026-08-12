@@ -236,11 +236,11 @@ argtuner watch --project ./argtuner/my-project --poll-ms 5000
 ## Protocol
 
 ### The `argtuner-talkback` Rust Binding
-If your application is written in Rust, you do not need to format these JSON strings manually. You can use the optional `argtuner-talkback` crate (and the `#[talkback_args]` macro). It provides:
-* **Type-safe emission:** `emit_epoch_end()`, `emit_step_end()`, and `emit_result()` functions.
+If your application is written in Rust, you do not need to format these JSON strings manually. Declare your algorithm's parameters once as a `clap` struct and get both a production CLI and an argtuner target from the same definition (`argtuner::init::<P>()` and `argtuner::talkback_args` are re-exported from this crate's root). It provides:
+* **Type-safe emission:** `emit_epoch_end()`, `emit_step_end()`, and `emit_result()` methods that write `::ARGTUNER::` JSON to stdout (silently no-op when the binary runs standalone, so the same CLI doubles as a clean production tool).
 * **CLI auto-generation:** Automatically handles `--print-template` to generate a starter `argtuner.toml` directly from your struct definition.
 * **Version handshake:** Ensures compatibility between your app and the CLI.
-* **Typed argv parsing:** Seamless integration with `clap` via `parse_args()` or `init_with_args()`.
+* **Typed argv parsing:** Seamless integration with `clap` via `parse_args()` or `init()`.
 
 For all other languages, simply emit the following raw JSON strings to standard output:
 
