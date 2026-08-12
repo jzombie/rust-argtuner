@@ -218,6 +218,7 @@ dependencies = [
 name = "argtuner-derive"
 version = "0.1.1-alpha"
 dependencies = [
+ "argtuner",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
