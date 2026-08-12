@@ -14,6 +14,7 @@ Use argtuner when:
 - You already have a runnable training command and just need structured, repeatable search.
 - You want a simple, project-based workflow that logs trials and lets you re-run exact commands.
 - You want black-box tuning: `argtuner` never instruments your model's internals (no gradients, no layer access). Integration happens strictly at the process boundary—your app simply emits `::ARGTUNER::` JSON events on stdout, manually or via the optional `argtuner` Rust SDK.
+- Your command's result is reproducible for a given configuration: argtuner re-invokes it with fresh arguments each trial and compares the reported results, so the same arguments should return close to the same result. State you manage is fine — successive halving even copies the previous rung's `{trial_dir}` artifacts into the next rung's directory so a trial can resume from checkpoints. What skews the search is *uncontrolled* state: files written outside `{trial_dir}`, randomness that isn't seeded, or network calls that change results run to run.
 
 ## Quickstart
 
