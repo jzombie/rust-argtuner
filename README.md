@@ -89,6 +89,11 @@ Reserved placeholders injected automatically:
   Successive-halving promotions copy the parent rung's artifacts into the child
   trial's directory rather than sharing a directory across rungs.
 
+For a realistic, runnable config that ties all of this together — a log-scale
+float search, a successive-halving budget placeholder, and a `{trial_dir}`
+checkpoint dir — see [`examples/config_showcase/`](https://github.com/jzombie/rust-argtuner/blob/main/examples/config_showcase/README.md)
+and its [`argtuner inspect` output](#config-layout-argtunertoml) below.
+
 - Example template with artifacts:
 ```text
 my-train --lr {lr} --steps {steps} --output {trial_dir}
@@ -174,39 +179,119 @@ cargo run -p argtuner -- watch --project examples/loss_pattern_generator
 
 ## Config layout (`argtuner.toml`)
 
-`argtuner.toml` now has a strict set of top-level sections so sampler and
-scheduler settings are never interleaved:
+`argtuner.toml` has a strict set of top-level sections so sampler and scheduler
+settings are never interleaved. The bundled
+[`examples/config_showcase/`](https://github.com/jzombie/rust-argtuner/blob/main/examples/config_showcase/README.md)
+project shows a realistic config — log-scale floats, a successive-halving budget
+placeholder, and the resume-friendly `{trial_dir}` checkpoint pattern:
 
+<!-- config.example -->
 ```toml
-template = "cargo run ..."
+template = '''
+  cargo run -p argtuner --example loss_pattern_generator -- \
+    --pattern noisy \
+    --steps {steps} \
+    --noise {noise} \
+    --metric-key val_loss \
+    --checkpoint-dir {trial_dir} \
+    --epoch-time 1
+'''
 
 [project]
-metric_key = "metric"
+metric_key = "val_loss"
+goal = "min"
+inject_trial_placeholders = true
+
+[sampler]
+type = "random"
+
+[scheduler]
+type = "successive_halving"
+n_trials = 30
+seed = 42
+
+[scheduler.successive_halving]
+budget_placeholder = "steps"
+min_epochs = 20
+max_epochs = 300
+eta = 3
+
+[space]
+[[space.params]]
+type = "Float"
+name = "noise"
+min = 0.01
+max = 0.5
+log = true
+
+[[space.params]]
+type = "Int"
+name = "steps"
+min = 20
+max = 300
+step = 20
+```
+
+To see exactly what argtuner deserializes from that file — the parsed config
+structs (with defaults applied), the template, and how every `{placeholder}`
+resolves against the search space — run:
+
+```bash
+argtuner inspect examples/config_showcase
+```
+
+<!-- config.inspect.output -->
+```text
+project: examples/config_showcase
+
+[project]
+metric_key = "val_loss"
 goal = "min"
 pruner = "none"
 inject_trial_placeholders = true
 
 [sampler]
-type = "pso"
-
-[sampler.pso]
-iters = 10
-particles = 5
+type = "random"
 
 [scheduler]
 type = "successive_halving"
-n_trials = 50
+n_trials = 30
 seed = 42
 
 [scheduler.successive_halving]
-budget_placeholder = "epochs"
-min_epochs = 1
-max_epochs = 10
+budget_placeholder = "steps"
+min_epochs = 20
+max_epochs = 300
 eta = 3
 
 [space]
 [[space.params]]
-# ...
+type = "Float"
+name = "noise"
+min = 0.01
+max = 0.5
+log_scale = true
+
+[[space.params]]
+type = "Int"
+name = "steps"
+min = 20
+max = 300
+step = 20
+
+template:
+  cargo run -p argtuner --example loss_pattern_generator -- \
+      --pattern noisy \
+      --steps {steps} \
+      --noise {noise} \
+      --metric-key val_loss \
+      --checkpoint-dir {trial_dir} \
+      --epoch-time 1
+
+placeholders:
+  {noise}: space param Float in [0.01, 0.5], log-scale
+  {steps}: space param Int in [20, 300], step 20; scheduler budget placeholder (overridden per rung)
+  {trial_dir}: reserved: per-trial artifact directory (auto-injected)
 ```
 
 Notes:
@@ -216,6 +301,7 @@ Notes:
 - `n_trials` now belongs to the scheduler because the `fixed` and `successive_halving` schedulers manage the evaluation budget.
 - Scheduler type names always match their child tables: `type = "successive_halving"` pairs with `[scheduler.successive_halving]`, so you never need to memorize separate spellings.
 - `[space]` is still a top-level table describing the search space; it intentionally sits alongside the other sections for clarity.
+- `argtuner inspect <dir>` parses the project's config and prints the deserialized structs (defaults applied, e.g. `pruner = "none"` above was omitted in the file) plus a placeholder analysis — handy for checking what argtuner actually reads from a config.
 - When the `random` sampler hits a duplicate in a fully discrete space (choices/ints/stepped floats), it will try unused configs up to the exhaustive cap before continuing with random sampling.
 
 ## Optimization

@@ -5,6 +5,7 @@ pub mod cli;
 pub mod command;
 pub mod constants;
 pub mod discover;
+pub mod inspect;
 pub mod lock;
 pub mod project;
 pub mod sampler;

@@ -61,3 +61,18 @@ pub fn bin_path(bin: &str) -> PathBuf {
 pub fn bin_command(bin: &str) -> String {
     shell_words::quote(&bin_path(bin).to_string_lossy()).to_string()
 }
+
+/// Extract a README fenced block: everything between the `marker` comment's
+/// following `` ```<fence_lang> `` fence and the closing `` ``` `` fence, line
+/// endings normalized to LF and trimmed.
+pub fn extract_fenced_block(readme: &str, marker: &str, fence_lang: &str) -> Option<String> {
+    let marker_end = readme.find(marker)?.checked_add(marker.len())?;
+    let rest = &readme[marker_end..];
+    let fence = format!("```{fence_lang}");
+    let fence_start = rest.find(&fence)? + fence.len();
+    let after_fence = &rest[fence_start..];
+    let after_fence = after_fence.replace("\r\n", "\n");
+    let content = after_fence.strip_prefix('\n')?;
+    let close = content.find("\n```")?;
+    Some(content[..close].trim().to_string())
+}

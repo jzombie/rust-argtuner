@@ -80,7 +80,7 @@ term-wm-core = "0.9.22-alpha"
 term-wm-render = "0.9.22-alpha"
 term-wm-ui-facade = "0.9.22-alpha"
 thiserror = "2.0.17"
-toml = "1.1"
+toml = { version = "1.1", features = ["preserve_order"] }
 tracing = "0.1.44"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 

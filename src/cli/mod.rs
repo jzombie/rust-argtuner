@@ -59,6 +59,12 @@ pub enum Commands {
         #[arg(long)]
         config_id: Option<usize>,
     },
+    /// Show what argtuner parsed from the project's config
+    Inspect {
+        /// Path to the project directory
+        #[arg(value_name = "PROJECT_DIR")]
+        path: PathBuf,
+    },
     /// Recursively locate argtuner projects
     Find {
         /// Directory to search (defaults to the current directory)
@@ -103,6 +109,16 @@ pub fn run() {
             if let Err(e) = tui::run(project, *poll_ms) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
+            }
+        }
+        Commands::Inspect { path } => {
+            let project = Project::new(path);
+            match crate::inspect::render_inspect(&project) {
+                Ok(out) => println!("{out}"),
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         Commands::Find { dir } => {
@@ -182,6 +198,18 @@ mod cli_tests {
         assert!(
             Cli::try_parse_from(["argtuner", "watch", "--db", "x"]).is_err(),
             "--db flag no longer exists"
+        );
+    }
+
+    #[test]
+    fn inspect_requires_project() {
+        assert!(
+            Cli::try_parse_from(["argtuner", "inspect"]).is_err(),
+            "inspect without PROJECT_DIR must fail"
+        );
+        assert!(
+            Cli::try_parse_from(["argtuner", "inspect", "x"]).is_ok(),
+            "inspect <dir> must parse"
         );
     }
 
