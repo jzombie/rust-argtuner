@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use crate::trial::metric_value_field;
+use crate::trial::store::TrialStatus;
 use crate::{
     Goal, TrialStore,
     constants::{FIELD_METRIC, FIELD_SCORE, FIELD_TRIAL_ID, FIELD_TRIAL_STATUS},
@@ -105,7 +106,11 @@ pub fn print_top_trials(store: &TrialStore, n: usize) {
     // Collect valid completed trials
     let mut trials_vec: Vec<BestTrialSnapshot> = Vec::new();
     for row in rows {
-        if row.get(FIELD_TRIAL_STATUS).map(String::as_str) != Some("ok") {
+        if row
+            .get(FIELD_TRIAL_STATUS)
+            .and_then(|s| s.parse::<TrialStatus>().ok())
+            != Some(TrialStatus::Ok)
+        {
             continue;
         }
         let score = row.get(FIELD_SCORE).and_then(|v| v.parse::<f64>().ok());
@@ -246,7 +251,11 @@ fn collect_hparam_impacts(
     let mut stats: BTreeMap<String, ParamStats> = BTreeMap::new();
     let metric_field = metric_value_field(metric_key);
     for row in rows {
-        if row.get(FIELD_TRIAL_STATUS).map(String::as_str) != Some("ok") {
+        if row
+            .get(FIELD_TRIAL_STATUS)
+            .and_then(|s| s.parse::<TrialStatus>().ok())
+            != Some(TrialStatus::Ok)
+        {
             continue;
         }
         let metric = row

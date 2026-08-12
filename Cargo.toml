@@ -3,6 +3,7 @@
 name = "argtuner"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
 repository.workspace = true
 license.workspace = true
 default-run = "argtuner"
@@ -11,53 +12,55 @@ default-run = "argtuner"
 normal = ["windows-sys"]
 
 [workspace]
-members = [
-    "bindings/rust",
-    "bindings/talkback-derive",
-    "crates/common",
-    "crates/tooling/interactive-probe",
-    "crates/tooling/loss-pattern-generator",
-    "crates/term-wm",
-]
+members = ["bindings/rust", "bindings/talkback-derive", "crates/common", "crates/mock-bin"]
 resolver = "2"
 
 [workspace.package]
 authors = ["Jeremy Harris <jeremy.harris@zenosmosis.com>"]
 version = "0.1.0-alpha"
 edition = "2024"
-repository = "https://github.com/jzombie/argtuner-rs"
+description = "Project-based command-template hyperparameter tuner CLI."
+repository = "https://github.com/jzombie/rust-argtuner"
 license = "MIT OR Apache-2.0"
-
-# Don't publish yet
-publish = false
+publish = true
 
 [workspace.dependencies]
-argmin = "0.11"
+argmin = { version = "0.11", features = ["serde1"] }
 argmin-math = { version = "0.5.1", features = ["vec"] }
-argtuner-common = { path = "crates/common" }
-argtuner-talkback = { path = "bindings/rust" }
-argtuner-talkback-derive = { path = "bindings/talkback-derive" }
+argtuner-common = { path = "crates/common", version = "0.1.0-alpha" }
+argtuner-talkback = { path = "bindings/rust", version = "0.1.0-alpha" }
+argtuner-talkback-derive = { path = "bindings/talkback-derive", version = "0.1.0-alpha" }
 chrono = { version = "0.4.42", features = ["serde", "alloc"] }
 clap = "4.5.53"
 crossterm = "0.29.0"
 csv = "1.3"
+ctrlc = "3.5.2"
+hostname = "0.4.2"
+ignore = "0.4.33"
 indicatif = "0.18.3"
 indoc = "2.0.7"
+jsonschema = { version = "0.49.9", default-features = false }
 libc = "0.2.176"
+line-ending = "1.5.1"
 portable-pty = "0.9.0"
-rand = "0.8"
+rand = "0.10.2"
 ratatui = "0.30.0"
 resvg = "0.45.1"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
+schemars = { version = "1.2.2", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.148"
 shell-words = "1.1.1"
 similar = "2.7.0"
 tempfile = "3.10"
-term-wm = { path = "crates/term-wm" }
+term-wm = "0.9.22-alpha"
+term-wm-console = "0.9.22-alpha"
+term-wm-core = "0.9.22-alpha"
+term-wm-render = "0.9.22-alpha"
+term-wm-ui-facade = "0.9.22-alpha"
 thiserror = "2.0.17"
-toml = "0.9.10"
-vt100 = "0.16.2"
+toml = "1.1"
+tracing = "0.1.44"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [dependencies]
@@ -70,6 +73,9 @@ chrono = { workspace = true, features = ["serde", "alloc"] }
 clap = { workspace = true, features = ["derive"] }
 crossterm.workspace = true
 csv.workspace = true
+ctrlc.workspace = true
+hostname.workspace = true
+ignore.workspace = true
 libc.workspace = true
 portable-pty.workspace = true
 rand.workspace = true
@@ -81,10 +87,17 @@ shell-words.workspace = true
 similar.workspace = true
 tempfile.workspace = true
 term-wm.workspace = true
+term-wm-console.workspace = true
+term-wm-core.workspace = true
+term-wm-render.workspace = true
+term-wm-ui-facade.workspace = true
 thiserror.workspace = true
 toml.workspace = true
-vt100.workspace = true
+tracing.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [dev-dependencies]
+indicatif.workspace = true
 indoc.workspace = true
+jsonschema.workspace = true
+line-ending.workspace = true

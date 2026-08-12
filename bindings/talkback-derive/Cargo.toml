@@ -2,8 +2,10 @@
 name = "argtuner-talkback-derive"
 version.workspace = true
 edition.workspace = true
+description = "Procedural macro helpers for argtuner-talkback."
+repository.workspace = true
 license.workspace = true
-publish = false
+publish.workspace = true
 
 [lib]
 proc-macro = true

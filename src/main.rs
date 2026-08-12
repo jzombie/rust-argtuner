@@ -2,7 +2,8 @@ use argtuner::project::Project;
 use argtuner::tuner::Tuner;
 use argtuner::validate::validate_project_config;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 
 mod tui;
 
@@ -42,14 +43,11 @@ enum Commands {
     },
     /// Watch trials in a live TUI
     Watch {
-        /// Path to the project directory (uses its trials.sqlite)
+        /// Path to the project directory (watches <dir>/trials.sqlite)
         #[arg(long, value_name = "PROJECT_DIR")]
-        project: Option<PathBuf>,
-        /// Path to trials.sqlite (overrides --project)
-        #[arg(long, value_name = "PATH")]
-        db: Option<PathBuf>,
+        project: PathBuf,
         /// Polling interval (ms)
-        #[arg(long, default_value_t = 500)]
+        #[arg(long, default_value_t = 5000)]
         poll_ms: u64,
     },
     /// Show the scheduler plan for a project
@@ -60,6 +58,12 @@ enum Commands {
         /// Optional config id to visualize within the plan
         #[arg(long)]
         config_id: Option<usize>,
+    },
+    /// Recursively locate argtuner projects
+    Find {
+        /// Directory to search (defaults to the current directory)
+        #[arg(value_name = "DIR")]
+        dir: Option<PathBuf>,
     },
 }
 
@@ -94,22 +98,33 @@ fn main() {
                 }
             }
         }
-        Commands::Watch {
-            project,
-            db,
-            poll_ms,
-        } => {
-            let db_path = match (project, db) {
-                (_, Some(db)) => db.clone(),
-                (Some(project_dir), None) => {
-                    let project = Project::new(project_dir);
-                    project.trials_db_path()
-                }
-                (None, None) => PathBuf::from("trials.sqlite"),
-            };
-            if let Err(e) = tui::run(db_path, *poll_ms) {
+        Commands::Watch { project, poll_ms } => {
+            let project = Project::new(project);
+            if let Err(e) = tui::run(project, *poll_ms) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
+            }
+        }
+        Commands::Find { dir } => {
+            // `dir` is `&Option<PathBuf>` (outer `match &cli.command` borrows);
+            // `.as_deref()` flattens to `Option<&Path>` so the Cow only owns
+            // the current_dir fallback.
+            let root: Cow<Path> = match dir.as_deref() {
+                Some(d) => Cow::Borrowed(d),
+                None => match std::env::current_dir() {
+                    Ok(d) => Cow::Owned(d),
+                    Err(e) => {
+                        eprintln!("Error: failed to determine current directory: {e}");
+                        std::process::exit(1);
+                    }
+                },
+            };
+            let projects = argtuner::find_projects(&root);
+            if projects.is_empty() {
+                eprintln!("No argtuner projects found under {}", root.display());
+            }
+            for p in projects {
+                println!("{}", p.display());
             }
         }
         Commands::Plan { path, config_id } => {
@@ -146,5 +161,52 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn watch_requires_project() {
+        assert!(
+            Cli::try_parse_from(["argtuner", "watch"]).is_err(),
+            "watch without --project must fail"
+        );
+        assert!(
+            Cli::try_parse_from(["argtuner", "watch", "--project", "x"]).is_ok(),
+            "watch --project <dir> must parse"
+        );
+        assert!(
+            Cli::try_parse_from(["argtuner", "watch", "--db", "x"]).is_err(),
+            "--db flag no longer exists"
+        );
+    }
+
+    #[test]
+    fn watch_poll_ms_defaults_to_5000() {
+        let cli = Cli::try_parse_from(["argtuner", "watch", "--project", "x"]).expect("parses");
+        let super::Commands::Watch { poll_ms, .. } = cli.command else {
+            panic!("expected Watch command");
+        };
+        assert_eq!(poll_ms, 5000);
+    }
+
+    #[test]
+    fn find_dir_is_optional() {
+        let cli = Cli::try_parse_from(["argtuner", "find"]).expect("find without dir parses");
+        let super::Commands::Find { dir } = cli.command else {
+            panic!("expected Find command");
+        };
+        assert!(dir.is_none());
+
+        let cli =
+            Cli::try_parse_from(["argtuner", "find", "/tmp/x"]).expect("find with dir parses");
+        let super::Commands::Find { dir } = cli.command else {
+            panic!("expected Find command");
+        };
+        assert_eq!(dir, Some("/tmp/x".into()));
     }
 }

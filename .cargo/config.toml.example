@@ -1,0 +1,7 @@
+# Local development overrides (only take effect if copying to config.toml)
+[patch.crates-io]
+term-wm = { path = "../term-wm" }
+term-wm-console = { path = "../term-wm/crates/term-wm-console" }
+term-wm-core = { path = "../term-wm/crates/term-wm-core" }
+term-wm-render = { path = "../term-wm/crates/term-wm-render" }
+term-wm-ui-facade = { path = "../term-wm/crates/term-wm-ui-facade" }

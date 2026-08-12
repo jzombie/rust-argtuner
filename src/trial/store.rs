@@ -1,6 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::io::BufWriter;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use similar::TextDiff;
@@ -63,6 +65,151 @@ pub struct TrialStore {
     csv_path: PathBuf,
     db: TrialDb,
     template: CommandTemplate,
+    /// In-memory cache of step records per trial, keyed by trial_id.
+    /// Steps are accumulated during an epoch and flushed to DB at epoch end.
+    step_cache: Arc<Mutex<HashMap<usize, Vec<TrialRecord>>>>,
+    /// Optional TCP publisher for pushing step data to the TUI in real-time.
+    step_publisher: Option<StepPublisher>,
+}
+
+/// TCP publisher that pushes step data to connected TUI processes.
+/// When a new TUI connects mid-epoch, it sends a catchup message with
+/// all steps currently in the cache so no data is missed.
+#[derive(Debug, Clone)]
+pub struct StepPublisher {
+    clients: Arc<Mutex<Vec<TcpStream>>>,
+}
+
+impl StepPublisher {
+    /// Try to bind on the given port, sharing the step cache for catchup.
+    pub fn bind(
+        port: u16,
+        step_cache: Arc<Mutex<HashMap<usize, Vec<TrialRecord>>>>,
+    ) -> Option<(Self, u16)> {
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            let clients: Arc<Mutex<Vec<TcpStream>>> = Arc::new(Mutex::new(Vec::new()));
+            let clients_clone = clients.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    match stream {
+                        Ok(mut stream) => {
+                            if let Ok(peer) = stream.peer_addr() {
+                                eprintln!("step publisher: TUI connected from {peer}");
+                            }
+                            // Send catchup: dump all currently cached steps
+                            let guard = step_cache.lock().unwrap();
+                            for (trial_id, records) in guard.iter() {
+                                if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                                    "trial_id": trial_id,
+                                    "steps": records.iter().map(|r| &r.fields).collect::<Vec<_>>(),
+                                    "catchup": true,
+                                })) {
+                                    let mut line = json;
+                                    line.push('\n');
+                                    let _ = stream.write_all(line.as_bytes());
+                                }
+                            }
+                            drop(guard);
+                            clients_clone.lock().unwrap().push(stream);
+                        }
+                        Err(e) => {
+                            eprintln!("step publisher: accept error: {e}");
+                        }
+                    }
+                }
+            });
+            let publisher = StepPublisher { clients };
+            Some((publisher, port))
+        } else {
+            None
+        }
+    }
+
+    /// Push a JSON message to all connected TUI clients.
+    /// Silently drops disconnected clients.
+    pub fn push(&self, message: &str) {
+        let mut clients = self.clients.lock().unwrap();
+        clients.retain(|mut stream| {
+            let mut line = message.to_string();
+            line.push('\n'); // TODO: Use line-ending crate
+            stream.write_all(line.as_bytes()).is_ok()
+        });
+    }
+}
+
+/// Subscriber that connects to a StepPublisher and receives step data.
+/// Used by the TUI process.
+#[derive(Debug)]
+pub struct StepSubscriber {
+    stream: Option<TcpStream>,
+    reader: Option<BufReader<TcpStream>>,
+}
+
+impl Default for StepSubscriber {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StepSubscriber {
+    pub fn new() -> Self {
+        Self {
+            stream: None,
+            reader: None,
+        }
+    }
+
+    /// Try to connect to a StepPublisher on the given port.
+    /// Returns true if connected.
+    pub fn connect(&mut self, port: u16) -> bool {
+        if let Ok(stream) = TcpStream::connect(("127.0.0.1", port)) {
+            if let Ok(peer) = stream.peer_addr() {
+                eprintln!("step subscriber: connected to publisher on port {port} from {peer}");
+            }
+            let reader = BufReader::new(stream.try_clone().unwrap());
+            let timeout = Some(std::time::Duration::from_millis(1));
+            let _ = stream.set_read_timeout(timeout);
+            let _ = reader.get_ref().set_read_timeout(timeout);
+            self.stream = Some(stream);
+            self.reader = Some(reader);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Try to read a JSON message from the publisher (non-blocking).
+    /// Returns None if no data is available or the connection is lost.
+    pub fn try_recv(&mut self) -> Option<String> {
+        let reader = self.reader.as_mut()?;
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => {
+                self.stream = None;
+                self.reader = None;
+                None
+            }
+            Ok(_) => {
+                let trimmed = line.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                None
+            }
+            Err(_) => {
+                self.stream = None;
+                self.reader = None;
+                None
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -80,25 +227,97 @@ impl TrialStore {
             csv_path,
             db: TrialDb::new(db_path),
             template,
+            step_cache: Arc::new(Mutex::new(HashMap::new())),
+            step_publisher: None,
         }
+    }
+
+    /// Attach a step publisher for real-time TUI communication.
+    pub fn with_step_publisher(mut self, publisher: StepPublisher) -> Self {
+        self.step_publisher = Some(publisher);
+        self
+    }
+
+    /// Run a write operation against the DB, then atomically rewrite the CSV
+    /// snapshot.  Every public write method must go through this helper so that
+    /// the CSV is never stale after a write.
+    fn write<F>(&self, f: F) -> std::io::Result<()>
+    where
+        F: FnOnce(&TrialDb) -> std::io::Result<()>,
+    {
+        f(&self.db)?;
+        self.sync_csv()
     }
 
     pub fn append(&self, record: &TrialRecord) -> std::io::Result<()> {
         let record = record_with_time(record);
-        self.db.upsert_record(&record)?;
-        self.sync_csv()
+        self.write(|db| db.upsert_record(&record))
     }
 
     pub fn append_epoch(&self, record: &TrialRecord) -> std::io::Result<()> {
         let record = record_with_time(record);
-        self.db.insert_epoch_record(&record)?;
-        self.sync_csv()
+        self.write(|db| db.insert_epoch_record(&record))
     }
 
     pub fn update(&self, record: &TrialRecord) -> std::io::Result<()> {
         let record = record_with_time(record);
-        self.db.upsert_record(&record)?;
-        self.sync_csv()
+        self.write(|db| db.upsert_record(&record))
+    }
+
+    pub fn reset_trial(&self, trial_id: usize) -> std::io::Result<()> {
+        self.write(|db| db.reset_trial(trial_id))
+    }
+
+    /// Cache a step record in memory for the given trial.
+    /// Steps are accumulated here and flushed to the DB at epoch end.
+    pub fn cache_step(&self, trial_id: usize, record: TrialRecord) {
+        let mut cache = self.step_cache.lock().unwrap();
+        cache.entry(trial_id).or_default().push(record);
+    }
+
+    /// Flush all cached steps for the given trial to the DB.
+    /// After flushing, the cache is cleared for that trial.
+    pub fn flush_steps(&self, trial_id: usize) -> std::io::Result<()> {
+        let mut steps: Vec<TrialRecord> = {
+            let mut cache = self.step_cache.lock().unwrap();
+            cache.remove(&trial_id).unwrap_or_default()
+        };
+        for record in &mut steps {
+            let cached = record_with_time(record);
+            self.db.insert_step_record(&cached)?;
+        }
+        if !steps.is_empty() {
+            // Push step data to TUI via TCP publisher
+            if let Some(ref publisher) = self.step_publisher
+                && let Ok(json) = serde_json::to_string(&serde_json::json!({
+                    "trial_id": trial_id,
+                    "steps": steps.iter().map(|r| &r.fields).collect::<Vec<_>>(),
+                }))
+            {
+                publisher.push(&json);
+            }
+        }
+        Ok(())
+    }
+
+    /// Load all step records from the DB.
+    pub fn load_step_rows(&self) -> std::io::Result<Vec<TrialRecord>> {
+        self.db.load_step_records()
+    }
+
+    /// Access the step cache (used by StepPublisher for catchup on new TUI connections).
+    pub fn step_cache_handle(&self) -> Arc<Mutex<HashMap<usize, Vec<TrialRecord>>>> {
+        self.step_cache.clone()
+    }
+
+    /// Load step records grouped by trial_id.
+    pub fn load_step_rows_by_trial(&self) -> std::io::Result<BTreeMap<usize, Vec<TrialRecord>>> {
+        let records = self.db.load_step_records()?;
+        let mut by_trial: BTreeMap<usize, Vec<TrialRecord>> = BTreeMap::new();
+        for record in records {
+            by_trial.entry(record.trial_id).or_default().push(record);
+        }
+        Ok(by_trial)
     }
 
     pub fn rebuild_csv(&self) -> std::io::Result<()> {
@@ -206,6 +425,15 @@ impl TrialStore {
         let candidate = hp_fields(fields);
         let rows = self.load_rows()?;
         for row in rows {
+            // Only completed (Ok) trials should block re-evaluation.
+            // Running/Error trials were never successfully completed.
+            if row
+                .get(FIELD_TRIAL_STATUS)
+                .and_then(|s| s.parse::<TrialStatus>().ok())
+                != Some(TrialStatus::Ok)
+            {
+                continue;
+            }
             let row_config_id = row
                 .get(FIELD_TRIAL_CONFIG_ID)
                 .and_then(|value| value.parse::<usize>().ok());
@@ -239,6 +467,14 @@ impl TrialStore {
             }
         }
         Ok(last_trial_id)
+    }
+
+    pub fn save_metadata(&self, key: &str, value: &str) -> std::io::Result<()> {
+        self.db.save_metadata(key, value)
+    }
+
+    pub fn load_metadata(&self, key: &str) -> std::io::Result<Option<String>> {
+        self.db.load_metadata(key)
     }
 
     fn sync_csv(&self) -> std::io::Result<()> {
@@ -483,7 +719,7 @@ fn value_for_placeholder(
 
 #[cfg(test)]
 mod tests {
-    use super::{TrialRecord, TrialStatus, TrialStore};
+    use super::{StepPublisher, StepSubscriber, TrialRecord, TrialStatus, TrialStore};
     use crate::constants::{FIELD_SCORE, FIELD_TRIAL_CONFIG_ID, HP_PREFIX, TRIALS_CSV_FILENAME};
     use std::collections::BTreeMap;
 
@@ -718,5 +954,260 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(csv_rows, db_rows);
+    }
+
+    #[test]
+    fn steps_are_cached_and_not_in_db_before_flush() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(TRIALS_CSV_FILENAME);
+        let template = crate::CommandTemplate::new("".to_string());
+        let store = TrialStore::new(&path, template);
+
+        let mut fields = BTreeMap::new();
+        fields.insert("metric.loss".to_string(), "0.5".to_string());
+        store.cache_step(
+            0,
+            TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Running,
+                elapsed_ms: 10,
+                error: None,
+                fields: fields.clone(),
+            },
+        );
+        store.cache_step(
+            0,
+            TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Running,
+                elapsed_ms: 20,
+                error: None,
+                fields,
+            },
+        );
+
+        // Steps should NOT be in DB before flush
+        let db_steps = store.load_step_rows().expect("load steps");
+        assert!(
+            db_steps.is_empty(),
+            "steps should not be in DB before flush"
+        );
+
+        // After flush, steps should be in DB
+        store.flush_steps(0).expect("flush steps");
+        let db_steps = store.load_step_rows().expect("load steps");
+        assert_eq!(db_steps.len(), 2, "two steps should be in DB after flush");
+        assert_eq!(db_steps[0].trial_id, 0);
+        assert_eq!(db_steps[1].trial_id, 0);
+    }
+
+    #[test]
+    fn steps_do_not_appear_in_csv() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(TRIALS_CSV_FILENAME);
+        let template = crate::CommandTemplate::new("".to_string());
+        let store = TrialStore::new(&path, template);
+
+        // Add a trial + epoch record (these go to CSV)
+        let mut trial_fields = BTreeMap::new();
+        trial_fields.insert("hp.lr".to_string(), "0.1".to_string());
+        trial_fields.insert("metric.loss".to_string(), "0.5".to_string());
+        store
+            .append(&TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Ok,
+                elapsed_ms: 10,
+                error: None,
+                fields: trial_fields,
+            })
+            .expect("append");
+
+        let mut epoch_fields = BTreeMap::new();
+        epoch_fields.insert("metric.loss".to_string(), "0.4".to_string());
+        store
+            .append_epoch(&TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Running,
+                elapsed_ms: 5,
+                error: None,
+                fields: epoch_fields,
+            })
+            .expect("append_epoch");
+
+        // Add and flush step records
+        let mut step_fields = BTreeMap::new();
+        step_fields.insert("metric.loss".to_string(), "0.6".to_string());
+        store.cache_step(
+            0,
+            TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Running,
+                elapsed_ms: 1,
+                error: None,
+                fields: step_fields,
+            },
+        );
+        store.flush_steps(0).expect("flush steps");
+
+        // Verify CSV has only trial + epoch rows (2 rows), NOT step rows
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_path(&path)
+            .expect("reader");
+        let csv_rows: Vec<_> = reader
+            .records()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("csv");
+        assert_eq!(
+            csv_rows.len(),
+            2,
+            "CSV should have trial + epoch, not step rows"
+        );
+    }
+
+    #[test]
+    fn flush_empty_cache_is_noop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(TRIALS_CSV_FILENAME);
+        let template = crate::CommandTemplate::new("".to_string());
+        let store = TrialStore::new(&path, template);
+
+        // Flushing with no cached steps should not error
+        store.flush_steps(0).expect("flush empty cache");
+        let db_steps = store.load_step_rows().expect("load steps");
+        assert!(db_steps.is_empty());
+    }
+
+    #[test]
+    fn flush_steps_pushes_to_subscriber() {
+        // Full integration: cache_step → flush_steps → publisher.push → subscriber receives
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(TRIALS_CSV_FILENAME);
+        let template = crate::CommandTemplate::new("".to_string());
+        let store = TrialStore::new(&path, template);
+
+        let (publisher, port) = StepPublisher::bind(45120, store.step_cache_handle())
+            .expect("should bind a port in range");
+        let store = store.with_step_publisher(publisher);
+
+        let mut subscriber = StepSubscriber::new();
+        assert!(subscriber.connect(port), "should connect");
+
+        // Give publisher thread time to accept the connection
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Cache steps and flush — this is the real code path
+        let mut f1 = BTreeMap::new();
+        f1.insert("metric.loss".to_string(), "0.5".to_string());
+        store.cache_step(
+            1,
+            TrialRecord {
+                trial_id: 1,
+                status: TrialStatus::Running,
+                elapsed_ms: 10,
+                error: None,
+                fields: f1,
+            },
+        );
+        store.flush_steps(1).expect("flush steps");
+
+        // Subscriber should receive the pushed message
+        let mut msg = None;
+        for _ in 0..20 {
+            if let Some(m) = subscriber.try_recv() {
+                msg = Some(m);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            msg.is_some(),
+            "should receive pushed message after flush_steps"
+        );
+        let received = msg.unwrap();
+        assert!(
+            received.contains("trial_id"),
+            "message should contain trial_id"
+        );
+        assert!(received.contains("0.5"), "message should contain step data");
+    }
+
+    #[test]
+    fn subscriber_gets_catchup_for_cached_steps() {
+        // Simulate mid-epoch connect: steps are cached via the store API
+        // before the subscriber connects.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(TRIALS_CSV_FILENAME);
+        let template = crate::CommandTemplate::new("".to_string());
+        let store = TrialStore::new(&path, template);
+
+        let mut f1 = BTreeMap::new();
+        f1.insert("metric.loss".to_string(), "0.9".to_string());
+        store.cache_step(
+            1,
+            TrialRecord {
+                trial_id: 1,
+                status: TrialStatus::Running,
+                elapsed_ms: 10,
+                error: None,
+                fields: f1,
+            },
+        );
+
+        let mut f2 = BTreeMap::new();
+        f2.insert("metric.loss".to_string(), "0.8".to_string());
+        store.cache_step(
+            1,
+            TrialRecord {
+                trial_id: 1,
+                status: TrialStatus::Running,
+                elapsed_ms: 20,
+                error: None,
+                fields: f2,
+            },
+        );
+
+        let (_publisher, port) =
+            StepPublisher::bind(45121, store.step_cache_handle()).expect("should bind");
+        let mut subscriber = StepSubscriber::new();
+        assert!(subscriber.connect(port), "should connect");
+
+        // Subscriber should receive catchup messages with cached steps
+        let mut received_steps = Vec::new();
+        for _ in 0..20 {
+            while let Some(line) = subscriber.try_recv() {
+                if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line)
+                    && msg.get("catchup") == Some(&serde_json::Value::Bool(true))
+                    && let Some(steps) = msg.get("steps").and_then(|v| v.as_array())
+                {
+                    for step in steps {
+                        if let Some(fields) = step.as_object() {
+                            for (k, v) in fields {
+                                received_steps
+                                    .push((k.clone(), v.as_str().unwrap_or("").to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+            if received_steps.len() >= 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(
+            received_steps.contains(&("metric.loss".to_string(), "0.9".to_string())),
+            "should receive first cached step"
+        );
+        assert!(
+            received_steps.contains(&("metric.loss".to_string(), "0.8".to_string())),
+            "should receive second cached step"
+        );
+        assert!(
+            received_steps.len() >= 2,
+            "should have received at least 2 step fields from catchup, got {}",
+            received_steps.len()
+        );
     }
 }

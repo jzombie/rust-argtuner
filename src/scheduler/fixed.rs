@@ -10,7 +10,7 @@ use rand::SeedableRng;
 
 use super::{ScheduledTrial, TrialScheduler, TrialToken, sample_unit};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FixedScheduler {
     dims: usize,
     remaining: usize,
@@ -29,11 +29,10 @@ impl FixedScheduler {
         budget_epochs: Option<usize>,
         budget_key: Option<String>,
     ) -> Self {
-        use rand::RngCore;
         Self::new_with_seed(
             dims,
             n_trials,
-            rand::thread_rng().next_u64(),
+            rand::random::<u64>(),
             budget_epochs,
             budget_key,
         )

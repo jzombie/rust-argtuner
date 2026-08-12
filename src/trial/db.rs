@@ -43,6 +43,23 @@ impl TrialDb {
         })
     }
 
+    pub fn reset_trial(&self, trial_id: usize) -> std::io::Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                r#"
+                UPDATE trial_records
+                SET status = 'running',
+                    elapsed_ms = 0,
+                    error = NULL,
+                    fields_json = '{}'
+                WHERE trial_id = ?1
+                "#,
+                params![trial_id as i64],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn insert_epoch_record(&self, record: &TrialRecord) -> std::io::Result<()> {
         self.with_conn(|conn| {
             let fields_json =
@@ -50,6 +67,27 @@ impl TrialDb {
             conn.execute(
                 r#"
                 INSERT INTO trial_epoch_records (trial_id, status, elapsed_ms, error, fields_json)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                "#,
+                params![
+                    record.trial_id as i64,
+                    record.status.as_str(),
+                    record.elapsed_ms as i64,
+                    record.error.as_ref(),
+                    fields_json
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn insert_step_record(&self, record: &TrialRecord) -> std::io::Result<()> {
+        self.with_conn(|conn| {
+            let fields_json =
+                serde_json::to_string(&record.fields).map_err(to_sql_conversion_error)?;
+            conn.execute(
+                r#"
+                INSERT INTO trial_step_records (trial_id, status, elapsed_ms, error, fields_json)
                 VALUES (?1, ?2, ?3, ?4, ?5)
                 "#,
                 params![
@@ -154,11 +192,67 @@ impl TrialDb {
         })
     }
 
+    pub fn load_step_records(&self) -> std::io::Result<Vec<TrialRecord>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT trial_id, status, elapsed_ms, error, fields_json
+                FROM trial_step_records
+                ORDER BY trial_id ASC, row_id ASC
+                "#,
+            )?;
+            let rows = stmt.query_map([], |row| {
+                let status = row.get::<_, String>(1)?;
+                let fields_json = row.get::<_, String>(4)?;
+                let fields: BTreeMap<String, String> =
+                    serde_json::from_str(&fields_json).map_err(to_from_sql_error)?;
+                Ok(TrialRecord {
+                    trial_id: row.get::<_, i64>(0)? as usize,
+                    status: TrialStatus::parse(&status)
+                        .ok_or_else(|| rusqlite::Error::InvalidQuery)?,
+                    elapsed_ms: row.get::<_, i64>(2)? as u128,
+                    error: row.get::<_, Option<String>>(3)?,
+                    fields,
+                })
+            })?;
+            let mut records = Vec::new();
+            for record in rows {
+                records.push(record?);
+            }
+            Ok(records)
+        })
+    }
+
     pub fn load_project_config(&self) -> std::io::Result<Option<String>> {
         self.with_conn(|conn| {
             conn.query_row(
                 "SELECT value FROM project_metadata WHERE key = ?1",
                 params![PROJECT_CONFIG_KEY],
+                |row| row.get(0),
+            )
+            .optional()
+        })
+    }
+
+    pub fn save_metadata(&self, key: &str, value: &str) -> std::io::Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO project_metadata (key, value)
+                VALUES (?1, ?2)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                "#,
+                params![key, value],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn load_metadata(&self, key: &str) -> std::io::Result<Option<String>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT value FROM project_metadata WHERE key = ?1",
+                params![key],
                 |row| row.get(0),
             )
             .optional()
@@ -192,7 +286,15 @@ impl TrialDb {
                     row.get(0)
                 })
                 .optional()?;
-            Ok(has_epochs.is_some())
+            if has_epochs.is_some() {
+                return Ok(true);
+            }
+            let has_steps: Option<i64> = conn
+                .query_row("SELECT 1 FROM trial_step_records LIMIT 1", [], |row| {
+                    row.get(0)
+                })
+                .optional()?;
+            Ok(has_steps.is_some())
         })
     }
 
@@ -223,6 +325,14 @@ impl TrialDb {
                 fields_json TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS trial_epoch_records (
+                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trial_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                elapsed_ms INTEGER NOT NULL,
+                error TEXT,
+                fields_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS trial_step_records (
                 row_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 trial_id INTEGER NOT NULL,
                 status TEXT NOT NULL,

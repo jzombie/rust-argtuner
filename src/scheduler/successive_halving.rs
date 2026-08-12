@@ -12,7 +12,7 @@ use rand::SeedableRng;
 
 use super::{ScheduledTrial, TrialScheduler, TrialToken, plan, sample_unit};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SuccessiveHalvingScheduler {
     dims: usize,
     budgets: Vec<usize>,
@@ -42,7 +42,6 @@ impl SuccessiveHalvingScheduler {
         eta: usize,
         budget_key: String,
     ) -> Self {
-        use rand::RngCore;
         Self::new_with_seed(
             dims,
             n_trials,
@@ -50,7 +49,7 @@ impl SuccessiveHalvingScheduler {
             max_epochs,
             eta,
             budget_key,
-            rand::thread_rng().next_u64(),
+            rand::random::<u64>(),
         )
     }
 

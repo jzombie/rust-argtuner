@@ -5,11 +5,13 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub use argtuner_common::EventKind;
+use argtuner_common::TalkbackMessage;
 
 pub const PREFIX: &str = argtuner_common::RESULT_PREFIX;
 pub const BINDING_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PRINT_TEMPLATE_FLAG: &str = "--print-template";
 pub const PRINT_TEMPLATE_TOML_FLAG: &str = "--print-template-toml";
+pub const PRINT_PROTOCOL_SCHEMA_FLAG: &str = "--print-protocol-schema";
 
 #[derive(Debug, Clone)]
 pub struct Talkback {
@@ -53,6 +55,10 @@ impl Talkback {
     pub fn emit_epoch_end<T: Serialize>(&self, value: &T) -> io::Result<()> {
         emit_epoch_end(value)
     }
+
+    pub fn emit_step_end<T: Serialize>(&self, value: &T) -> io::Result<()> {
+        emit_step_end(value)
+    }
 }
 
 pub fn emit_event<T: Serialize>(event: argtuner_common::EventKind, value: &T) -> io::Result<()> {
@@ -60,16 +66,18 @@ pub fn emit_event<T: Serialize>(event: argtuner_common::EventKind, value: &T) ->
         return emit_result(value);
     }
     let fields = fields_from_value(value)?;
-    let payload = serde_json::json!({
-        "type": "event",
-        "name": event.as_str(),
-        "fields": fields,
-    });
-    emit_json(payload)
+    emit_json(&TalkbackMessage::Event {
+        name: event.as_str().to_string(),
+        fields,
+    })
 }
 
 pub fn emit_epoch_end<T: Serialize>(value: &T) -> io::Result<()> {
     emit_event(argtuner_common::EventKind::EpochEnd, value)
+}
+
+pub fn emit_step_end<T: Serialize>(value: &T) -> io::Result<()> {
+    emit_event(argtuner_common::EventKind::StepEnd, value)
 }
 
 pub fn emit_result<T: Serialize>(value: &T) -> io::Result<()> {
@@ -77,11 +85,7 @@ pub fn emit_result<T: Serialize>(value: &T) -> io::Result<()> {
     if fields.is_empty() {
         return Ok(());
     }
-    let payload = serde_json::json!({
-        "type": "result",
-        "fields": fields,
-    });
-    emit_json(payload)
+    emit_json(&TalkbackMessage::Result { fields })
 }
 
 pub fn args_map() -> BTreeMap<String, Vec<String>> {
@@ -124,7 +128,7 @@ pub fn render_template_command<T: clap::CommandFactory>() -> String {
     for arg in command.get_arguments() {
         if matches!(
             arg.get_long(),
-            Some("print-template") | Some("print-template-toml")
+            Some("print-template") | Some("print-template-toml") | Some("print-protocol-schema")
         ) {
             continue;
         }
@@ -151,7 +155,7 @@ pub fn render_template_command<T: clap::CommandFactory>() -> String {
 #[cfg(feature = "clap")]
 pub fn render_template_toml<T: clap::CommandFactory>() -> String {
     let template = render_template_command::<T>();
-    argtuner_common::render_template_toml(&template)
+    argtuner_common::render_starter_toml(&template)
 }
 
 #[cfg(feature = "clap")]
@@ -207,10 +211,27 @@ fn try_target_bin(stem: &str) -> Option<String> {
 
 #[cfg(feature = "clap")]
 pub fn init_with_args<T: clap::Parser + clap::CommandFactory>() -> (Talkback, T) {
+    maybe_print_protocol_schema_and_exit();
     maybe_print_template_and_exit::<T>();
     let talkback = Talkback::init();
     let args = T::parse();
     (talkback, args)
+}
+
+/// Print the talkback protocol JSON Schema to stdout and exit if the
+/// `--print-protocol-schema` flag is present on argv. Call early (before any
+/// protocol messages are emitted) so stdout stays clean.
+pub fn maybe_print_protocol_schema_and_exit() {
+    if !std::env::args().any(|arg| arg == PRINT_PROTOCOL_SCHEMA_FLAG) {
+        return;
+    }
+    print_protocol_schema();
+    std::process::exit(0);
+}
+
+/// Print the talkback protocol JSON Schema to stdout.
+pub fn print_protocol_schema() {
+    print!("{}", argtuner_common::protocol_schema_string());
 }
 
 pub fn parse_args_from_map<T: DeserializeOwned>(
@@ -306,6 +327,8 @@ fn emit_line(line: String) -> io::Result<()> {
     Ok(())
 }
 
-fn emit_json(value: serde_json::Value) -> io::Result<()> {
-    emit_line(format!("{PREFIX}{value}"))
+fn emit_json<T: Serialize>(value: &T) -> io::Result<()> {
+    let json = serde_json::to_value(value)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    emit_line(format!("{PREFIX}{json}"))
 }

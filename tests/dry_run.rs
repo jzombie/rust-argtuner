@@ -6,7 +6,7 @@ fn dry_run_avoids_project_store() {
     let project_root = dir.path().join("probe-project");
     std::fs::create_dir_all(&project_root).expect("project dir");
 
-    let emit = argtuner::test_support::bin_command("emit_result");
+    let emit = argtuner::test_support::bin_command("mock_emit_result");
 
     let toml = format!(
         r#"
