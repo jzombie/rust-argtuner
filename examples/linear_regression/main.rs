@@ -1,4 +1,4 @@
-use argtuner_talkback_derive::talkback_args;
+use argtuner_derive::talkback_args;
 
 #[talkback_args]
 struct ExampleArgs {
@@ -14,7 +14,7 @@ struct ExampleArgs {
 }
 
 fn main() {
-    let (_talkback, args) = argtuner_talkback::init::<ExampleArgs>();
+    let (_talkback, args) = argtuner::init::<ExampleArgs>();
     let _ = args.checkpoint_dir;
 
     let data = (0..10)
@@ -48,5 +48,5 @@ fn main() {
         mse += err * err;
     }
     mse /= data.len() as f64;
-    let _ = argtuner_talkback::emit_metrics! { "loss" => mse, "epoch" => args.steps };
+    let _ = argtuner::emit_metrics! { "loss" => mse, "epoch" => args.steps };
 }

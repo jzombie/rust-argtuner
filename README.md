@@ -13,16 +13,16 @@ By defining a search space in `argtuner.toml` and templating your command (e.g.,
 Use argtuner when:
 - You already have a runnable training command and just need structured, repeatable search.
 - You want a simple, project-based workflow that logs trials and lets you re-run exact commands.
-- You want black-box tuning: `argtuner` never instruments your model's internals (no gradients, no layer access). Integration happens strictly at the process boundary—your app simply emits `::ARGTUNER::` JSON events on stdout, manually or via the optional `argtuner-talkback` Rust binding.
+- You want black-box tuning: `argtuner` never instruments your model's internals (no gradients, no layer access). Integration happens strictly at the process boundary—your app simply emits `::ARGTUNER::` JSON events on stdout, manually or via the optional `argtuner` Rust SDK.
 
 ## Quickstart
 
-**1. Declare your parameters once, in Rust.** Add `argtuner-talkback` (with the
-`clap` feature) and `argtuner-talkback-derive` to your app:
+**1. Declare your parameters once, in Rust.** Add `argtuner` (its default
+`clap` feature is on) and `argtuner-derive` to your app:
 
 ```rust,no_run
-use argtuner_talkback::{emit_metrics, init};
-use argtuner_talkback_derive::talkback_args;
+use argtuner::{emit_metrics, init};
+use argtuner_derive::talkback_args;
 
 fn train(lr: f64, steps: usize) -> f64 {
     0.0 // your training logic
@@ -97,13 +97,43 @@ Supported field types: `f64`/`f32`, integers (`usize`, `i64`, …), `String`,
 too. Fields with no `min`/`max`/`choices` are fixed CLI args — baked into the
 generated template as their default and excluded from `[space]`.
 
-See the [`argtuner-talkback` README](./bindings/rust/README.md) for the full
-reference.
-
 - **TUI & progress bars:** if your application uses interactive terminal
   loggers (e.g. `burn-rs` or `indicatif`), gate them on
-  [`is_tuning_active()`](./bindings/rust/README.md#headless-execution--tui-frameworks)
-  to disable UI rendering during tuning runs.
+  [`is_tuning_active()`](#headless-execution--tui-frameworks) to disable UI
+  rendering during tuning runs.
+
+### Headless execution & TUI frameworks
+
+On non-Windows platforms, `argtuner` spawns child trials inside a
+pseudo-terminal (PTY). Interactive loggers and progress-bar frameworks (such as
+`burn-rs`'s `LearnerBuilder` display or `indicatif`) will detect a TTY and
+attempt to render.
+
+While `argtuner`'s line parser ANSI-strips `stdout` and successfully extracts
+`::ARGTUNER::` protocol events without breaking, streaming full TUI redraw
+frames into captured logs generates unnecessary IO overhead. Disable interactive
+UI rendering when tuning is active:
+
+```rust,ignore
+use argtuner::{init, is_tuning_active};
+use burn::train::LearnerBuilder;
+
+fn main() {
+    let (_talkback, params) = init::<Params>();
+
+    let mut builder = LearnerBuilder::new(&params.checkpoint_dir);
+
+    // Skip TUI rendering during argtuner campaigns
+    if !is_tuning_active() {
+        builder = builder.log_to_terminal();
+    }
+
+    let learner = builder.build(...);
+}
+```
+
+Standalone runs keep the native interactive TUI; during `argtuner run` the
+binary runs headless and you monitor live via `argtuner watch`.
 
 ## Installation
 
@@ -325,7 +355,7 @@ argtuner watch --project ./argtuner/my-project --poll-ms 5000
 
 ## Protocol
 
-### The `argtuner-talkback` Rust Binding
+### The `argtuner` Rust SDK
 If your application is written in Rust, you do not need to format these JSON strings manually. Declare your algorithm's parameters once as a **plain struct** with `#[talkback_args]` and the derive generates the `clap` CLI, the command template, and a real search space (`argtuner::init::<P>()`, `argtuner::talkback_args`, `argtuner::Params`, and `argtuner::emit_metrics!` are re-exported from this crate's root; no `clap`/`serde` needed in your `Cargo.toml`). It provides:
 * **Type-safe emission:** `emit_metrics!` / `talkback.metrics()` and the serde-backed `emit_epoch_end()`, `emit_step_end()`, and `emit_result()` methods write `::ARGTUNER::` JSON to stdout (silently no-op when the binary runs standalone, so the same CLI doubles as a clean production tool).
 * **CLI auto-generation:** `--print-template-toml` prints a starter `argtuner.toml` — populated `[space]` included — directly from your struct definition.

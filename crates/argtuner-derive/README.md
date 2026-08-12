@@ -1,6 +1,6 @@
-# argtuner-talkback-derive
+# argtuner-derive
 
-Procedural macro helpers for `argtuner-talkback` — the client-side crate a
+Procedural macro helpers for `argtuner` — the client-side crate a
 training script uses to report metrics to [`argtuner`](https://crates.io/crates/argtuner) (a black-box
 hyperparameter optimization CLI) over stdout.
 
@@ -12,4 +12,4 @@ struct. It injects three `--arg(long, ...)` fields unless already present:
 - `--print-protocol-schema` — print the talkback protocol JSON Schema and exit.
 
 Requires a struct with named fields. Full API docs:
-[`argtuner-talkback`](https://github.com/jzombie/rust-argtuner/blob/main/bindings/rust/README.md).
+[`argtuner`](https://github.com/jzombie/rust-argtuner/blob/main/README.md).

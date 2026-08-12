@@ -1,5 +1,5 @@
 use argtuner::UnifiedConfig;
-use argtuner_talkback_derive::talkback_args;
+use argtuner_derive::talkback_args;
 
 #[allow(dead_code)] // template-only definition: fields are read by the derive, not this test
 #[talkback_args]
@@ -20,7 +20,7 @@ fn space_names(config: &UnifiedConfig) -> Vec<&str> {
 
 #[test]
 fn talkback_template_toml_is_valid() {
-    let toml_text = argtuner_talkback::render_template_toml::<TemplateArgs>();
+    let toml_text = argtuner::render_template_toml::<TemplateArgs>();
     let parsed: UnifiedConfig =
         toml::from_str(&toml_text).expect("template must parse as UnifiedConfig");
     parsed
@@ -43,7 +43,7 @@ fn talkback_template_toml_is_valid() {
 
 #[test]
 fn talkback_template_renders_placeholders() {
-    let cmd = argtuner_talkback::render_template_command::<TemplateArgs>();
+    let cmd = argtuner::render_template_command::<TemplateArgs>();
     assert!(cmd.contains("--lr {lr}"), "template: {cmd}");
     assert!(cmd.contains("--steps {steps}"), "template: {cmd}");
     assert!(cmd.contains("--optimizer {optimizer}"), "template: {cmd}");

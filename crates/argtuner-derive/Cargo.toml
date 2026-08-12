@@ -1,8 +1,8 @@
 [package]
-name = "argtuner-talkback-derive"
+name = "argtuner-derive"
 version.workspace = true
 edition.workspace = true
-description = "Procedural macro helpers for argtuner-talkback."
+description = "Procedural macro for the argtuner SDK: generates a clap CLI, command template, and search space from a plain struct."
 repository.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -16,6 +16,3 @@ proc-macro = true
 proc-macro2 = "1.0.101"
 quote = "1.0.40"
 syn = { version = "2.0.106", features = ["full"] }
-
-[dev-dependencies]
-argtuner-talkback = { workspace = true, features = ["clap"] }

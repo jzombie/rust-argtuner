@@ -25,16 +25,13 @@ pub mod test_support;
 
 pub use discover::find_projects;
 
-// Talkback bindings: declare your algorithm's parameters once as a plain
-// struct with `#[talkback_args]`; the derive generates a production clap CLI,
-// the argtuner command template, and a real search space. Only
-// `argtuner-talkback` + `argtuner-talkback-derive` are needed — no clap/serde
-// in your `Cargo.toml`.
-pub use argtuner_talkback::Params;
-pub use argtuner_talkback::Talkback;
-pub use argtuner_talkback::emit_metrics;
-pub use argtuner_talkback::init;
-pub use argtuner_talkback_derive::talkback_args;
+// SDK: declare your algorithm's parameters once as a plain struct with
+// `#[talkback_args]`; the derive generates a production clap CLI, the argtuner
+// command template, and a real search space. Everything below is native to this
+// crate — `argtuner::{init, emit_metrics, talkback_args}` — no separate SDK
+// crate to find.
+mod sdk;
+pub use sdk::*;
 
 pub use crate::command::template::{CommandTemplate, TemplateError};
 pub use project::{

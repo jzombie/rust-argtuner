@@ -14,5 +14,5 @@ fn main() {
     fields.insert("metric".to_string(), "0.5".to_string());
     fields.insert("trial_id_env".to_string(), trial_id);
     fields.insert("trial_dir_env".to_string(), trial_dir);
-    let _ = argtuner_talkback::emit_event(argtuner_common::EventKind::EpochEnd, &fields);
+    let _ = argtuner::emit_event(argtuner_common::EventKind::EpochEnd, &fields);
 }

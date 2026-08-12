@@ -16,7 +16,6 @@ normal = ["windows-sys"]
 [features]
 default = ["cli"]
 cli = [
-    "dep:clap",
     "dep:crossterm",
     "dep:hostname",
     "dep:ratatui",
@@ -33,7 +32,7 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [workspace]
-members = ["bindings/rust", "bindings/talkback-derive", "crates/common", "crates/mock-bin"]
+members = ["crates/argtuner-derive", "crates/common", "crates/mock-bin"]
 resolver = "2"
 
 [workspace.package]
@@ -49,8 +48,8 @@ publish = true
 argmin = { version = "0.11", features = ["serde1"] }
 argmin-math = { version = "0.5.1", features = ["vec"] }
 argtuner-common = { path = "crates/common", version = "0.1.1-alpha" }
-argtuner-talkback = { path = "bindings/rust", version = "0.1.1-alpha" }
-argtuner-talkback-derive = { path = "bindings/talkback-derive", version = "0.1.1-alpha" }
+argtuner-derive = { path = "crates/argtuner-derive", version = "0.1.1-alpha" }
+argtuner = { path = ".", version = "0.1.1-alpha" }
 chrono = { version = "0.4.42", features = ["serde", "alloc"] }
 clap = "4.5.53"
 crossterm = "0.29.0"
@@ -88,10 +87,9 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 argmin.workspace = true
 argmin-math = { workspace = true, features = ["vec"] }
 argtuner-common.workspace = true
-argtuner-talkback = { workspace = true, features = ["clap"] }
-argtuner-talkback-derive.workspace = true
+argtuner-derive.workspace = true
 chrono = { workspace = true, features = ["serde", "alloc"] }
-clap = { workspace = true, features = ["derive"], optional = true }
+clap = { workspace = true, features = ["derive"] }
 crossterm = { workspace = true, optional = true }
 csv.workspace = true
 ctrlc.workspace = true

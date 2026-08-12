@@ -1,6 +1,6 @@
 mod patterns;
 
-use argtuner_talkback_derive::talkback_args;
+use argtuner_derive::talkback_args;
 use indicatif::{ProgressBar, ProgressStyle};
 use patterns::{LossPattern, Noisy, Overfitting, SmoothDecay, Spikes, Underfitting};
 use std::thread;
@@ -70,7 +70,7 @@ fn pattern_label(pattern: PatternType) -> &'static str {
 }
 
 fn main() {
-    let (talkback, args) = argtuner_talkback::init::<Args>();
+    let (talkback, args) = argtuner::init::<Args>();
     let _ = args.checkpoint_dir;
     let pattern = pattern_from_label(&args.pattern);
     let pattern_name = pattern_label(pattern).to_string();

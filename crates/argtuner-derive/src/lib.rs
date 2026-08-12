@@ -4,12 +4,12 @@ use syn::parse_macro_input;
 use syn::punctuated::Punctuated;
 use syn::{Fields, GenericArgument, ItemStruct, Lit, PathArguments, Token};
 
-/// Generate the `argtuner_talkback::Params` implementation for a plain struct,
+/// Generate the `argtuner::Params` implementation for a plain struct,
 /// turning it into both a production `clap` CLI and an argtuner
 /// template/search-space definition.
 ///
 /// ```rust
-/// use argtuner_talkback_derive::talkback_args;
+/// use argtuner_derive::talkback_args;
 ///
 /// #[talkback_args]
 /// struct ModelParams {
@@ -23,7 +23,7 @@ use syn::{Fields, GenericArgument, ItemStruct, Lit, PathArguments, Token};
 /// }
 ///
 /// fn main() {
-///     assert_eq!(<ModelParams as argtuner_talkback::Params>::params().len(), 3);
+///     assert_eq!(<ModelParams as argtuner::Params>::params().len(), 3);
 /// }
 /// ```
 #[proc_macro_attribute]
@@ -87,15 +87,15 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         let name_lit = lit_str(&name);
 
         let kind = if is_bool {
-            quote!(::argtuner_talkback::ParamKind::Flag)
+            quote!(::argtuner::ParamKind::Flag)
         } else if is_float {
-            quote!(::argtuner_talkback::ParamKind::Float)
+            quote!(::argtuner::ParamKind::Float)
         } else if is_int {
-            quote!(::argtuner_talkback::ParamKind::Int)
+            quote!(::argtuner::ParamKind::Int)
         } else if !attrs.choices.is_empty() {
-            quote!(::argtuner_talkback::ParamKind::Choice)
+            quote!(::argtuner::ParamKind::Choice)
         } else {
-            quote!(::argtuner_talkback::ParamKind::Other)
+            quote!(::argtuner::ParamKind::Other)
         };
 
         let value_name = match attrs.value_name.as_deref() {
@@ -122,7 +122,7 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         };
 
         param_specs.push(quote! {
-            ::argtuner_talkback::ParamSpec {
+            ::argtuner::ParamHint {
                 name: #name_lit,
                 long: #long_lit,
                 value_name: #value_name,
@@ -149,11 +149,11 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         if is_bool {
             command_args.push(quote! {
                 .arg(
-                    ::argtuner_talkback::clap::Arg::new(#name_lit)
+                    ::argtuner::clap::Arg::new(#name_lit)
                         .long(#long_lit)
                         #value_name_arg
                         #help_arg
-                        .action(::argtuner_talkback::clap::ArgAction::SetTrue),
+                        .action(::argtuner::clap::ArgAction::SetTrue),
                 )
             });
         } else {
@@ -162,10 +162,10 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let value_parser = if !attrs.choices.is_empty() && is_string {
                 let cs = attrs.choices.iter().map(|c| lit_str(c));
                 quote! {
-                    ::argtuner_talkback::clap::builder::PossibleValuesParser::new([#(#cs),*])
+                    ::argtuner::clap::builder::PossibleValuesParser::new([#(#cs),*])
                 }
             } else {
-                quote!(::argtuner_talkback::clap::value_parser!(#inner_ty))
+                quote!(::argtuner::clap::value_parser!(#inner_ty))
             };
             let required = if !is_option && attrs.default.is_none() {
                 quote!(.required(true))
@@ -178,7 +178,7 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
             };
             command_args.push(quote! {
                 .arg(
-                    ::argtuner_talkback::clap::Arg::new(#name_lit)
+                    ::argtuner::clap::Arg::new(#name_lit)
                         .long(#long_lit)
                         #value_name_arg
                         #help_arg
@@ -205,25 +205,25 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input
 
-        impl ::argtuner_talkback::Params for #struct_ident {
+        impl ::argtuner::Params for #struct_ident {
             fn app_name() -> &'static str {
                 env!("CARGO_PKG_NAME")
             }
 
-            fn params() -> &'static [::argtuner_talkback::ParamSpec] {
-                static PARAMS: [::argtuner_talkback::ParamSpec; #field_count] = [
+            fn params() -> &'static [::argtuner::ParamHint] {
+                static PARAMS: [::argtuner::ParamHint; #field_count] = [
                     #(#param_specs),*
                 ];
                 &PARAMS
             }
 
-            fn command() -> ::argtuner_talkback::clap::Command {
-                ::argtuner_talkback::clap::Command::new(Self::app_name())
+            fn command() -> ::argtuner::clap::Command {
+                ::argtuner::clap::Command::new(Self::app_name())
                     .version(env!("CARGO_PKG_VERSION"))
                     #(#command_args)*
             }
 
-            fn from_matches(m: &::argtuner_talkback::clap::ArgMatches) -> Self {
+            fn from_matches(m: &::argtuner::clap::ArgMatches) -> Self {
                 Self {
                     #(#field_inits),*
                 }

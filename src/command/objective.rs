@@ -285,11 +285,11 @@ impl CommandObjective {
                 argtuner_common::BINDING_VERSION_FIELD
             );
             if let Some(version) = payload.data.get(&binding_version_key)
-                && version != argtuner_talkback::BINDING_VERSION
+                && version != crate::BINDING_VERSION
             {
                 eprintln!(
                     "binding version mismatch: expected {} got {}",
-                    argtuner_talkback::BINDING_VERSION,
+                    crate::BINDING_VERSION,
                     version
                 );
                 std::process::exit(2);
