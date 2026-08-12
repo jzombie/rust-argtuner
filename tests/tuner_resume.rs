@@ -7,7 +7,7 @@ use argtuner::{
 use std::collections::BTreeMap;
 
 fn emit_result_command() -> String {
-    argtuner::test_support::bin_command("emit_result")
+    argtuner::test_support::bin_command("mock_emit_result")
 }
 
 #[test]

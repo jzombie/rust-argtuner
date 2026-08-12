@@ -11,7 +11,7 @@
 //! if the binary is missing so a test never silently runs a stale artifact.
 //!
 //! ```ignore
-//! let template = CommandTemplate::new(argtuner::test_support::bin_command("emit_result"));
+//! let template = CommandTemplate::new(argtuner::test_support::bin_command("mock_emit_result"));
 //! ```
 
 use std::path::PathBuf;

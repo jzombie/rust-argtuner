@@ -13,7 +13,7 @@ fn binding_version_mismatch_exits_with_message() {
     } else {
         "argtuner"
     });
-    let emit_bin = argtuner::test_support::bin_path("emit_binding_version");
+    let emit_bin = argtuner::test_support::bin_path("mock_emit_binding_version");
     assert!(
         argtuner_bin.exists(),
         "argtuner bin not found at {}",
@@ -21,7 +21,7 @@ fn binding_version_mismatch_exits_with_message() {
     );
     assert!(
         emit_bin.exists(),
-        "emit_binding_version bin not found at {}",
+        "mock_emit_binding_version bin not found at {}",
         emit_bin.display()
     );
 

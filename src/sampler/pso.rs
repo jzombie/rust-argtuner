@@ -502,11 +502,11 @@ mod tests {
     // then verifies the checkpoint was persisted and can be resumed.
     // -----------------------------------------------------------------------
 
-    /// Build a command that uses the compiled `emit_result` binary to emit a
+    /// Build a command that uses the compiled `mock_emit_result` binary to emit a
     /// valid `::ARGTUNER::` result.  Every invocation returns metric=0.42 so
     /// convergence is deterministic.
     fn make_pso_objective(dir: &tempfile::TempDir) -> ControllableObjective {
-        let template_str = crate::test_support::bin_command("emit_result");
+        let template_str = crate::test_support::bin_command("mock_emit_result");
         let template = crate::CommandTemplate::new(template_str);
         let store = TrialStore::new(
             dir.path().join(crate::TRIALS_CSV_FILENAME),
