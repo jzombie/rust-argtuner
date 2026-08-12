@@ -8,6 +8,13 @@
 
 By defining a search space in `argtuner.toml` and templating your command (e.g., `--lr {lr}`), `argtuner` orchestrates trials using algorithms like Particle Swarm Optimization (PSO) or Successive Halving. It reads trial metrics directly from the process `stdout` and logs results to a local SQLite/CSV database.
 
+## When it fits
+
+Use argtuner when:
+- You already have a runnable training command and just need structured, repeatable search.
+- You want a simple, project-based workflow that logs trials and lets you re-run exact commands.
+- You want black-box tuning: `argtuner` never instruments your model's internals (no gradients, no layer access). Integration happens strictly at the process boundary—your app simply emits `::ARGTUNER::` JSON events on stdout, manually or via the optional `argtuner-talkback` Rust binding.
+
 ## Installation
 
 Building from source requires a **stable** Rust toolchain (1.85+ for edition 2024) and a C compiler for the bundled SQLite (`rusqlite` builds it from source): Xcode command-line tools on macOS, `build-essential` on Linux, or the MSVC Build Tools on Windows.
@@ -47,81 +54,15 @@ cargo test --workspace --all-features
 > extracted `term-wm` UI crates locally; a normal build resolves them from
 > crates.io and needs no extra configuration.
 
-## When it fits
+## Configuration showcase
 
-Use argtuner when:
-- You already have a runnable training command and just need structured, repeatable search.
-- You want a simple, project-based workflow that logs trials and lets you re-run exact commands.
-- You are okay with black-box tuning (no gradients, no internal hooks) and want it to work across different models/tools.
+A single worked example ties the whole template/config model together. It lives
+at [`examples/config_showcase/`](https://github.com/jzombie/rust-argtuner/blob/main/examples/config_showcase/README.md)
+and is fully runnable (`argtuner run examples/config_showcase`).
 
-## CLI subcommands
-
-argtuner ships five subcommands:
-
-- `run` — run an optimization campaign against a project.
-- `rebuild-csv` — rebuild `trials.csv` from `trials.sqlite` (for example, after
-  manual edits or a corrupt CSV). Tuning runs automatically rebuild this after
-  each trial.
-- `watch` — live TUI dashboard for monitoring trials and metrics as they run
-  (see [Watch](#watch-live-tui) below).
-- `find` — recursively locate argtuner projects.
-- `plan` — show the scheduler plan for a project (optionally a specific config id).
-
-```bash
-argtuner run ./argtuner/my-project
-argtuner rebuild-csv ./argtuner/my-project
-argtuner plan ./argtuner/my-project
-argtuner plan ./argtuner/my-project --config-id 3
-```
-
-## Command templates
-
-Each trial runs a command rendered from a template. Use `{placeholder}` tokens
-for tunable values; double braces `{{`/`}}` escape literal braces.
-
-This is the template from the bundled
-[`examples/config_showcase/`](https://github.com/jzombie/rust-argtuner/blob/main/examples/config_showcase/README.md)
-project (the full `argtuner.toml` and its `argtuner inspect` output are in
-[Config layout](#config-layout-argtunertoml)):
-
-```text
-cargo run -p argtuner --example loss_pattern_generator -- \
-  --pattern noisy \
-  --steps {steps} \
-  --noise {noise} \
-  --metric-key val_loss \
-  --checkpoint-dir {trial_dir} \
-  --epoch-time 1
-```
-
-- `{steps}` and `{noise}` are sampled from the search space.
-- `{trial_dir}` is injected automatically (see below).
-
-Reserved placeholders injected automatically:
-- `{trial_id}`: the numeric trial id.
-- `{trial_dir}`: per-trial artifacts directory, always `argtuner/<project>/artifacts/trial_{trial_id}`.
-  Successive-halving promotions copy the parent rung's artifacts into the child
-  trial's directory rather than sharing a directory across rungs.
-
-The execution flow is:
- - Render command template with sampled hyperparameters (and optional trial
-   placeholders).
- - Spawn the command directly (program + args) with stdout/stderr streamed.
- - Parse stdout lines that start with the crate prefix `::ARGTUNER::` as JSON events.
- - Extract `metric_key` from the last `model.epoch_end` event to compute the `score`.
- - Write/update `trials.csv` with:
-   - core fields (`trial_id`, `status`, `elapsed_ms`, `error`, `metric`, `score`)
-   - `metric.*` fields from the last `model.epoch_end` event
-   - `trial.*` fields (budget/rung/bracket, trial_dir, etc.)
-   - `hp.*` fields from the search space
-
-## Config layout (`argtuner.toml`)
-
-`argtuner.toml` has a strict set of top-level sections so sampler and scheduler
-settings are never interleaved. The bundled
-[`examples/config_showcase/`](https://github.com/jzombie/rust-argtuner/blob/main/examples/config_showcase/README.md)
-project shows a realistic config — log-scale floats, a successive-halving budget
-placeholder, and the resume-friendly `{trial_dir}` checkpoint pattern:
+Each trial runs a command rendered from the `template` field. Use
+`{placeholder}` tokens for tunable values; double braces `{{`/`}}` escape
+literal braces. Here is the showcase's `argtuner.toml` in full:
 
 <!-- config.example -->
 ```toml
@@ -169,6 +110,18 @@ min = 20
 max = 300
 step = 20
 ```
+
+A few things to notice:
+- `{steps}` and `{noise}` are sampled from the search space (`[space]`).
+- `{steps}` is also the successive-halving budget placeholder, so each rung
+  overrides it (`[scheduler.successive_halving]`).
+- `{trial_dir}` is a reserved placeholder injected automatically.
+
+Reserved placeholders injected automatically:
+- `{trial_id}`: the numeric trial id.
+- `{trial_dir}`: per-trial artifacts directory, always `argtuner/<project>/artifacts/trial_{trial_id}`.
+  Successive-halving promotions copy the parent rung's artifacts into the child
+  trial's directory rather than sharing a directory across rungs.
 
 To see exactly what argtuner deserializes from that file — the parsed config
 structs (with defaults applied), the template, and how every `{placeholder}`
@@ -232,6 +185,18 @@ placeholders:
   {trial_dir}: reserved: per-trial artifact directory (auto-injected)
 ```
 
+The execution flow is:
+ - Render command template with sampled hyperparameters (and optional trial
+   placeholders).
+ - Spawn the command directly (program + args) with stdout/stderr streamed.
+ - Parse stdout lines that start with the crate prefix `::ARGTUNER::` as JSON events.
+ - Extract `metric_key` from the last `model.epoch_end` event to compute the `score`.
+ - Write/update `trials.csv` with:
+   - core fields (`trial_id`, `status`, `elapsed_ms`, `error`, `metric`, `score`)
+   - `metric.*` fields from the last `model.epoch_end` event
+   - `trial.*` fields (budget/rung/bracket, trial_dir, etc.)
+   - `hp.*` fields from the search space
+
 Notes:
 - `[project]` holds run-wide metadata (metric parsing, goal, pruner, and trial placeholder injection).
 - `[sampler]` names the sampler (`pso` or `random`). Sampler-specific knobs live under `[sampler.<sampler_name>]`, e.g. `pso.iters` and `pso.particles`.
@@ -242,88 +207,31 @@ Notes:
 - `argtuner inspect <dir>` parses the project's config and prints the deserialized structs (defaults applied, e.g. `pruner = "none"` above was omitted in the file) plus a placeholder analysis — handy for checking what argtuner actually reads from a config.
 - When the `random` sampler hits a duplicate in a fully discrete space (choices/ints/stepped floats), it will try unused configs up to the exhaustive cap before continuing with random sampling.
 
-## Optimization
+## CLI subcommands
 
-Define a search space inside `argtuner.toml`:
+argtuner ships six subcommands:
 
-```toml
-[space]
-[[space.params]]
-name = "lr"
-min = 1e-5
-max = 1e-2
-log_scale = true
-
-[[space.params]]
-name = "steps"
-min = 50
-max = 200
-step = 10
-
-Note: `step` is only supported for linear ranges; it cannot be combined with `log_scale = true`.
-
-[[space.params]]
-name = "kernel"
-values = ["3", "5", "7"]
-```
-
-Run particle swarm optimization (PSO) with argmin:
+- `run` — run an optimization campaign against a project.
+- `inspect` — show what argtuner parsed from a project's config: the
+  deserialized structs, the template, and the placeholder analysis (see
+  [Configuration showcase](#configuration-showcase)).
+- `rebuild-csv` — rebuild `trials.csv` from `trials.sqlite` (for example, after
+  manual edits or a corrupt CSV). Tuning runs automatically rebuild this after
+  each trial.
+- `watch` — live TUI dashboard for monitoring trials and metrics as they run
+  (see [Watch](#watch-live-tui) below).
+- `find` — recursively locate argtuner projects.
+- `plan` — show the scheduler plan for a project (optionally a specific config id).
 
 ```bash
 argtuner run ./argtuner/my-project
+argtuner inspect examples/config_showcase
+argtuner rebuild-csv ./argtuner/my-project
+argtuner plan ./argtuner/my-project
+argtuner plan ./argtuner/my-project --config-id 3
 ```
 
-## Schedulers (budgeted runs)
-
-argtuner can run trials with a fixed budget or use Successive Halving to
-allocate more epochs to the most promising configs.
-
-To use epoch budgeting, include a placeholder in your template (default
-`{epochs}`) and set `[scheduler] type = "successive_halving"` in `argtuner.toml`:
-
-```text
-my-train --lr {lr} --epochs {epochs} --out {trial_dir}
-```
-
-Add a `[scheduler.successive_halving]` table to specify the scheduler-specific
-settings:
-
-```toml
-[scheduler]
-type = "successive_halving"
-
-[scheduler.successive_halving]
-budget_placeholder = "epochs"
-min_epochs = 2
-max_epochs = 100
-eta = 3
-```
-
-`min_epochs`, `max_epochs`, and `eta` decide the per-rung budgets while
-`budget_placeholder` tells argtuner which template placeholder to override.
-
-Successive halving relies on CLI placeholders for budgets and resume. Include
-`--epochs {epochs}` and `--checkpoint-dir {trial_dir}` in your template so each
-promotion continues from the same checkpoint directory instead of starting over.
-If your training script uses a different checkpoint flag, set it under `[project]`:
-
-```toml
-[project]
-checkpoint_arg = "--checkpoint_dir"
-```
-
-The command is executed directly (program + args) with stdout/stderr streamed
-to your terminal. Any stdout line can emit an ARGTUNER event with the configured
-prefix; the tuner parses the last `model.epoch_end` event. For example:
-
-```
-::ARGTUNER::{"type":"event","name":"model.epoch_end","fields":{"metric":"0.123","aux":"42","epoch":"1"}}
-```
-
-Each evaluation is recorded in the CSV with all parameter values, the parsed
-metric, and the score. The message prefix is fixed to `::ARGTUNER::` (see the `RESULT_PREFIX` constant); you can change `metric_key` in `argtuner.toml`.
-
-## Watch (live TUI)
+### Watch (live TUI)
 
 `argtuner watch` opens a live terminal dashboard while a campaign is running.
 It monitors the project's `trials.sqlite` and prints the schedule/status of each
@@ -362,6 +270,16 @@ argtuner watch --project ./argtuner/my-project --poll-ms 5000
   (including each poll tick).
 
 ## Protocol
+
+### The `argtuner-talkback` Rust Binding
+If your application is written in Rust, you do not need to format these JSON strings manually. You can use the optional `argtuner-talkback` crate (and the `#[talkback_args]` macro). It provides:
+* **Type-safe emission:** `emit_epoch_end()`, `emit_step_end()`, and `emit_result()` functions.
+* **CLI auto-generation:** Automatically handles `--print-template` to generate a starter `argtuner.toml` directly from your struct definition.
+* **Version handshake:** Ensures compatibility between your app and the CLI.
+* **Typed argv parsing:** Seamless integration with `clap` via `parse_args()` or `init_with_args()`.
+
+For all other languages, simply emit the following raw JSON strings to standard output:
+
 ### Result fields / event protocol
 - Any stdout line can emit an ARGTUNER message using the fixed `::ARGTUNER::` prefix; the tuner uses the last `model.epoch_end` event for scoring.
 - Messages are JSON after the prefix. Supported payloads are:
@@ -382,7 +300,7 @@ JSON document after the prefix; the prefix/ANSI line framing is documented in
 its `x-argtuner` extension object.
 
 The canonical schema is echoed below, collapsed to keep this doc skimmable;
-`tests/protocol_schema.rs` asserts it is byte-identical to the generated
+`tests/readme_assertions.rs` asserts it is byte-identical to the generated
 schema, so it cannot go stale:
 
 <!-- protocol.schema.json -->
@@ -495,8 +413,89 @@ Epoch 1/10: train loss 0.5234, val loss 0.6102
 {"type":"event","name":"model.epoch_end","fields":{"metric":"0.6102","epoch":"1"}}
 ```
 
-- `tests/protocol_schema.rs` runs the real parser on this exact feed and
+- `tests/readme_assertions.rs` runs the real parser on this exact feed and
   asserts it produces exactly that message.
+
+## Optimization
+
+Define a search space inside `argtuner.toml`:
+
+```toml
+[space]
+[[space.params]]
+name = "lr"
+min = 1e-5
+max = 1e-2
+log_scale = true
+
+[[space.params]]
+name = "steps"
+min = 50
+max = 200
+step = 10
+
+Note: `step` is only supported for linear ranges; it cannot be combined with `log_scale = true`.
+
+[[space.params]]
+name = "kernel"
+values = ["3", "5", "7"]
+```
+
+Run particle swarm optimization (PSO) with argmin:
+
+```bash
+argtuner run ./argtuner/my-project
+```
+
+## Schedulers (budgeted runs)
+
+argtuner can run trials with a fixed budget or use Successive Halving to
+allocate more epochs to the most promising configs.
+
+To use epoch budgeting, include a placeholder in your template (default
+`{epochs}`) and set `[scheduler] type = "successive_halving"` in `argtuner.toml`:
+
+```text
+my-train --lr {lr} --epochs {epochs} --out {trial_dir}
+```
+
+Add a `[scheduler.successive_halving]` table to specify the scheduler-specific
+settings:
+
+```toml
+[scheduler]
+type = "successive_halving"
+
+[scheduler.successive_halving]
+budget_placeholder = "epochs"
+min_epochs = 2
+max_epochs = 100
+eta = 3
+```
+
+`min_epochs`, `max_epochs`, and `eta` decide the per-rung budgets while
+`budget_placeholder` tells argtuner which template placeholder to override.
+
+Successive halving relies on CLI placeholders for budgets and resume. Include
+`--epochs {epochs}` and `--checkpoint-dir {trial_dir}` in your template so each
+promotion continues from the same checkpoint directory instead of starting over.
+If your training script uses a different checkpoint flag, set it under `[project]`:
+
+```toml
+[project]
+checkpoint_arg = "--checkpoint_dir"
+```
+
+The command is executed directly (program + args) with stdout/stderr streamed
+to your terminal. Any stdout line can emit an ARGTUNER event with the configured
+prefix; the tuner parses the last `model.epoch_end` event. For example:
+
+```
+::ARGTUNER::{"type":"event","name":"model.epoch_end","fields":{"metric":"0.123","aux":"42","epoch":"1"}}
+```
+
+Each evaluation is recorded in the CSV with all parameter values, the parsed
+metric, and the score. The message prefix is fixed to `::ARGTUNER::` (see the `RESULT_PREFIX` constant); you can change `metric_key` in `argtuner.toml`.
 
 ## Command flow (tuner ↔ app)
 
@@ -515,19 +514,6 @@ The tuner communicates with your app via two channels:
    - Use these if you prefer reading values from the environment instead of
      the command line.
 
-The execution flow is:
-
-- Render command template with sampled hyperparameters (and optional trial
-  placeholders).
-- Spawn the command directly (program + args) with stdout/stderr streamed.
-- Parse stdout lines that start with the crate prefix `::ARGTUNER::` as JSON events.
-- Extract `metric_key` from the last `model.epoch_end` event to compute the `score`.
-- Write/update `trials.csv` with:
-  - core fields (`trial_id`, `status`, `elapsed_ms`, `error`, `metric`, `score`)
-  - `metric.*` fields from the last `model.epoch_end` event
-  - `trial.*` fields (budget/rung/bracket, trial_dir, etc.)
-  - `hp.*` fields from the search space
-
 Windows note:
 - Command templates are split into program + args without a shell, so use
   explicit arguments and quote paths with spaces. To run shell built-ins, wrap
@@ -541,13 +527,15 @@ existing trial’s `hp.*` values, the tuner retries with a new sample. If it
 cannot find a unique config after a fixed number of retries, the run stops
 with an error indicating the search space may be exhausted.
 
-## Hyperparameter impact report
+## Hyperparameter impact & CSV behavior
+
+### Hyperparameter impact report
 
 When trials complete, argtuner prints a heuristic Hyperparameter Impact report.
 It shows Pearson correlation vs. score for each hyperparameter and adds coarse
 range bins with best/median scores, highlighting an estimated elbow where improvements flatten. Metrics and ordering follow the project goal (goal=min: lower is better; goal=max: higher is better), and it includes a small histogram of bin counts for each parameter.
 
-## CSV behavior
+### CSV behavior
 
 - The SQLite database is the source of truth; the CSV is a mirrored snapshot.
   Trial resumes and command reconstruction use the recorded `hp.*` values from
