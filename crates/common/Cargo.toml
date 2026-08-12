@@ -6,6 +6,8 @@ description = "Shared constants and protocol types for the argtuner workspace."
 repository.workspace = true
 license.workspace = true
 publish.workspace = true
+keywords = ["hyperparameter", "optimization", "protocol", "json", "serde"]
+categories = ["encoding", "science"]
 
 [dependencies]
 schemars.workspace = true

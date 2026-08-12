@@ -1,6 +1,51 @@
 # argtuner
 
-Project-based command-template tuner CLI.
+[![macOS][macos-badge]][ci] [![Linux][linux-badge]][ci] [![Windows][windows-badge]][ci]
+<br>
+[![Made with Rust][rust-logo]][rust-src-page] [![crates.io][crates-badge]][crates-page] [![MIT licensed][mit-license-badge]][mit-license-page] [![Apache 2.0 licensed][apache-2.0-license-badge]][apache-2.0-license-page] [![Coverage][coveralls-badge]][coveralls-page] [![CodeQL][codeql-badge]][codeql-page]
+
+`argtuner` is a language-agnostic CLI tool for black-box hyperparameter optimization. It repeatedly executes a target script or binary while systematically varying its command-line arguments to find the optimal configuration.
+
+By defining a search space in `argtuner.toml` and templating your command (e.g., `--lr {lr}`), `argtuner` orchestrates trials using algorithms like Particle Swarm Optimization (PSO) or Successive Halving. It reads trial metrics directly from the process `stdout` and logs results to a local SQLite/CSV database.
+
+## Installation
+
+Building from source requires a **stable** Rust toolchain (1.85+ for edition 2024) and a C compiler for the bundled SQLite (`rusqlite` builds it from source): Xcode command-line tools on macOS, `build-essential` on Linux, or the MSVC Build Tools on Windows.
+
+From a checkout of this repository:
+
+```bash
+# Build the debug binary (target/debug/argtuner)
+cargo build
+
+# Build an optimized release binary (target/release/argtuner)
+cargo build --release
+
+# Install the argtuner binary into ~/.cargo/bin
+cargo install --path .
+```
+
+Verify the install:
+
+```bash
+argtuner --help
+```
+
+During development you can run it in-place without installing:
+
+```bash
+cargo run -p argtuner -- --help
+```
+
+Run the test suite (matches CI):
+
+```bash
+cargo test --workspace --all-features
+```
+
+> Note: `.cargo/config.toml.example` is only needed when hacking on the
+> extracted `term-wm` UI crates locally; a normal build resolves them from
+> crates.io and needs no extra configuration.
 
 ## When it fits
 
@@ -11,7 +56,7 @@ Use argtuner when:
 
 ## CLI subcommands
 
-argtuner ships four subcommands:
+argtuner ships five subcommands:
 
 - `run` — run an optimization campaign against a project.
 - `rebuild-csv` — rebuild `trials.csv` from `trials.sqlite` (for example, after
@@ -63,7 +108,7 @@ The execution flow is:
 
 ## Example: linear regression
 
-There is a runnable, self-contained example in `examples/linear_regression/`
+There is a runnable, self-contained example in [`examples/linear_regression/`](https://github.com/jzombie/rust-argtuner/blob/main/examples/linear_regression/README.md)
 (main.rs + argtuner.toml + README).
 
 Run directly:
@@ -83,7 +128,7 @@ random budget.
 
 ## Example: guitar tuning demo
 
-The [guitar tuning demo](examples/guitar_tuning/README.md) keeps a
+The [guitar tuning demo](https://github.com/jzombie/rust-argtuner/blob/main/examples/guitar_tuning/README.md) keeps a
 simple CLI, its `argtuner.toml`, and the generated `trials.csv` in the same
 directory. Each placeholder represents a candidate string frequency (E2 through
 E4). The CLI computes the mean absolute detuning, prints helpful diagnostics,
@@ -106,7 +151,7 @@ cargo run -p argtuner -- run examples/guitar_tuning
 
 ## Example: interactive probe
 
-The [interactive probe](examples/interactive_probe/README.md) is a REPL that
+The [interactive probe](https://github.com/jzombie/rust-argtuner/blob/main/examples/interactive_probe/README.md) is a REPL that
 lets you manually emit ARGTUNER event lines to drive the tuner and validate
 logging/UX (e.g. `result 0.42`, `event model.early_stopped`,
 `invalid <reason>`).
@@ -117,7 +162,7 @@ cargo run -p argtuner -- run examples/interactive_probe
 
 ## Example: loss-pattern generator
 
-The [loss-pattern generator](examples/loss_pattern_generator/README.md)
+The [loss-pattern generator](https://github.com/jzombie/rust-argtuner/blob/main/examples/loss_pattern_generator/README.md)
 simulates synthetic training runs (smooth decay, overfitting, spikes, noisy)
 and emits per-step and per-epoch loss events, so you can explore the tuner's
 visualization and `watch` TUI without training a real model.
@@ -307,7 +352,7 @@ argtuner watch --project ./argtuner/my-project --poll-ms 5000
 
 The protocol is **self-describing**: a JSON Schema generated from the shared
 `argtuner_common::TalkbackMessage` type is committed at
-`crates/common/assets/protocol.schema.json`, and any talkback binary can print
+[`crates/common/assets/protocol.schema.json`](https://github.com/jzombie/rust-argtuner/blob/main/crates/common/assets/protocol.schema.json), and any talkback binary can print
 the current schema with `--print-protocol-schema`. The schema validates the
 JSON document after the prefix; the prefix/ANSI line framing is documented in
 its `x-argtuner` extension object.
@@ -492,3 +537,20 @@ range bins with best/median scores, highlighting an estimated elbow where improv
   existing rows preserved.
 - The rendered command is not stored; it is reconstructed from the template and
   the recorded `hp.*` values at run time.
+
+[ci]: https://github.com/jzombie/argtuner/actions
+[macos-badge]: https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white
+[linux-badge]: https://img.shields.io/badge/Linux-FCC624?style=flat-square&logo=linux&logoColor=black
+[windows-badge]: https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white
+[rust-src-page]: https://www.rust-lang.org/
+[rust-logo]: https://img.shields.io/badge/Made%20with-Rust-orange?style=flat-square
+[crates-page]: https://crates.io/crates/argtuner
+[crates-badge]: https://img.shields.io/crates/v/argtuner.svg?style=flat-square
+[mit-license-page]: ./LICENSE-MIT
+[mit-license-badge]: https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square
+[apache-2.0-license-page]: ./LICENSE-APACHE
+[apache-2.0-license-badge]: https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square
+[codeql-page]: https://github.com/jzombie/rust-argtuner/actions/workflows/github-code-scanning/codeql
+[codeql-badge]: https://img.shields.io/github/actions/workflow/status/jzombie/rust-argtuner/github-code-scanning/codeql?style=flat-square
+[coveralls-page]: https://coveralls.io/github/jzombie/rust-argtuner?branch=main
+[coveralls-badge]: https://img.shields.io/coveralls/github/jzombie/rust-argtuner?style=flat-square

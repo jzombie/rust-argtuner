@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "argtuner"
-version = "0.1.0-alpha"
+version = "0.1.1-alpha"
 dependencies = [
  "argmin",
  "argmin-math",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "argtuner-common"
-version = "0.1.0-alpha"
+version = "0.1.1-alpha"
 dependencies = [
  "line-ending",
  "schemars",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "argtuner-mock-bin"
-version = "0.1.0-alpha"
+version = "0.1.1-alpha"
 dependencies = [
  "argtuner-common",
  "argtuner-talkback",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "argtuner-talkback"
-version = "0.1.0-alpha"
+version = "0.1.1-alpha"
 dependencies = [
  "argtuner-common",
  "clap",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "argtuner-talkback-derive"
-version = "0.1.0-alpha"
+version = "0.1.1-alpha"
 dependencies = [
  "proc-macro2",
  "quote",
