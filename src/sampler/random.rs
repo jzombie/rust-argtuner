@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::TrialOverrides;
 use crate::command::CommandObjective;
@@ -25,9 +27,10 @@ type CompletedTrialMap = BTreeMap<TrialKey, CompletedTrial>;
 pub fn run_random(
     objective: CommandObjective,
     scheduler: Box<dyn TrialScheduler>,
+    stop_flag: Option<Arc<AtomicBool>>,
 ) -> Result<(), Box<dyn Error>> {
     let completed = load_completed_trials(objective.store())?;
-    run_scheduled(objective, scheduler, completed)
+    run_scheduled(objective, scheduler, completed, stop_flag)
 }
 
 struct DiscreteConfigPool {
@@ -97,11 +100,17 @@ fn run_scheduled(
     objective: CommandObjective,
     mut scheduler: Box<dyn TrialScheduler>,
     mut completed: CompletedTrialMap,
+    stop_flag: Option<Arc<AtomicBool>>,
 ) -> Result<(), Box<dyn Error>> {
     let mut retry_trial_ids: HashMap<TrialKey, usize> = HashMap::new();
     let mut duplicate_retries = 0usize;
     let mut discrete_pool: Option<DiscreteConfigPool> = None;
     while let Some(trial) = scheduler.next_trial() {
+        // Graceful shutdown: check if Ctrl-C was pressed between trials
+        if stop_flag.as_ref().is_some_and(|f| f.load(Ordering::SeqCst)) {
+            eprintln!("INFO: stopping trial loop (Ctrl-C received)");
+            break;
+        }
         let token_key = (trial.token.config_id, trial.token.rung, trial.token.bracket);
         if let Some(existing) = completed.get(&token_key) {
             if matches!(existing.status, TrialStatus::Ok | TrialStatus::Error) {

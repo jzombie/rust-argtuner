@@ -301,19 +301,30 @@ impl CommandObjective {
                     fields: extra_fields,
                 });
             }
-            let metric = payload
-                .get_metric(&self.metric_key)
-                .map_err(EvalError::Other)?;
+            let metric = payload.get_metric(&self.metric_key).map_err(|err| {
+                EvalError::Other(format!(
+                    "{err} (stdout tail: {:?})",
+                    tail_lines(&output.stdout, 3)
+                ))
+            })?;
             let score = match self.goal {
                 Goal::Min => metric,
                 Goal::Max => -metric,
             };
             let epoch_results = payload.epoch_results.clone();
             let epoch_fields = payload.epoch_fields();
-            Ok((metric, score, extra_fields, epoch_results, epoch_fields))
+            let step_fields = payload.step_fields();
+            Ok((
+                metric,
+                score,
+                extra_fields,
+                epoch_results,
+                epoch_fields,
+                step_fields,
+            ))
         })();
         match result {
-            Ok((metric, score, extra_fields, epoch_results, epoch_fields)) => {
+            Ok((metric, score, extra_fields, epoch_results, epoch_fields, step_fields)) => {
                 let base_fields = rendered.fields;
                 let mut out_fields = base_fields.clone();
                 for (key, value) in extra_fields {
@@ -324,6 +335,23 @@ impl CommandObjective {
                 out_fields.insert(FIELD_METRIC.to_string(), self.metric_key.clone());
                 out_fields.insert(FIELD_SCORE.to_string(), score.to_string());
                 crate::trial::enforce_hp_immutability(existing_fields.as_ref(), &mut out_fields);
+                // Cache step results in memory for this trial
+                for step_row_fields in &step_fields {
+                    let mut step_fields = base_fields.clone();
+                    for (key, value) in step_row_fields {
+                        step_fields.entry(key.clone()).or_insert(value.clone());
+                    }
+                    self.store.cache_step(
+                        trial_id,
+                        TrialRecord {
+                            trial_id,
+                            status: TrialStatus::Running,
+                            elapsed_ms: start.elapsed().as_millis(),
+                            error: None,
+                            fields: step_fields,
+                        },
+                    );
+                }
                 for (epoch_result, epoch_row_fields) in
                     epoch_results.iter().zip(epoch_fields.iter())
                 {
@@ -356,7 +384,15 @@ impl CommandObjective {
                             fields: epoch_fields,
                         })
                         .map_err(|err| format!("epoch log append failed: {err}"))?;
+                    // Flush cached steps at epoch end
+                    self.store
+                        .flush_steps(trial_id)
+                        .map_err(|err| format!("step flush failed: {err}"))?;
                 }
+                // Flush any remaining cached steps at trial end
+                self.store
+                    .flush_steps(trial_id)
+                    .map_err(|err| format!("step flush failed: {err}"))?;
                 self.store
                     .update(&TrialRecord {
                         trial_id,
@@ -397,6 +433,8 @@ impl CommandObjective {
                     extra_fields,
                 );
                 crate::trial::enforce_hp_immutability(existing_fields.as_ref(), &mut out_fields);
+                // Flush any cached steps before recording the error
+                let _ = self.store.flush_steps(trial_id);
                 self.store
                     .update(&TrialRecord {
                         trial_id,
@@ -454,15 +492,15 @@ mod tests {
     use crate::TRIALS_CSV_FILENAME;
 
     fn emit_result_command() -> String {
-        crate::test_support::bin_command("emit_result")
+        crate::test_support::bin_command("mock_emit_result")
     }
 
     fn emit_invalid_result_command() -> String {
-        crate::test_support::bin_command("emit_invalid_result")
+        crate::test_support::bin_command("mock_emit_invalid_result")
     }
 
     fn emit_x_used_command() -> String {
-        crate::test_support::bin_command("emit_x_used")
+        crate::test_support::bin_command("mock_emit_x_used")
     }
 
     #[test]
@@ -646,7 +684,7 @@ mod tests {
     }
 
     fn emit_env_result_command() -> String {
-        crate::test_support::bin_command("emit_env_result")
+        crate::test_support::bin_command("mock_emit_env_result")
     }
 
     #[test]
@@ -850,12 +888,255 @@ mod tests {
     }
 
     fn json_event(name: &str, fields: serde_json::Value) -> String {
-        let payload = serde_json::json!({
-            "type": "event",
-            "name": name,
-            "fields": fields,
-        });
-        crate::command::template::CommandTemplate::embed_json(&payload)
+        let mut field_map = std::collections::BTreeMap::new();
+        if let Some(obj) = fields.as_object() {
+            for (key, value) in obj {
+                let value = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                field_map.insert(key.clone(), value);
+            }
+        }
+        let payload = argtuner_common::TalkbackMessage::Event {
+            name: name.to_string(),
+            fields: field_map,
+        };
+        let json = serde_json::to_value(&payload).expect("talkback event serializes");
+        crate::command::template::CommandTemplate::embed_json(&json)
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for config_id → parent_id → artifact copy chain
+    // -----------------------------------------------------------------------
+
+    #[test]
+    // Scenario: a Ctrl-C'd trial is left with status=Running in the DB.
+    // `find_last_trial_for_config` must return it regardless of status,
+    // because SHA promotion uses this to derive `parent_id` for artifact
+    // copy.  If it skipped Running trials, promoted rungs would never
+    // inherit checkpoints from interrupted predecessors.
+    fn find_last_trial_for_config_includes_running() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = CommandTemplate::new("echo".to_string());
+        let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template);
+
+        let mut fields = BTreeMap::new();
+        fields.insert(FIELD_TRIAL_CONFIG_ID.to_string(), "0".to_string());
+        fields.insert(format!("{}lr", crate::HP_PREFIX), "0.1".to_string());
+        store
+            .append(&TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Running,
+                elapsed_ms: 0,
+                error: None,
+                fields,
+            })
+            .expect("append");
+
+        let found = store
+            .find_last_trial_for_config(0)
+            .expect("find")
+            .expect("should find trial");
+        assert_eq!(found, 0, "should return Running trial as parent");
+    }
+
+    #[test]
+    // Scenario: a config is promoted across multiple rungs, each creating a
+    // new trial record.  `find_last_trial_for_config` must return the highest
+    // trial_id (most recent), because `eval_with_overrides_internal` uses it
+    // as `parent_id` to copy the latest checkpoint forward.
+    fn find_last_trial_for_config_returns_last_trial_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = CommandTemplate::new("echo".to_string());
+        let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template);
+
+        for id in 0..3 {
+            let mut fields = BTreeMap::new();
+            fields.insert(FIELD_TRIAL_CONFIG_ID.to_string(), "0".to_string());
+            fields.insert(format!("{}lr", crate::HP_PREFIX), format!("0.{}", id + 1));
+            store
+                .append(&TrialRecord {
+                    trial_id: id,
+                    status: TrialStatus::Ok,
+                    elapsed_ms: 0,
+                    error: None,
+                    fields,
+                })
+                .expect("append");
+        }
+
+        let found = store
+            .find_last_trial_for_config(0)
+            .expect("find")
+            .expect("should find trial");
+        assert_eq!(found, 2, "should return the last (highest trial_id)");
+    }
+
+    #[test]
+    // Scenario: SHA promotes a config from rung N to rung N+1.
+    // `eval_with_overrides_internal` sets `parent_id` to the previous
+    // trial for that config, and `copy_dir_recursive` copies the parent's
+    // artifact directory (`artifacts/trial_parent`) into the new child
+    // directory (`artifacts/trial_child`).  This test seeds a checkpoint
+    // file in the parent dir and verifies it appears in the child dir.
+    fn parent_artifacts_copied_to_child() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Use mock_emit_env_result which reads ARGTUNER_TRIAL_DIR env var.
+        let template =
+            CommandTemplate::new(crate::test_support::bin_command("mock_emit_env_result"));
+        let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template.clone());
+
+        let space = SearchSpace {
+            params: vec![crate::ParamSpec::Float {
+                name: "x".to_string(),
+                min: 0.0,
+                max: 1.0,
+                log_scale: false,
+                step: None,
+                format: None,
+            }],
+        };
+
+        let artifacts_dir = dir.path().join("artifacts");
+        let objective = CommandObjective::new(
+            store,
+            template,
+            space,
+            artifacts_dir.clone(),
+            "metric".to_string(),
+            Goal::Min,
+            true, // inject_trial_placeholders → creates trial dirs
+            0,
+        );
+
+        // ---- seed parent trial 0 with a marker file ----
+        let parent_dir = artifacts_dir.join("trial_0");
+        std::fs::create_dir_all(&parent_dir).expect("create parent dir");
+        std::fs::write(parent_dir.join("checkpoint.pt"), "pretend weights").expect("write marker");
+
+        // Record trial 0 as Ok with config_id=0 so it becomes the parent.
+        let mut parent_fields = BTreeMap::new();
+        parent_fields.insert(FIELD_TRIAL_CONFIG_ID.to_string(), "0".to_string());
+        parent_fields.insert(format!("{}x", crate::HP_PREFIX), "0.5".to_string());
+        objective
+            .store()
+            .append(&TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Ok,
+                elapsed_ms: 100,
+                error: None,
+                fields: parent_fields,
+            })
+            .expect("append parent");
+
+        // ---- run child trial 1 with same config_id ----
+        let mut overrides = TrialOverrides::default();
+        overrides
+            .fields
+            .insert(FIELD_TRIAL_CONFIG_ID.to_string(), "0".to_string());
+        overrides
+            .fields
+            .insert(format!("{}x", crate::HP_PREFIX), "0.5".to_string());
+
+        let result = objective.eval_with_overrides_retryable(&[0.5], &overrides, Some(1));
+        assert!(
+            result.is_ok(),
+            "child trial should succeed: {:?}",
+            result.err()
+        );
+
+        // ---- verify artifacts were copied ----
+        let child_dir = artifacts_dir.join("trial_1");
+        assert!(child_dir.exists(), "child trial directory should exist");
+        let copied = child_dir.join("checkpoint.pt");
+        assert!(
+            copied.exists(),
+            "checkpoint should have been copied from parent"
+        );
+        let contents = std::fs::read_to_string(&copied).expect("read copied file");
+        assert_eq!(contents, "pretend weights", "content should match parent");
+    }
+
+    #[test]
+    // Scenario: a stale-Running sweep deleted the parent trial's artifact
+    // directory.  The parent trial record still exists in the DB (so
+    // `find_last_trial_for_config` returns it), but `artifacts/trial_0` is
+    // gone.  `eval_with_overrides_internal` must handle the missing dir
+    // gracefully: the guard at `if parent_dir.exists()` skips the copy,
+    // and the child trial succeeds without inheriting any files.
+    //
+    // This is the safety guarantee that the sweep relies on.
+    fn parent_artifacts_skipped_when_parent_dir_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let template =
+            CommandTemplate::new(crate::test_support::bin_command("mock_emit_env_result"));
+        let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template.clone());
+
+        let space = crate::SearchSpace {
+            params: vec![crate::ParamSpec::Float {
+                name: "x".to_string(),
+                min: 0.0,
+                max: 1.0,
+                log_scale: false,
+                step: None,
+                format: None,
+            }],
+        };
+
+        let artifacts_dir = dir.path().join("artifacts");
+        let objective = CommandObjective::new(
+            store,
+            template,
+            space,
+            artifacts_dir.clone(),
+            "metric".to_string(),
+            Goal::Min,
+            true,
+            0,
+        );
+
+        // Record parent trial 0 but DO NOT create its artifact directory.
+        let mut parent_fields = BTreeMap::new();
+        parent_fields.insert(FIELD_TRIAL_CONFIG_ID.to_string(), "0".to_string());
+        parent_fields.insert(format!("{}x", crate::HP_PREFIX), "0.5".to_string());
+        objective
+            .store()
+            .append(&TrialRecord {
+                trial_id: 0,
+                status: TrialStatus::Ok,
+                elapsed_ms: 100,
+                error: None,
+                fields: parent_fields,
+            })
+            .expect("append parent");
+
+        // Run child with same config_id.
+        let mut overrides = TrialOverrides::default();
+        overrides
+            .fields
+            .insert(FIELD_TRIAL_CONFIG_ID.to_string(), "0".to_string());
+        overrides
+            .fields
+            .insert(format!("{}x", crate::HP_PREFIX), "0.5".to_string());
+
+        let result = objective.eval_with_overrides_retryable(&[0.5], &overrides, Some(1));
+        assert!(
+            result.is_ok(),
+            "child should succeed even without parent dir: {:?}",
+            result.err()
+        );
+
+        // Child directory should still be created but only with its own contents.
+        let child_dir = artifacts_dir.join("trial_1");
+        assert!(child_dir.exists(), "child trial directory should exist");
+        // No checkpoint.pt was copied (no parent dir to copy from).
+        assert!(
+            !child_dir.join("checkpoint.pt").exists(),
+            "should NOT have checkpoint since parent dir was missing"
+        );
     }
 
     #[test]

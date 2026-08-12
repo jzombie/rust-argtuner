@@ -53,5 +53,22 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         );
     }
 
+    let has_print_protocol_schema = fields.named.iter().any(|field| {
+        field
+            .ident
+            .as_ref()
+            .is_some_and(|ident| ident == "print_protocol_schema")
+    });
+    if !has_print_protocol_schema {
+        fields.named.push(
+            syn::Field::parse_named
+                .parse2(quote! {
+                    #[arg(long, help = "Print the talkback protocol JSON Schema and exit")]
+                    print_protocol_schema: bool
+                })
+                .expect("parse injected field"),
+        );
+    }
+
     TokenStream::from(quote! { #input })
 }

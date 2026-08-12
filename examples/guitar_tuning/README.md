@@ -11,10 +11,9 @@ via CLI flags, and the example binary emits ARGTUNER JSON events (for example `:
   It accepts `--checkpoint-dir {trial_dir}` to satisfy argtuner’s template
   requirements, but the demo ignores the directory because it runs single-epoch
   trials.
-- `argtuner.toml`: Template, project settings (PSO sampler with a fixed budget),
-  and the six-parameter search space bounds. It includes an explicit
-  `[project.fixed]` table so future schedulers can add their own sections
-  without touching the shared settings.
+- `argtuner.toml`: Template, project settings (PSO sampler), the scheduler
+  (`type = "fixed"`, `n_trials = 60`, `seed = 7`), and the six-parameter search
+  space bounds.
 
 ## Running the demo
 

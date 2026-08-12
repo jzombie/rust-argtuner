@@ -1,8 +1,3 @@
-TODO: Consider comparing prior states before determining new state to ensure new configs are always evaluated, or to stop early if search space is exhausted
-TODO: Add example showing how to use with [Burn](https://crates.io/crates/burn) and also use this as an integration test.
-
-TODO: Mention in README that `argtuner` expects a stateless environment for command execution. Arguments sent to it should return as close to a deterministic result as possible.
-
 # argtuner
 
 Project-based command-template tuner CLI.
@@ -13,6 +8,26 @@ Use argtuner when:
 - You already have a runnable training command and just need structured, repeatable search.
 - You want a simple, project-based workflow that logs trials and lets you re-run exact commands.
 - You are okay with black-box tuning (no gradients, no internal hooks) and want it to work across different models/tools.
+
+## CLI subcommands
+
+argtuner ships four subcommands:
+
+- `run` — run an optimization campaign against a project.
+- `rebuild-csv` — rebuild `trials.csv` from `trials.sqlite` (for example, after
+  manual edits or a corrupt CSV). Tuning runs automatically rebuild this after
+  each trial.
+- `watch` — live TUI dashboard for monitoring trials and metrics as they run
+  (see [Watch](#watch-live-tui) below).
+- `find` — recursively locate argtuner projects.
+- `plan` — show the scheduler plan for a project (optionally a specific config id).
+
+```bash
+argtuner run ./argtuner/my-project
+argtuner rebuild-csv ./argtuner/my-project
+argtuner plan ./argtuner/my-project
+argtuner plan ./argtuner/my-project --config-id 3
+```
 
 ## Command templates
 
@@ -25,9 +40,9 @@ cargo run -p my-app -- --lr {lr} --steps {steps}
 
 Reserved placeholders injected automatically:
 - `{trial_id}`: the numeric trial id.
-- `{trial_dir}`: per-trial artifacts directory under `argtuner/<project>/artifacts/`.
-  When `trial.config_id` is present, argtuner uses `trial_<config_id>_b<bracket>` so
-  successive-halving rungs share the same directory.
+- `{trial_dir}`: per-trial artifacts directory, always `argtuner/<project>/artifacts/trial_{trial_id}`.
+  Successive-halving promotions copy the parent rung's artifacts into the child
+  trial's directory rather than sharing a directory across rungs.
 
 - Example template with artifacts:
 ```text
@@ -45,104 +60,30 @@ The execution flow is:
    - `trial.*` fields (budget/rung/bracket, trial_dir, etc.)
    - `hp.*` fields from the search space
 
-Result fields / event protocol:
-- Any stdout line can emit an ARGTUNER message using the fixed `::ARGTUNER::` prefix; the tuner uses the last `model.epoch_end` event for scoring.
-- Messages are JSON after the prefix. Supported payloads are:
-  - `{"type":"event","name":"model.epoch_end","fields":{...}}` (each event appends a trial row; the last one drives scoring)
-  - `{"type":"event","name":"model.early_stopped","fields":{...}}`
-- argtuner exports environment variables to the command:
-  - `ARGTUNER_TRIAL_ID` / `ARGTUNER_TRIAL_DIR`
-
-For example:
-```
-::ARGTUNER::{"type":"event","name":"model.epoch_end","fields":{"metric":"0.123","aux":"42","epoch":"1"}}
-::ARGTUNER::{"type":"event","name":"model.early_stopped","fields":{}}
-```
-
-```bash
- [project]
- metric_key = "metric"
- goal = "min"
- pruner = "none"
- inject_trial_placeholders = true
-- `trials.csv`
-- `artifacts/`
-
-Show the project config and template:
-
-```bash
-argtuner show ./argtuner/my-project
-```
-
-Rebuild `trials.csv` from `trials.sqlite` (for example, after manual edits or a corrupt CSV):
-
-```bash
-argtuner rebuild-csv ./argtuner/my-project
-```
-
-*Note: Tuning runs will automatically rebuild this after each trial.*
-
-Show the scheduler plan for a project (optionally a specific config id):
-
-```bash
-argtuner plan ./argtuner/my-project
-argtuner plan ./argtuner/my-project --config-id 3
-```
 
 ## Example: linear regression
 
-There is a runnable example in `crates/tuner/examples/linear_regression.rs`:
+There is a runnable, self-contained example in `examples/linear_regression/`
+(main.rs + argtuner.toml + README).
+
+Run directly:
 
 ```bash
 cargo run -p argtuner --example linear_regression -- --lr 0.01 --steps 50
 ```
 
-You can tune it by creating a project with a template like:
-
-```text
-cargo run -p argtuner --example linear_regression -- --lr {lr} --steps {steps}
-```
-
-Run optimization:
+Tune it:
 
 ```bash
-argtuner run ./argtuner/my-project
+cargo run -p argtuner -- run examples/linear_regression
 ```
 
-Record a running trial:
-
-```bash
-argtuner trial ./argtuner/my-project start \
-  --trial-id 5 \
-  --value lr=0.001 \
-  --value steps=100
-```
-
-Finish a trial and update the row:
-
-```bash
-argtuner trial ./argtuner/my-project finish \
-  --trial-id 5 \
-  --status ok \
-  --elapsed-ms 1234 \
-  --value score=0.42
-```
-
-Show the rendered command for a trial:
-
-```bash
-argtuner trial ./argtuner/my-project command --trial-id 5
-```
-
-Show the rendered command with resolved placeholder values:
-
-```bash
-argtuner trial ./argtuner/my-project command --trial-id 5 --show-values
-```
+The bundled `argtuner.toml` searches `lr` (log-scale) and `steps` over a small
+random budget.
 
 ## Example: guitar tuning demo
 
-The [guitar tuning demo](crates/tuner/examples/guitar_tuning/README.md) keeps a
+The [guitar tuning demo](examples/guitar_tuning/README.md) keeps a
 simple CLI, its `argtuner.toml`, and the generated `trials.csv` in the same
 directory. Each placeholder represents a candidate string frequency (E2 through
 E4). The CLI computes the mean absolute detuning, prints helpful diagnostics,
@@ -162,6 +103,75 @@ Or launch the bundled argtuner project (uses PSO with six float parameters):
 ```bash
 cargo run -p argtuner -- run examples/guitar_tuning
 ```
+
+## Example: interactive probe
+
+The [interactive probe](examples/interactive_probe/README.md) is a REPL that
+lets you manually emit ARGTUNER event lines to drive the tuner and validate
+logging/UX (e.g. `result 0.42`, `event model.early_stopped`,
+`invalid <reason>`).
+
+```bash
+cargo run -p argtuner -- run examples/interactive_probe
+```
+
+## Example: loss-pattern generator
+
+The [loss-pattern generator](examples/loss_pattern_generator/README.md)
+simulates synthetic training runs (smooth decay, overfitting, spikes, noisy)
+and emits per-step and per-epoch loss events, so you can explore the tuner's
+visualization and `watch` TUI without training a real model.
+
+```bash
+cargo run -p argtuner -- run examples/loss_pattern_generator
+cargo run -p argtuner -- watch --project examples/loss_pattern_generator
+```
+
+## Config layout (`argtuner.toml`)
+
+`argtuner.toml` now has a strict set of top-level sections so sampler and
+scheduler settings are never interleaved:
+
+```toml
+template = "cargo run ..."
+
+[project]
+metric_key = "metric"
+goal = "min"
+pruner = "none"
+inject_trial_placeholders = true
+
+[sampler]
+type = "pso"
+
+[sampler.pso]
+iters = 10
+particles = 5
+
+[scheduler]
+type = "successive_halving"
+n_trials = 50
+seed = 42
+
+[scheduler.successive_halving]
+budget_placeholder = "epochs"
+min_epochs = 1
+max_epochs = 10
+eta = 3
+
+[space]
+[[space.params]]
+# ...
+```
+
+Notes:
+- `[project]` holds run-wide metadata (metric parsing, goal, pruner, and trial placeholder injection).
+- `[sampler]` names the sampler (`pso` or `random`). Sampler-specific knobs live under `[sampler.<sampler_name>]`, e.g. `pso.iters` and `pso.particles`.
+- `[scheduler]` picks `fixed` or `successive_halving`. Scheduler knobs (like `n_trials`, `seed`, and halving budgets) stay inside `[scheduler]` and its child tables.
+- `n_trials` now belongs to the scheduler because the `fixed` and `successive_halving` schedulers manage the evaluation budget.
+- Scheduler type names always match their child tables: `type = "successive_halving"` pairs with `[scheduler.successive_halving]`, so you never need to memorize separate spellings.
+- `[space]` is still a top-level table describing the search space; it intentionally sits alongside the other sections for clarity.
+- When the `random` sampler hits a duplicate in a fully discrete space (choices/ints/stepped floats), it will try unused configs up to the exhaustive cap before continuing with random sampling.
 
 ## Optimization
 
@@ -244,6 +254,181 @@ prefix; the tuner parses the last `model.epoch_end` event. For example:
 Each evaluation is recorded in the CSV with all parameter values, the parsed
 metric, and the score. The message prefix is fixed to `::ARGTUNER::` (see the `RESULT_PREFIX` constant); you can change `metric_key` in `argtuner.toml`.
 
+## Watch (live TUI)
+
+`argtuner watch` opens a live terminal dashboard while a campaign is running.
+It monitors the project's `trials.sqlite` and prints the schedule/status of each
+trial. `--project` is required.
+
+```bash
+argtuner watch --project ./argtuner/my-project
+argtuner watch --project ./argtuner/my-project --poll-ms 5000
+```
+
+- `--poll-ms` controls how often the dashboard re-reads the database
+  (default **5000 ms**). The first poll fires immediately on launch; later
+  polls re-run on that interval.
+- The dashboard has five windows:
+  - **Trials** — the trial list (id, status, metric). Title is `Trials`.
+  - **Charts** — metric curves for the selected trial. Title is
+    `Trial {id} - Metric Curves` (`Trial {id} - Metric Curve {n}/{total}` while
+    a single curve is focused, or `Trial {id} - Hyperparameter Space` in
+    hyperparameter mode).
+  - **Trial Details** — per-trial fields/epochs. Title is `Trial {id} Details`.
+    Text is selectable/copyable: drag to select, release to copy.
+  - **Hyperparameters** / **Metrics** — toggled in hyperparameter mode (see
+    `h` below).
+- Keybindings:
+  - `q` — quit.
+  - `h` — toggle between Metric-curves mode and Hyperparameter-space mode.
+  - `f` / `Enter` / `Space` — toggle between the chart list and a single
+    focused metric curve.
+  - `+` / `=` — zoom in on a metric curve; `-` — zoom out; `0` — reset zoom.
+  - `Left` / `Right` — pan hyperparameter axes (hyperparameter mode).
+  - `Up` / `k` and `Down` / `j` — move the chart selection; `PageUp`/`PageDown`,
+    `Home`/`End` — scroll.
+- The bottom hint bar in the Charts window always shows the zoom/view keys.
+- The **Debug Log** is available from the command palette: press `Ctrl+A`, then
+  select "≣ Debug Log". It streams timestamped logs from the running campaign
+  (including each poll tick).
+
+## Protocol
+### Result fields / event protocol
+- Any stdout line can emit an ARGTUNER message using the fixed `::ARGTUNER::` prefix; the tuner uses the last `model.epoch_end` event for scoring.
+- Messages are JSON after the prefix. Supported payloads are:
+  - `{"type":"event","name":"model.epoch_end","fields":{...}}` (each event appends a trial row; the last one drives scoring)
+  - `{"type":"event","name":"model.early_stopped","fields":{...}}`
+  - `{"type":"event","name":"model.step_end","fields":{...}}` (per-step metrics streamed live to the TUI)
+  - `{"type":"event","name":"model.invalid_config","fields":{"error":"..."}}` (marks the trial `error`)
+  - `{"type":"event","name":"tuner.binding_version","fields":{"version":"..."}}` (version handshake at startup)
+  - `{"type":"result","fields":{...}}` (a flat result dump; each field becomes a top-level trial field)
+- argtuner exports environment variables to the command:
+  - `ARGTUNER_TRIAL_ID` / `ARGTUNER_TRIAL_DIR`
+
+The protocol is **self-describing**: a JSON Schema generated from the shared
+`argtuner_common::TalkbackMessage` type is committed at
+`crates/common/assets/protocol.schema.json`, and any talkback binary can print
+the current schema with `--print-protocol-schema`. The schema validates the
+JSON document after the prefix; the prefix/ANSI line framing is documented in
+its `x-argtuner` extension object.
+
+The canonical schema is echoed below, collapsed to keep this doc skimmable;
+`tests/protocol_schema.rs` asserts it is byte-identical to the generated
+schema, so it cannot go stale:
+
+<!-- protocol.schema.json -->
+<details>
+<summary>Canonical protocol JSON schema</summary>
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "argtuner talkback protocol",
+  "description": "Line-framed JSON protocol spoken over subprocess stdout. Each stdout line is ANSI-stripped; the first occurrence of the literal prefix `::ARGTUNER::` marks the start of a message, and the JSON document after the prefix must match this schema. Field values are always strings on the wire.",
+  "oneOf": [
+    {
+      "description": "A typed protocol event, e.g. `model.epoch_end`.",
+      "type": "object",
+      "properties": {
+        "fields": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "name": {
+          "title": "event name",
+          "description": "Canonical event name, or a legacy un-namespaced alias.",
+          "type": "string",
+          "enum": [
+            "binding_version",
+            "early_stopped",
+            "epoch_end",
+            "invalid_config",
+            "model.early_stopped",
+            "model.epoch_end",
+            "model.invalid_config",
+            "model.step_end",
+            "step_end",
+            "tuner.binding_version"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "event"
+        }
+      },
+      "required": [
+        "type",
+        "name"
+      ]
+    },
+    {
+      "description": "A flat result dump. No `name`; each field becomes a top-level trial field on the tuner side.",
+      "type": "object",
+      "properties": {
+        "fields": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "type": {
+          "type": "string",
+          "const": "result"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    }
+  ],
+  "x-argtuner": {
+    "linePattern": "^.*::ARGTUNER::.*$",
+    "namespaces": [
+      "metric",
+      "model",
+      "tuner"
+    ],
+    "prefix": "::ARGTUNER::",
+    "protocol": "argtuner.talkback",
+    "stripAnsi": true
+  }
+}
+```
+
+</details>
+
+For example:
+```
+::ARGTUNER::{"type":"event","name":"model.epoch_end","fields":{"metric":"0.123","aux":"42","epoch":"1"}}
+::ARGTUNER::{"type":"event","name":"model.early_stopped","fields":{}}
+```
+
+Extracting a payload from a stdout feed:
+- Tap the protocol by scanning each stdout line for the literal `::ARGTUNER::`
+  prefix: strip ANSI escape codes, find the first occurrence of the prefix, and
+  JSON-parse everything after it. Lines without the prefix are ignored.
+- Take this feed (`\x1b[` sequences are ANSI color codes):
+
+<!-- protocol.example.feed -->
+```text
+Epoch 1/10: train loss 0.5234, val loss 0.6102
+\x1b[36m::ARGTUNER::\x1b[0m{"type":"event","name":"model.epoch_end","fields":{"metric":"0.6102","epoch":"1"}}
+```
+
+- The second line, ANSI-stripped, is the prefix followed by one JSON message:
+
+<!-- protocol.example.parsed -->
+```json
+{"type":"event","name":"model.epoch_end","fields":{"metric":"0.6102","epoch":"1"}}
+```
+
+- `tests/protocol_schema.rs` runs the real parser on this exact feed and
+  asserts it produces exactly that message.
+
 ## Command flow (tuner ↔ app)
 
 The tuner communicates with your app via two channels:
@@ -293,52 +478,6 @@ When trials complete, argtuner prints a heuristic Hyperparameter Impact report.
 It shows Pearson correlation vs. score for each hyperparameter and adds coarse
 range bins with best/median scores, highlighting an estimated elbow where improvements flatten. Metrics and ordering follow the project goal (goal=min: lower is better; goal=max: higher is better), and it includes a small histogram of bin counts for each parameter.
 
-## Config layout (`argtuner.toml`)
-
-`argtuner.toml` now has a strict set of top-level sections so sampler and
-scheduler settings are never interleaved:
-
-```toml
-template = "cargo run ..."
-
-[project]
-metric_key = "metric"
-goal = "min"
-pruner = "none"
-inject_trial_placeholders = true
-
-[sampler]
-type = "pso"
-
-[sampler.pso]
-iters = 10
-particles = 5
-
-[scheduler]
-type = "successive_halving"
-n_trials = 50
-seed = 42
-
-[scheduler.successive_halving]
-budget_placeholder = "epochs"
-min_epochs = 1
-max_epochs = 10
-eta = 3
-
-[space]
-[[space.params]]
-# ...
-```
-
-Notes:
-- `[project]` holds run-wide metadata (metric parsing, goal, pruner, and trial placeholder injection).
-- `[sampler]` names the sampler (`pso` or `random`). Sampler-specific knobs live under `[sampler.<sampler_name>]`, e.g. `pso.iters` and `pso.particles`.
-- `[scheduler]` picks `fixed` or `successive_halving`. Scheduler knobs (like `n_trials`, `seed`, and halving budgets) stay inside `[scheduler]` and its child tables.
-- `n_trials` now belongs to the scheduler because the `fixed` and `successive_halving` schedulers manage the evaluation budget.
-- Scheduler type names always match their child tables: `type = "successive_halving"` pairs with `[scheduler.successive_halving]`, so you never need to memorize separate spellings.
-- `[space]` is still a top-level table describing the search space; it intentionally sits alongside the other sections for clarity.
-- When the `random` sampler hits a duplicate in a fully discrete space (choices/ints/stepped floats), it will try unused configs up to the exhaustive cap before continuing with random sampling.
-
 ## CSV behavior
 
 - The SQLite database is the source of truth; the CSV is a mirrored snapshot.
@@ -351,5 +490,5 @@ Notes:
 - Hyperparameters are stored under `hp.` and result payload fields use `metric.`.
 - If new keys appear, the CSV is rewritten with a superset header and all
   existing rows preserved.
-- The rendered command is not stored; use `argtuner trial <project> command --trial-id N`
-  to reconstruct it from the template and recorded values.
+- The rendered command is not stored; it is reconstructed from the template and
+  the recorded `hp.*` values at run time.
