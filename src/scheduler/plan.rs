@@ -253,6 +253,7 @@ mod tests {
                 kind: Scheduler::SuccessiveHalving,
                 n_trials: 6,
                 seed: 7,
+                trial_timeout_s: 0,
                 fixed: crate::FixedSchedulerConfig::default(),
                 successive_halving: SuccessiveHalvingSchedulerConfig {
                     budget_placeholder: "epochs".to_string(),

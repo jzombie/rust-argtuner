@@ -73,6 +73,8 @@ impl Tuner {
         }
         let store_for_summary = store.clone();
         let next_id = store.next_trial_id()?;
+        // Register Ctrl-C handler for graceful shutdown across all samplers
+        let stop_flag = StopFlag::new();
         let objective = CommandObjective::new(
             store,
             template,
@@ -88,9 +90,17 @@ impl Tuner {
             config.goal,
             config.inject_trial_placeholders,
             next_id,
+        )
+        .with_runner_options(
+            if config.scheduler.trial_timeout_s > 0 {
+                Some(std::time::Duration::from_secs(
+                    config.scheduler.trial_timeout_s,
+                ))
+            } else {
+                None
+            },
+            Some(stop_flag.inner()),
         );
-        // Register Ctrl-C handler for graceful shutdown across all samplers
-        let stop_flag = StopFlag::new();
 
         // Sweep stale Running trials from a prior interrupted run so that
         // PSO's duplicate check and SHA's artifact copy behave correctly.

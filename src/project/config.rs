@@ -110,6 +110,10 @@ fn default_seed() -> u64 {
     42
 }
 
+fn default_trial_timeout_s() -> u64 {
+    0
+}
+
 fn default_pso_iters() -> usize {
     10
 }
@@ -242,6 +246,8 @@ pub struct SchedulerConfig {
     pub n_trials: usize,
     #[serde(default = "default_seed")]
     pub seed: u64,
+    #[serde(default = "default_trial_timeout_s")]
+    pub trial_timeout_s: u64,
     #[serde(default, skip_serializing_if = "FixedSchedulerConfig::is_empty")]
     pub fixed: FixedSchedulerConfig,
     #[serde(
@@ -258,8 +264,39 @@ impl Default for SchedulerConfig {
             kind: default_scheduler(),
             n_trials: default_n_trials(),
             seed: default_seed(),
+            trial_timeout_s: default_trial_timeout_s(),
             fixed: FixedSchedulerConfig::default(),
             successive_halving: SuccessiveHalvingSchedulerConfig::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheduler_config_defaults_trial_timeout_to_zero() {
+        assert_eq!(SchedulerConfig::default().trial_timeout_s, 0);
+    }
+
+    #[test]
+    fn scheduler_config_deserializes_trial_timeout() {
+        let toml_text = r#"
+            type = "fixed"
+            trial_timeout_s = 90
+        "#;
+        let config: SchedulerConfig = toml::from_str(toml_text).expect("parse");
+        assert_eq!(config.trial_timeout_s, 90);
+    }
+
+    #[test]
+    fn scheduler_config_serializes_trial_timeout() {
+        let config = SchedulerConfig {
+            trial_timeout_s: 30,
+            ..SchedulerConfig::default()
+        };
+        let text = toml::to_string(&config).expect("serialize");
+        assert!(text.contains("trial_timeout_s = 30"));
     }
 }

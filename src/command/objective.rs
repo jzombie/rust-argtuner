@@ -47,6 +47,8 @@ pub struct CommandObjective {
     inject_trial_placeholders: bool,
     next_id: std::sync::Mutex<usize>,
     best_score: std::sync::Mutex<Option<f64>>,
+    run_timeout: Option<std::time::Duration>,
+    stop_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl CommandObjective {
@@ -71,7 +73,22 @@ impl CommandObjective {
             inject_trial_placeholders,
             next_id: std::sync::Mutex::new(next_id),
             best_score: std::sync::Mutex::new(None),
+            run_timeout: None,
+            stop_flag: None,
         }
+    }
+
+    /// Attach per-trial subprocess supervision: a hard timeout (the command's
+    /// process group is killed when it elapses) and/or a stop flag (killed as
+    /// soon as it flips, e.g. Ctrl-C).
+    pub fn with_runner_options(
+        mut self,
+        timeout: Option<std::time::Duration>,
+        stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Self {
+        self.run_timeout = timeout;
+        self.stop_flag = stop;
+        self
     }
 
     pub fn eval(&self, coords: &[f64]) -> Result<f64, String> {
@@ -261,8 +278,24 @@ impl CommandObjective {
         let _ = std::io::stderr().flush();
         std::thread::sleep(std::time::Duration::from_millis(80));
         let result = (|| {
-            let output = crate::command::CommandRunner::run(&command, &rendered.env)
-                .map_err(EvalError::Other)?;
+            let output = crate::command::CommandRunner::run_with_options(
+                &command,
+                &rendered.env,
+                crate::command::RunnerOptions {
+                    timeout: self.run_timeout,
+                    stop: self.stop_flag.clone(),
+                },
+            )
+            .map_err(EvalError::Other)?;
+            if output.timed_out {
+                let seconds = self
+                    .run_timeout
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default();
+                return Err(EvalError::Other(format!(
+                    "command timed out after {seconds}s and was terminated"
+                )));
+            }
             if output.exit_code != 0 {
                 let tail = tail_lines(&output.stdout, 1);
                 let tail = if tail.is_empty() {
@@ -749,6 +782,54 @@ mod tests {
         assert_eq!(
             fields.get("metric.trial_dir_env").map(String::as_str),
             Some(expected_dir.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn objective_times_out_long_command_and_marks_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = crate::CommandTemplate::new("sleep 30".to_string());
+        let store = crate::TrialStore::new(
+            dir.path().join(crate::TRIALS_CSV_FILENAME),
+            template.clone(),
+        );
+        let space = crate::SearchSpace { params: vec![] };
+        let objective = CommandObjective::new(
+            store,
+            template,
+            space,
+            dir.path().join("artifacts"),
+            "metric".to_string(),
+            crate::Goal::Min,
+            false,
+            0,
+        )
+        .with_runner_options(Some(std::time::Duration::from_millis(400)), None);
+        let start = std::time::Instant::now();
+        let err = objective.eval(&[]).expect_err("timed out");
+        assert!(
+            err.contains("timed out"),
+            "error should mention timeout, got: {err}"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(15),
+            "should not wait out the full 30s sleep"
+        );
+        let fields = objective
+            .store()
+            .load_fields(0)
+            .expect("load fields")
+            .expect("fields row");
+        assert_eq!(
+            fields.get(crate::FIELD_TRIAL_STATUS),
+            Some(&"error".to_string())
+        );
+        assert!(
+            fields
+                .get(crate::FIELD_TRIAL_ERROR)
+                .is_some_and(|e| e.contains("timed out")),
+            "trial error should mention timeout: {:?}",
+            fields.get(crate::FIELD_TRIAL_ERROR)
         );
     }
 

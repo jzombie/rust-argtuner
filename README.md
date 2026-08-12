@@ -291,6 +291,7 @@ Notes:
 - `[sampler]` names the sampler (`pso` or `random`). Sampler-specific knobs live under `[sampler.<sampler_name>]`, e.g. `pso.iters` and `pso.particles`.
 - `[scheduler]` picks `fixed` or `successive_halving`. Scheduler knobs (like `n_trials`, `seed`, and halving budgets) stay inside `[scheduler]` and its child tables.
 - `n_trials` now belongs to the scheduler because the `fixed` and `successive_halving` schedulers manage the evaluation budget.
+- `trial_timeout_s` (optional, default `0` = disabled) sets a hard per-trial deadline in seconds. When a trial command exceeds it, its whole process group is terminated and the trial is recorded as an error, so a hung training run can't stall the search.
 - Scheduler type names always match their child tables: `type = "successive_halving"` pairs with `[scheduler.successive_halving]`, so you never need to memorize separate spellings.
 - `[space]` is still a top-level table describing the search space; it intentionally sits alongside the other sections for clarity.
 - `argtuner inspect <dir>` shows how argtuner interprets a project's config: the rendered template, each `{placeholder}` resolved against the search space (or reserved/injected), and an execution summary (metric, goal, sampler, scheduler).
