@@ -22,7 +22,9 @@ edition = "2024"
 description = "Project-based command-template hyperparameter tuner CLI."
 repository = "https://github.com/jzombie/argtuner-rs"
 license = "MIT OR Apache-2.0"
-publish = true
+
+# Don't publish yet
+publish = false
 
 [workspace.dependencies]
 argmin = { version = "0.11", features = ["serde1"] }
