@@ -87,7 +87,7 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         let name_lit = lit_str(&name);
 
         let kind = if is_bool {
-            quote!(::argtuner::ParamKind::Flag)
+            quote!(::argtuner::ParamKind::Bool)
         } else if is_float {
             quote!(::argtuner::ParamKind::Float)
         } else if is_int {
@@ -120,6 +120,7 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let cs = attrs.choices.iter().map(|c| lit_str(c));
             quote!(&[#(#cs),*])
         };
+        let skip = attrs.skip;
 
         param_specs.push(quote! {
             ::argtuner::ParamHint {
@@ -129,6 +130,7 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 default: #default_tok,
                 help: #help_tok,
                 kind: #kind,
+                skip: #skip,
                 min: #min,
                 max: #max,
                 log: #log,
@@ -146,55 +148,54 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
             Some(h) => quote!(.help(#h)),
             None => quote!(),
         };
-        if is_bool {
-            command_args.push(quote! {
-                .arg(
-                    ::argtuner::clap::Arg::new(#name_lit)
-                        .long(#long_lit)
-                        #value_name_arg
-                        #help_arg
-                        .action(::argtuner::clap::ArgAction::SetTrue),
-                )
-            });
+        let default_arg = match attrs.default.as_deref() {
+            Some(d) => quote!(.default_value(#d)),
+            None => quote!(),
+        };
+        let required = if !is_option && attrs.default.is_none() {
+            quote!(.required(true))
         } else {
+            quote!()
+        };
+        // bools are flag-friendly value args: `--flag` alone means `true`,
+        // while `--flag false` (from a tuned trial) works too.
+        let (value_parser, bool_flag) = if is_bool {
+            (quote!(::argtuner::clap::value_parser!(bool)), true)
+        } else if !attrs.choices.is_empty() && is_string {
             // PossibleValuesParser yields String; only attach it to String-typed
             // choice fields so typed get_one::<Inner> never downcasts wrong.
-            let value_parser = if !attrs.choices.is_empty() && is_string {
-                let cs = attrs.choices.iter().map(|c| lit_str(c));
+            let cs = attrs.choices.iter().map(|c| lit_str(c));
+            (
                 quote! {
                     ::argtuner::clap::builder::PossibleValuesParser::new([#(#cs),*])
-                }
-            } else {
-                quote!(::argtuner::clap::value_parser!(#inner_ty))
-            };
-            let required = if !is_option && attrs.default.is_none() {
-                quote!(.required(true))
-            } else {
-                quote!()
-            };
-            let default_arg = match attrs.default.as_deref() {
-                Some(d) => quote!(.default_value(#d)),
-                None => quote!(),
-            };
-            command_args.push(quote! {
-                .arg(
-                    ::argtuner::clap::Arg::new(#name_lit)
-                        .long(#long_lit)
-                        #value_name_arg
-                        #help_arg
-                        #default_arg
-                        #required
-                        .value_parser(#value_parser),
-                )
-            });
-        }
+                },
+                false,
+            )
+        } else {
+            (quote!(::argtuner::clap::value_parser!(#inner_ty)), false)
+        };
+        let num_args = if bool_flag {
+            quote!(.num_args(0..=1).default_missing_value("true"))
+        } else {
+            quote!()
+        };
+        command_args.push(quote! {
+            .arg(
+                ::argtuner::clap::Arg::new(#name_lit)
+                    .long(#long_lit)
+                    #value_name_arg
+                    #help_arg
+                    #default_arg
+                    #required
+                    #num_args
+                    .value_parser(#value_parser),
+            )
+        });
 
         // Field extraction in from_matches.
         let id_lit = lit_str(&name);
         let err_lit = lit_str(&format!("--{long}"));
-        let init = if is_bool {
-            quote!(m.get_flag(#id_lit))
-        } else if is_option {
+        let init = if is_option {
             quote!(m.get_one::<#inner_ty>(#id_lit).cloned())
         } else {
             quote!(m.get_one::<#inner_ty>(#id_lit).cloned().expect(#err_lit))

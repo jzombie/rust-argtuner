@@ -214,8 +214,8 @@ pub enum ParamKind {
     Int,
     /// A categorical hyperparameter (tunable when `choices` are set).
     Choice,
-    /// A boolean CLI flag (never part of the search space).
-    Flag,
+    /// A boolean hyperparameter (tunable unless skipped).
+    Bool,
     /// Any other scalar/string CLI argument (fixed unless it carries hints).
     Other,
 }
@@ -235,6 +235,9 @@ pub struct ParamHint {
     /// `--help` text (from the field's doc comment).
     pub help: Option<&'static str>,
     pub kind: ParamKind,
+    /// Excluded from the search space via `#[param(skip = true)]` (e.g. an
+    /// operational flag that must stay a fixed CLI arg).
+    pub skip: bool,
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub log: bool,
@@ -245,13 +248,14 @@ pub struct ParamHint {
 impl ParamHint {
     /// Whether this parameter belongs in the generated `[space]`.
     pub fn is_tunable(&self) -> bool {
-        if matches!(self.value_name, Some("trial_dir" | "trial_id")) {
+        if self.skip || matches!(self.value_name, Some("trial_dir" | "trial_id")) {
             return false;
         }
         match self.kind {
             ParamKind::Float | ParamKind::Int => self.min.is_some() && self.max.is_some(),
             ParamKind::Choice => !self.choices.is_empty(),
-            ParamKind::Flag | ParamKind::Other => false,
+            ParamKind::Bool => true,
+            ParamKind::Other => false,
         }
     }
 }
@@ -285,9 +289,7 @@ pub fn render_template_command<T: Params>() -> String {
     let bin = resolve_bin_path();
     let mut parts = vec![bin];
     for p in T::params() {
-        if p.kind == ParamKind::Flag {
-            parts.push(format!("--{}", p.long));
-        } else if p.is_tunable() || matches!(p.value_name, Some("trial_dir" | "trial_id")) {
+        if p.is_tunable() || matches!(p.value_name, Some("trial_dir" | "trial_id")) {
             // Tunable params become placeholders filled from the search space;
             // reserved value_names are injected by argtuner.
             let placeholder = p.value_name.unwrap_or(p.name);
@@ -327,6 +329,9 @@ enum SpaceParam<'a> {
         name: &'a str,
         values: &'a [&'a str],
     },
+    Bool {
+        name: &'a str,
+    },
 }
 
 fn is_false(b: &bool) -> bool {
@@ -357,7 +362,8 @@ impl<'a> SpaceParam<'a> {
                 name: p.name,
                 values: p.choices,
             }),
-            ParamKind::Flag | ParamKind::Other => None,
+            ParamKind::Bool => Some(SpaceParam::Bool { name: p.name }),
+            ParamKind::Other => None,
         }
     }
 }

@@ -73,6 +73,9 @@ pub enum ParamSpec {
         name: String,
         values: Vec<String>,
     },
+    Bool {
+        name: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -104,6 +107,9 @@ enum ParamSpecPre {
         #[serde(default)]
         value: Option<serde_json::Value>,
     },
+    Bool {
+        name: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -133,6 +139,9 @@ enum TaggedParamSpec {
         values: Vec<serde_json::Value>,
         #[serde(default)]
         value: Option<serde_json::Value>,
+    },
+    Bool {
+        name: String,
     },
 }
 
@@ -174,6 +183,7 @@ impl From<ParamSpecPre> for ParamSpec {
                     name,
                     values: resolve_values(values, value),
                 },
+                TaggedParamSpec::Bool { name } => ParamSpec::Bool { name },
             },
             ParamSpecPre::Choice {
                 name,
@@ -209,6 +219,7 @@ impl From<ParamSpecPre> for ParamSpec {
                 step,
                 format,
             },
+            ParamSpecPre::Bool { name } => ParamSpec::Bool { name },
         }
     }
 }
@@ -241,6 +252,7 @@ impl ParamSpec {
             ParamSpec::Float { name, .. } => name,
             ParamSpec::Int { name, .. } => name,
             ParamSpec::Choice { name, .. } => name,
+            ParamSpec::Bool { name } => name,
         }
     }
 
@@ -274,6 +286,7 @@ impl ParamSpec {
                 Ok(())
             }
             ParamSpec::Choice { .. } => Ok(()),
+            ParamSpec::Bool { .. } => Ok(()),
         }
     }
 
@@ -311,6 +324,7 @@ impl ParamSpec {
                 }
             }
             ParamSpec::Choice { values, .. } => values.contains(&value.to_string()),
+            ParamSpec::Bool { .. } => matches!(value, "true" | "false"),
         }
     }
 
@@ -350,6 +364,13 @@ impl ParamSpec {
                     values[idx.min(values.len() - 1)].clone()
                 }
             }
+            ParamSpec::Bool { .. } => {
+                if c < 0.5 {
+                    "false".to_string()
+                } else {
+                    "true".to_string()
+                }
+            }
         }
     }
 
@@ -383,6 +404,7 @@ impl ParamSpec {
                 usize::try_from(steps + 1).ok()
             }
             ParamSpec::Choice { values, .. } => Some(values.len()),
+            ParamSpec::Bool { .. } => Some(2),
         }
     }
 
@@ -441,6 +463,7 @@ impl ParamSpec {
                 Some(out)
             }
             ParamSpec::Choice { values, .. } => Some(values.clone()),
+            ParamSpec::Bool { .. } => Some(vec!["false".to_string(), "true".to_string()]),
         }
     }
 }

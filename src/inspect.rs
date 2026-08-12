@@ -152,5 +152,6 @@ fn describe_param(spec: &ParamSpec) -> String {
         ParamSpec::Choice { name: _, values, .. } => {
             format!("space param Choice: {}", values.join(", "))
         }
+        ParamSpec::Bool { name: _ } => "space param Bool (true/false)".to_string(),
     }
 }
