@@ -4,6 +4,45 @@
 
 By defining a search space in `argtuner.toml` and templating your command (e.g., `--lr {lr}`), `argtuner` orchestrates trials using algorithms like Particle Swarm Optimization (PSO) or Successive Halving. It reads trial metrics directly from the process `stdout` and logs results to a local SQLite/CSV database.
 
+## Installation
+
+Building from source requires a **stable** Rust toolchain (1.85+ for edition 2024) and a C compiler for the bundled SQLite (`rusqlite` builds it from source): Xcode command-line tools on macOS, `build-essential` on Linux, or the MSVC Build Tools on Windows.
+
+From a checkout of this repository:
+
+```bash
+# Build the debug binary (target/debug/argtuner)
+cargo build
+
+# Build an optimized release binary (target/release/argtuner)
+cargo build --release
+
+# Install the argtuner binary into ~/.cargo/bin
+cargo install --path .
+```
+
+Verify the install:
+
+```bash
+argtuner --help
+```
+
+During development you can run it in-place without installing:
+
+```bash
+cargo run -p argtuner -- --help
+```
+
+Run the test suite (matches CI):
+
+```bash
+cargo test --workspace --all-features
+```
+
+> Note: `.cargo/config.toml.example` is only needed when hacking on the
+> extracted `term-wm` UI crates locally; a normal build resolves them from
+> crates.io and needs no extra configuration.
+
 ## When it fits
 
 Use argtuner when:
