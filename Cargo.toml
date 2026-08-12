@@ -6,6 +6,8 @@ edition.workspace = true
 description.workspace = true
 repository.workspace = true
 license.workspace = true
+keywords = ["hyperparameter", "optimization", "cli", "pso", "tuning"]
+categories = ["command-line-utilities", "science", "algorithms"]
 default-run = "argtuner"
 
 [package.metadata.cargo-udeps.ignore]
