@@ -2,7 +2,7 @@
 
 A configuration showcase for the argtuner template system.
 
-Unlike the runnable examples (`linear_regression`, `guitar_tuning`, ...), this
+Unlike the runnable examples (`linear_regression`, `loss_pattern_generator`, ...), this
 directory is **not** a Cargo example target — there is no `main.rs`. It exists
 purely to demonstrate a realistic `argtuner.toml`:
 
@@ -12,7 +12,7 @@ purely to demonstrate a realistic `argtuner.toml`:
 - the resume-friendly `{trial_dir}` checkpoint placeholder
 
 See the `argtuner inspect` output for this project in the
-[main README](../../README.md#config-layout-argtunertoml).
+[main README](../../README.md#configuration-showcase).
 
 Try it:
 
