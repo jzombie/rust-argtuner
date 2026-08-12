@@ -85,7 +85,8 @@ term-wm-core = "0.9.23-alpha"
 term-wm-render = "0.9.23-alpha"
 term-wm-ui-facade = "0.9.23-alpha"
 thiserror = "2.0.17"
-toml = "1.1"
+toml = "1.1.4"
+toml_edit = { version = "0.25.13", features = ["serde"] }
 tracing = "0.1.44"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
@@ -119,6 +120,7 @@ term-wm-render = { workspace = true, optional = true }
 term-wm-ui-facade = { workspace = true, optional = true }
 thiserror.workspace = true
 toml.workspace = true
+toml_edit = { workspace = true, features = ["serde"] }
 tracing.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 

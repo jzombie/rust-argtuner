@@ -302,63 +302,89 @@ pub fn render_template_command<T: Params>() -> String {
     parts.join(" ")
 }
 
-fn space_entry_toml(p: &ParamHint) -> String {
-    match p.kind {
-        ParamKind::Float => {
-            let mut out = format!(
-                "[[space.params]]\ntype = \"Float\"\nname = \"{}\"\nmin = {}\nmax = {}\n",
-                p.name,
-                p.min.unwrap_or(0.0),
-                p.max.unwrap_or(0.0),
-            );
-            if p.log {
-                out.push_str("log_scale = true\n");
-            }
-            if let Some(step) = p.step {
-                out.push_str(&format!("step = {step}\n"));
-            }
-            out
+/// A tunable search-space parameter, serialized as a TOML `[[space.params]]`
+/// entry by the `--print-template-toml` generator.
+#[derive(serde::Serialize)]
+#[serde(tag = "type")]
+enum SpaceParam<'a> {
+    Float {
+        name: &'a str,
+        min: f64,
+        max: f64,
+        #[serde(skip_serializing_if = "is_false")]
+        log_scale: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        step: Option<f64>,
+    },
+    Int {
+        name: &'a str,
+        min: i64,
+        max: i64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        step: Option<i64>,
+    },
+    Choice {
+        name: &'a str,
+        values: &'a [&'a str],
+    },
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+fn finite_i64(f: Option<f64>) -> i64 {
+    f.filter(|f| f.is_finite()).map_or(0, |f| f.round() as i64)
+}
+
+impl<'a> SpaceParam<'a> {
+    fn from_hint(p: &'a ParamHint) -> Option<Self> {
+        match p.kind {
+            ParamKind::Float => Some(SpaceParam::Float {
+                name: p.name,
+                min: p.min.unwrap_or(0.0),
+                max: p.max.unwrap_or(0.0),
+                log_scale: p.log,
+                step: p.step,
+            }),
+            ParamKind::Int => Some(SpaceParam::Int {
+                name: p.name,
+                min: finite_i64(p.min),
+                max: finite_i64(p.max),
+                step: p.step.filter(|f| f.is_finite()).map(|f| f.round() as i64),
+            }),
+            ParamKind::Choice => Some(SpaceParam::Choice {
+                name: p.name,
+                values: p.choices,
+            }),
+            ParamKind::Flag | ParamKind::Other => None,
         }
-        ParamKind::Int => {
-            let mut out = format!(
-                "[[space.params]]\ntype = \"Int\"\nname = \"{}\"\nmin = {}\nmax = {}\n",
-                p.name,
-                p.min.unwrap_or(0.0) as i64,
-                p.max.unwrap_or(0.0) as i64,
-            );
-            if let Some(step) = p.step {
-                out.push_str(&format!("step = {}\n", step as i64));
-            }
-            out
-        }
-        ParamKind::Choice => {
-            let values = p
-                .choices
-                .iter()
-                .map(|c| format!("\"{c}\""))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "[[space.params]]\ntype = \"Choice\"\nname = \"{}\"\nvalues = [{values}]\n",
-                p.name
-            )
-        }
-        ParamKind::Flag | ParamKind::Other => String::new(),
     }
 }
 
 pub fn render_template_toml<T: Params>() -> String {
     let template = render_template_command::<T>();
-    let mut base = argtuner_common::render_starter_toml(&template);
-    let space = T::params()
+    let base = argtuner_common::render_starter_toml(&template);
+    let mut doc: toml_edit::DocumentMut = base.parse().expect("starter template is valid TOML");
+    let params: Vec<SpaceParam<'_>> = T::params()
         .iter()
         .filter(|p| p.is_tunable())
-        .map(space_entry_toml)
-        .collect::<String>();
-    if !space.is_empty() {
-        base = base.replace("[space]\nparams = []", &format!("[space]\n{space}"));
+        .filter_map(SpaceParam::from_hint)
+        .collect();
+    if !params.is_empty() {
+        let mut params_arr = toml_edit::ArrayOfTables::new();
+        for sp in &params {
+            let doc = toml_edit::ser::to_document(sp).expect("space param serializes to TOML");
+            params_arr.push(doc.as_table().clone());
+        }
+        let space = doc
+            .get_mut("space")
+            .and_then(|s| s.as_table_mut())
+            .expect("starter template has a [space] table");
+        space.remove("params");
+        space.insert("params", toml_edit::Item::ArrayOfTables(params_arr));
     }
-    base
+    doc.to_string()
 }
 
 fn resolve_bin_path() -> String {
