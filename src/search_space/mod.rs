@@ -599,4 +599,51 @@ mod tests {
         };
         assert!(spec.discrete_values().is_none());
     }
+
+    #[test]
+    fn bool_maps_unit_to_values() {
+        let spec = ParamSpec::Bool {
+            name: "use_dropout".to_string(),
+        };
+        assert_eq!(spec.value_from_unit(0.0), "false");
+        assert_eq!(spec.value_from_unit(0.49), "false");
+        assert_eq!(spec.value_from_unit(0.5), "true");
+        assert_eq!(spec.value_from_unit(1.0), "true");
+    }
+
+    #[test]
+    fn bool_validates_only_true_false() {
+        let spec = ParamSpec::Bool {
+            name: "use_dropout".to_string(),
+        };
+        assert!(spec.validate("true"));
+        assert!(spec.validate("false"));
+        assert!(!spec.validate("yes"));
+        assert!(!spec.validate("1"));
+        assert!(!spec.validate("TRUE"));
+    }
+
+    #[test]
+    fn bool_is_discrete_with_two_values() {
+        let spec = ParamSpec::Bool {
+            name: "use_dropout".to_string(),
+        };
+        assert_eq!(spec.discrete_value_count(), Some(2));
+        assert_eq!(
+            spec.discrete_values(),
+            Some(vec!["false".to_string(), "true".to_string()])
+        );
+    }
+
+    #[test]
+    fn bool_serde_round_trips_type_tag() {
+        let spec = ParamSpec::Bool {
+            name: "use_dropout".to_string(),
+        };
+        let toml_text = toml::to_string(&spec).expect("serialize");
+        assert!(toml_text.contains("type = \"Bool\""), "toml: {toml_text}");
+        assert!(toml_text.contains("name = \"use_dropout\""), "toml: {toml_text}");
+        let back: ParamSpec = toml::from_str(&toml_text).expect("deserialize");
+        assert!(matches!(back, ParamSpec::Bool { .. }));
+    }
 }

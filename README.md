@@ -90,13 +90,17 @@ argument and a template placeholder; its doc comment becomes the `--help` text.
 - `log = true` — log-scale range (floats).
 - `step = …` — stepped (linear) range.
 - `choices = ["a", "b"]` — categorical → `Choice` `[space]` entry + CLI validation.
+- `skip = true` — exclude the parameter from the search space while keeping its
+  CLI argument (e.g. an operational `--verbose` bool you don't want tuned).
 - `value_name = "trial_dir"` — reserved placeholder, injected by argtuner.
 - `long = "checkpoint-dir"` — override the `--flag` name.
 
 Supported field types: `f64`/`f32`, integers (`usize`, `i64`, …), `String`,
-`bool` (becomes a flag), and `Option<T>` (optional); other `FromStr` types work
-too. Fields with no `min`/`max`/`choices` are fixed CLI args — baked into the
-generated template as their default and excluded from `[space]`.
+`bool` (a tunable `Bool` `[space]` entry, parsed flag-style: `--use-dropout`
+means `true`, `--use-dropout false` means `false`), and `Option<T>` (optional);
+other `FromStr` types work too. Fields with no `min`/`max`/`choices` are fixed
+CLI args — baked into the generated template as their default and excluded from
+`[space]`.
 
 - **TUI & progress bars:** if your application uses interactive terminal
   loggers (e.g. `burn-rs` or `indicatif`), gate them on

@@ -86,6 +86,11 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-features --lib --bins --tests --examples -- --include-ignored
 
+      - name: SDK-only build (--no-default-features)
+        run: |
+          cargo check -p argtuner --no-default-features --lib
+          cargo check -p argtuner --no-default-features --bins
+
   test:
     name: test
     runs-on: ubuntu-latest

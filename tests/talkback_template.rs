@@ -1,4 +1,5 @@
 use argtuner::UnifiedConfig;
+use argtuner::Params;
 use argtuner_derive::talkback_args;
 
 #[allow(dead_code)] // template-only definition: fields are read by the derive, not this test
@@ -141,5 +142,39 @@ fn talkback_template_renders_bool() {
     assert!(
         cmd.contains("--use-dropout {use_dropout}"),
         "template: {cmd}"
+    );
+}
+
+#[test]
+fn talkback_template_skipped_bool_parses_on_cli() {
+    let command = BoolParamArgs::command();
+
+    // `--verbose` (missing value) parses as true.
+    let matches = command
+        .clone()
+        .try_get_matches_from(["app", "--verbose"])
+        .expect("--verbose without a value must parse");
+    assert!(
+        *matches.get_one::<bool>("verbose").expect("verbose"),
+        "--verbose should parse as true"
+    );
+
+    // `--verbose false` parses as false.
+    let matches = command
+        .clone()
+        .try_get_matches_from(["app", "--verbose", "false"])
+        .expect("--verbose false must parse");
+    assert!(
+        !*matches.get_one::<bool>("verbose").expect("verbose"),
+        "--verbose false should parse as false"
+    );
+
+    // Absent uses the default.
+    let matches = command
+        .try_get_matches_from(["app"])
+        .expect("absent verbose must fall back to default");
+    assert!(
+        !*matches.get_one::<bool>("verbose").expect("verbose"),
+        "absent verbose should use the default (false)"
     );
 }
