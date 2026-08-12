@@ -1,6 +1,6 @@
 # argtuner-talkback
 
-[`argtuner`](https://crates.io/crates/argtuner) is a black-box hyperparameter optimization CLI that reads trial metrics from a command's stdout. `argtuner-talkback` is the client-side crate that turns your **existing `clap` CLI** into an argtuner-compatible tuning target. Declare your algorithm's parameters once as a `clap` struct; the same definition becomes both a production command-line tool and a zero-touch target for argtuner.
+[`argtuner`](https://crates.io/crates/argtuner) is a black-box hyperparameter optimization CLI that reads trial metrics from a command's stdout. `argtuner-talkback` turns a **plain Rust struct** into both a production command-line tool and an argtuner tuning target: declare your algorithm's parameters once, and the `#[talkback_args]` derive generates the `clap` interface (help, defaults, validation), the argtuner command template, and a real search space for you.
 
 It is the canonical reference for the protocol and is intentionally small so that other language bindings can mirror it easily. The protocol is self-describing: the wire shapes are defined once in
 `argtuner-common` (`argtuner_common::TalkbackMessage`) and a JSON Schema is
@@ -10,123 +10,124 @@ emitter writes or the tuner parses. The canonical schema is committed at
 
 ## Quickstart
 
-Add the crates (note the `clap` feature — `init` requires it; `clap` and `serde`
-are needed because the derive/emitters are built on them) to your `Cargo.toml`:
+Add only these two crates — `clap` and `serde` come along as dependencies of the
+binding, so your `Cargo.toml` stays minimal:
 
-```toml
-[dependencies]
-argtuner-talkback = { version = "0.1.1-alpha", features = ["clap"] }
-argtuner-talkback-derive = "0.1.1-alpha"
-clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
+```bash
+cargo add argtuner-talkback --features clap
+cargo add argtuner-talkback-derive
 ```
 
 Declare your parameters once, then run your algorithm:
 
 ```rust
 use argtuner_talkback_derive::talkback_args;
-use clap::Parser;
-use serde::Serialize;
-
-#[derive(Serialize)]
-struct TrialMetrics {
-    loss: f64,
-    epoch: usize,
-}
 
 #[talkback_args]
-#[derive(Debug, Parser)]
-struct Args {
-    #[arg(long, default_value_t = 0.01)]
-    /// Learning rate for the model
+struct ModelParams {
+    /// Learning rate for optimization
+    #[param(default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
-
-    #[arg(long, default_value_t = 100)]
+    /// Number of training steps
+    #[param(default = 100, min = 10, max = 1000)]
     steps: usize,
-
-    #[arg(long)]
+    /// Optimizer implementation
+    #[param(default = "adamw", choices = ["adam", "adamw", "sgd"])]
+    optimizer: String,
+    /// Checkpoint directory (reserved: trial_dir)
+    #[param(value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 
 fn main() {
-    let (talkback, args) = argtuner_talkback::init::<Args>();
+    let (talkback, params) = argtuner_talkback::init::<ModelParams>();
 
-    // ... run training using args.lr and args.steps ...
+    // ... run training using params.lr, params.steps, &params.optimizer ...
 
-    let _ = talkback.emit_epoch_end(&TrialMetrics {
-        loss: 0.042,
-        epoch: args.steps,
-    });
+    argtuner_talkback::emit_metrics! { "loss" => 0.042, "epoch" => params.steps };
 }
 ```
 
-Run it two ways:
+The same binary works two ways:
 
 - **Standalone**: `./my_model --lr 0.001 --steps 500` behaves like a normal CLI
-  with `--help`, defaults, and validation. `emit_*` calls silently no-op, so
-  stdout stays clean.
+  with `--help`, defaults, and validation. Emission silently no-ops, so stdout
+  stays clean.
 - **Under argtuner**: point `argtuner run <project>` at it; argtuner drives the
   same binary as a trial job and reads the emitted metrics.
 
-If you already depend on the `argtuner` crate, the same entry points are
-re-exported from its root: `argtuner::init::<P>()`, `argtuner::Talkback`, and
-`argtuner::talkback_args`.
+If you already depend on the `argtuner` crate, everything is re-exported from
+its root: `argtuner::init::<P>()`, `argtuner::talkback_args`,
+`argtuner::Params`, `argtuner::emit_metrics!`.
+
+## How the derive maps your struct
+
+- **CLI**: each field becomes a `--flag <name>` argument. `f64`/integer/`String`
+  fields use typed value parsers; `bool` fields become flags; `Option<T>` fields
+  are optional. Doc comments become `--help` text.
+- **Defaults**: `#[param(default = ...)]` sets the clap default. Fields without
+  a default (and not `Option`) are required — clap errors cleanly if omitted.
+- **Choices**: `#[param(choices = [...])]` on a `String` field validates values
+  at the CLI and generates a `Choice` entry in the search space.
+- **Search space**: fields with `min`/`max` (and optional `log`/`step`) generate
+  `Float`/`Int` entries; `choices` generate `Choice` entries; boolean flags,
+  reserved `value_name` placeholders (`trial_dir`/`trial_id`), and unannotated
+  scalars are excluded (fixed CLI args, baked into the template as their
+  default).
 
 ## Execution lifecycle & flag interception
 
-`init::<T>()` handles the talkback protocol transparently, before your
-training logic runs:
+`init::<T>()` handles the talkback protocol transparently, before your training
+logic runs:
 
-- **Flag interception**: `#[talkback_args]` injects the
-  `--print-template`, `--print-template-toml`, and `--print-protocol-schema`
-  flags into your `clap` schema. `init` catches them, prints the generated
-  template (or starter `argtuner.toml`, or the protocol JSON Schema) to
-  `stdout`, and exits immediately — so argtuner can generate a project from
-  your CLI definition.
+- **Flag interception**: it pre-inspects raw `std::env::args()` for
+  `--print-template`, `--print-template-toml`, and `--print-protocol-schema`,
+  printing the generated template (or starter `argtuner.toml` with a populated
+  `[space]`, or the protocol JSON Schema) to `stdout` and exiting 0 — before any
+  clap parsing runs.
 - **Protocol handshake**: otherwise it emits the `::ARGTUNER::` binding-version
   event to `stdout` when running under argtuner, which lets the tuner verify
   protocol compatibility.
-- **Argument parsing**: it delegates the remaining flags to `clap` and returns
-  `(Talkback, T)`.
+- **Argument parsing**: it parses the remaining flags via the generated `clap`
+  command and returns `(Talkback, T)`.
 
 Emission is gated on an env marker the tuner always exports
 (`ARGTUNER_TUNING=1`). `is_tuning_active()` reports the state; when false,
-every `emit_*` helper (free functions and `Talkback` methods alike) returns
-`Ok(())` without writing, so standalone runs stay clean.
+every `emit_*` helper (free functions, `Talkback` methods, and the
+`MetricsBuilder`) returns `Ok(())` without writing, so standalone runs stay clean.
+
+## Emission
+
+- **Serde-free** (no derive needed): `emit_metrics! { "loss" => loss, "epoch" => e }`
+  (keys are expressions, so variables/`format!(…)` work), or a builder:
+  ```rust
+  talkback
+      .metrics()
+      .record("loss", loss)
+      .record("epoch", epoch)
+      .emit()?;          // model.epoch_end
+      // .emit_step()?    // model.step_end
+      // .emit_result()? // flat result payload
+  ```
+- **Serde-based** (for complex payloads): `emit_event(kind, &struct)`,
+  `emit_epoch_end(&struct)`, `emit_step_end(&struct)`, `emit_result(&struct)`,
+  where the struct implements `argtuner_talkback::serde::Serialize`
+  (re-exported — no direct serde dependency).
 
 ## Core API reference
 
-- **Initialization**:
-  - `init::<T>()` — the unified entry point (intercept flags, handshake, parse args).
-  - `Talkback::init()` — capture argv and emit the version handshake; works without `clap`.
-  - `parse_args::<T>()` / `args_map()` — deserialize raw CLI flags into your struct.
-- **Metric emitters** (write `::ARGTUNER::`-prefixed JSON to `stdout`; no-op when not under argtuner):
-  - `emit_event(kind, &payload)` — the unified emitter.
-    - `EventKind::Result`: emits a result payload.
-    - `EventKind::EpochEnd`: emits an epoch end event.
-    - `EventKind::EarlyStopped`: emits an early stop event.
-  - `emit_epoch_end(&payload)` / `emit_step_end(&payload)` / `emit_result(&payload)`.
-  - Emitters take a `Serialize` **struct** (or map) — the metric key must match
-    the `metric_key` in `argtuner.toml`, so pass named fields, not a bare scalar.
+- **Initialization**: `init::<T: Params>()` (unified entry; `init_with_args` is
+  an alias), `Talkback::init()` (works without the `clap` feature),
+  `parse_args::<T>()` / `args_map()`.
 - **Template utilities** (require the `clap` feature):
-  - `render_template_command::<T>()` / `render_template_toml::<T>()`.
-  - `maybe_print_template_and_exit::<T>()` / `maybe_print_protocol_schema_and_exit()` / `print_protocol_schema()`.
+  `render_template_command::<T>()`, `render_template_toml::<T>()`,
+  `maybe_print_template_and_exit::<T>()`, `maybe_print_protocol_schema_and_exit()`,
+  `print_protocol_schema()`.
+- **Derive**: `argtuner-talkback-derive` provides `#[talkback_args]` and the
+  `#[param(...)]` helper attribute.
 
 ### Without `clap`
 
 `Talkback::init()`, `args_map()`, `parse_args()`, and all `emit_*` helpers work
-without the `clap` feature — only the template/auto-generation helpers
-(`init`, `render_template_*`, `maybe_print_*`) are clap-gated. Omit
-`features = ["clap"]` (and the `clap` dependency) if you parse your own flags:
-
-```rust
-let tb = argtuner_talkback::Talkback::init();
-let args = tb.parse_args::<MyArgs>()?; // deserialize from raw argv
-tb.emit_epoch_end(&my_metrics)?;       // emit a typed result (no-op standalone)
-```
-
-### Derive helper
-
-`argtuner-talkback-derive` provides `#[talkback_args]` to inject
-`--print-template`, `--print-template-toml`, and `--print-protocol-schema`
-into a clap `Parser` struct. Put it above `#[derive(Parser)]`.
+without the `clap` feature — only the derive and the template/auto-generation
+helpers (`init`, `render_template_*`, `maybe_print_*`) are clap-gated.

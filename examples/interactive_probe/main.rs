@@ -2,14 +2,13 @@ use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 
 use argtuner_talkback_derive::talkback_args;
-use clap::Parser;
 
 #[talkback_args]
-#[derive(Debug, Parser)]
 struct ProbeArgs {
-    #[arg(long, value_name = "KEY")]
+    /// Metric key to emit under
     metric_key: Option<String>,
-    #[arg(long, value_name = "PATH")]
+    /// Checkpoint directory (reserved: trial_dir)
+    #[param(value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 
