@@ -1,6 +1,6 @@
 # argtuner-common
 
-Shared constants and protocol types for the argtuner workspace. `argtuner` is a
+Shared constants and protocol types for the [argtuner](https://crates.io/crates/argtuner) workspace. `argtuner` is a
 black-box hyperparameter optimization CLI; this crate defines the wire format of
 the "talkback" protocol a trial command speaks on stdout (`::ARGTUNER::`-prefixed
 JSON lines).

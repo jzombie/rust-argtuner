@@ -1,7 +1,7 @@
 # argtuner-talkback-derive
 
 Procedural macro helpers for `argtuner-talkback` — the client-side crate a
-training script uses to report metrics to `argtuner` (a black-box
+training script uses to report metrics to [`argtuner`](https://crates.io/crates/argtuner) (a black-box
 hyperparameter optimization CLI) over stdout.
 
 `#[talkback_args]` — attribute macro placed above `#[derive(Parser)]` on a clap

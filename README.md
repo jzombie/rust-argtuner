@@ -4,7 +4,7 @@
 <br>
 [![Made with Rust][rust-logo]][rust-src-page] [![crates.io][crates-badge]][crates-page] [![MIT licensed][mit-license-badge]][mit-license-page] [![Apache 2.0 licensed][apache-2.0-license-badge]][apache-2.0-license-page] [![Coverage][coveralls-badge]][coveralls-page] [![CodeQL][codeql-badge]][codeql-page]
 
-`argtuner` is a language-agnostic CLI tool for black-box hyperparameter optimization. It repeatedly executes a target script or binary while systematically varying its command-line arguments to find the optimal configuration.
+[`argtuner`](https://crates.io/crates/argtuner) is a language-agnostic CLI tool for black-box hyperparameter optimization. It repeatedly executes a target script or binary while systematically varying its command-line arguments to find the optimal configuration.
 
 By defining a search space in `argtuner.toml` and templating your command (e.g., `--lr {lr}`), `argtuner` orchestrates trials using algorithms like Particle Swarm Optimization (PSO) or Successive Halving. It reads trial metrics directly from the process `stdout` and logs results to a local SQLite/CSV database.
 
