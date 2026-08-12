@@ -16,13 +16,13 @@ mod tui;
     arg_required_else_help = true,
     help_template = "{name} {version}\n{about}\n\n{usage-heading} {usage}\n\n{all-args}\n"
 )]
-struct Cli {
+pub struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    pub command: Commands,
 }
 
 #[derive(Subcommand)]
-enum Commands {
+pub enum Commands {
     /// Run the tuner on a project
     Run {
         /// Path to the project directory
@@ -67,7 +67,7 @@ enum Commands {
     },
 }
 
-fn main() {
+pub fn run() {
     let cli = Cli::parse();
 
     match &cli.command {
@@ -79,7 +79,7 @@ fn main() {
             let project = Project::new(path);
             let tuner = Tuner::new(project);
 
-            let options = argtuner::tuner::RunOptions {
+            let options = crate::tuner::RunOptions {
                 dry_run: *dry_run,
                 allow_config_change: *allow_config_change,
             };
@@ -119,7 +119,7 @@ fn main() {
                     }
                 },
             };
-            let projects = argtuner::find_projects(&root);
+            let projects = crate::find_projects(&root);
             if projects.is_empty() {
                 eprintln!("No argtuner projects found under {}", root.display());
             }
@@ -152,7 +152,7 @@ fn main() {
                         eprintln!("Error: {}", err);
                         std::process::exit(1);
                     }
-                    let plan = argtuner::scheduler::build_plan(&config, *config_id);
+                    let plan = crate::scheduler::build_plan(&config, *config_id);
                     println!("{}", plan.render(*config_id));
                 }
                 Err(e) => {

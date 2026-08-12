@@ -13,6 +13,25 @@ default-run = "argtuner"
 [package.metadata.cargo-udeps.ignore]
 normal = ["windows-sys"]
 
+[features]
+default = ["cli"]
+cli = [
+    "dep:clap",
+    "dep:crossterm",
+    "dep:hostname",
+    "dep:ratatui",
+    "dep:term-wm",
+    "dep:term-wm-console",
+    "dep:term-wm-core",
+    "dep:term-wm-render",
+    "dep:term-wm-ui-facade",
+]
+
+[[bin]]
+name = "argtuner"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [workspace]
 members = ["bindings/rust", "bindings/talkback-derive", "crates/common", "crates/mock-bin"]
 resolver = "2"
@@ -72,27 +91,27 @@ argtuner-common.workspace = true
 argtuner-talkback = { workspace = true, features = ["clap"] }
 argtuner-talkback-derive.workspace = true
 chrono = { workspace = true, features = ["serde", "alloc"] }
-clap = { workspace = true, features = ["derive"] }
-crossterm.workspace = true
+clap = { workspace = true, features = ["derive"], optional = true }
+crossterm = { workspace = true, optional = true }
 csv.workspace = true
 ctrlc.workspace = true
-hostname.workspace = true
+hostname = { workspace = true, optional = true }
 ignore.workspace = true
 libc.workspace = true
 portable-pty.workspace = true
 rand.workspace = true
-ratatui.workspace = true
+ratatui = { workspace = true, optional = true }
 rusqlite = { workspace = true, features = ["bundled"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 shell-words.workspace = true
 similar.workspace = true
 tempfile.workspace = true
-term-wm.workspace = true
-term-wm-console.workspace = true
-term-wm-core.workspace = true
-term-wm-render.workspace = true
-term-wm-ui-facade.workspace = true
+term-wm = { workspace = true, optional = true }
+term-wm-console = { workspace = true, optional = true }
+term-wm-core = { workspace = true, optional = true }
+term-wm-render = { workspace = true, optional = true }
+term-wm-ui-facade = { workspace = true, optional = true }
 thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true

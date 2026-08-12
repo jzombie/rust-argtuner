@@ -3,9 +3,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use argtuner::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
-use argtuner::project::Project;
-use argtuner::trial::store::StepSubscriber;
+use crate::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
+use crate::project::Project;
+use crate::trial::store::StepSubscriber;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;

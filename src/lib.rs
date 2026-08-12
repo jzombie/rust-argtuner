@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod checkpoint;
+#[cfg(feature = "cli")]
 pub mod cli;
 pub mod command;
 pub mod constants;
