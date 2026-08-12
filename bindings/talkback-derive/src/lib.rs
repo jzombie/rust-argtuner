@@ -9,6 +9,8 @@ use syn::{Fields, GenericArgument, ItemStruct, Lit, PathArguments, Token};
 /// template/search-space definition.
 ///
 /// ```rust
+/// use argtuner_talkback_derive::talkback_args;
+///
 /// #[talkback_args]
 /// struct ModelParams {
 ///     /// Learning rate
@@ -18,6 +20,10 @@ use syn::{Fields, GenericArgument, ItemStruct, Lit, PathArguments, Token};
 ///     optimizer: String,
 ///     #[param(value_name = "trial_dir")]
 ///     checkpoint_dir: Option<String>,
+/// }
+///
+/// fn main() {
+///     assert_eq!(<ModelParams as argtuner_talkback::Params>::params().len(), 3);
 /// }
 /// ```
 #[proc_macro_attribute]

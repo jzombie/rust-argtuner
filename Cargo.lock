@@ -238,6 +238,7 @@ dependencies = [
 name = "argtuner-talkback-derive"
 version = "0.1.1-alpha"
 dependencies = [
+ "argtuner-talkback",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
