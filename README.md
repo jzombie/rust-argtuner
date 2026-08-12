@@ -559,4 +559,4 @@ See [LICENSE-APACHE](./LICENSE-APACHE) and [LICENSE-MIT](./LICENSE-MIT) for deta
 [codeql-page]: https://github.com/jzombie/rust-argtuner/actions/workflows/github-code-scanning/codeql
 [codeql-badge]: https://img.shields.io/github/actions/workflow/status/jzombie/rust-argtuner/github-code-scanning/codeql?style=flat-square
 [coveralls-page]: https://coveralls.io/github/jzombie/rust-argtuner?branch=main
-[coveralls-badge]: https://img.shields.io/coveralls/github/jzombie/rust-argtuner?style=flat-square
+[coveralls-badge]: https://coveralls.io/repos/github/jzombie/rust-argtuner/badge.svg?branch=main&style=flat-square
