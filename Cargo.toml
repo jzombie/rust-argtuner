@@ -32,12 +32,18 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [workspace]
-members = ["crates/argtuner-derive", "crates/common", "crates/mock-bin"]
+members = [
+    "crates/argtuner-derive",
+    "crates/common",
+    "crates/deprecated/argtuner-talkback",
+    "crates/deprecated/argtuner-talkback-derive",
+    "crates/mock-bin",
+]
 resolver = "2"
 
 [workspace.package]
 authors = ["Jeremy Harris <jeremy.harris@zenosmosis.com>"]
-version = "0.1.1-alpha"
+version = "0.1.2-alpha"
 edition = "2024"
 description = "Project-based command-template hyperparameter tuner CLI."
 repository = "https://github.com/jzombie/rust-argtuner"
@@ -47,9 +53,9 @@ publish = true
 [workspace.dependencies]
 argmin = { version = "0.11", features = ["serde1"] }
 argmin-math = { version = "0.5.1", features = ["vec"] }
-argtuner-common = { path = "crates/common", version = "0.1.1-alpha" }
-argtuner-derive = { path = "crates/argtuner-derive", version = "0.1.1-alpha" }
-argtuner = { path = ".", version = "0.1.1-alpha" }
+argtuner-common = { path = "crates/common", version = "0.1.2-alpha" }
+argtuner-derive = { path = "crates/argtuner-derive", version = "0.1.2-alpha" }
+argtuner = { path = ".", version = "0.1.2-alpha" }
 chrono = { version = "0.4.42", features = ["serde", "alloc"] }
 clap = "4.5.53"
 crossterm = "0.29.0"

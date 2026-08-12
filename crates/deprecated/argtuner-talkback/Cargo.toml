@@ -1,0 +1,13 @@
+[package]
+name = "argtuner-talkback"
+version.workspace = true
+edition.workspace = true
+description = "DEPRECATED: use the `argtuner` crate instead."
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+keywords = ["hyperparameter", "optimization", "machine-learning", "cli", "protocol"]
+categories = ["command-line-interface", "development-tools"]
+
+[dependencies]
+argtuner.workspace = true
