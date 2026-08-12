@@ -114,6 +114,39 @@ every `emit_*` helper (free functions, `Talkback` methods, and the
   where the struct implements `argtuner_talkback::serde::Serialize`
   (re-exported — no direct serde dependency).
 
+## Headless execution & TUI frameworks
+
+On non-Windows platforms, `argtuner` spawns child trials inside a
+pseudo-terminal (PTY). Interactive loggers and progress-bar frameworks (such as
+`burn-rs`'s `LearnerBuilder` display or `indicatif`) will detect a TTY and
+attempt to render.
+
+While `argtuner`'s line parser ANSI-strips `stdout` and successfully extracts
+`::ARGTUNER::` protocol events without breaking, streaming full TUI redraw
+frames into captured logs generates unnecessary IO overhead. Disable interactive
+UI rendering when tuning is active:
+
+```rust
+use argtuner_talkback::{init, is_tuning_active, emit_metrics};
+use burn::train::LearnerBuilder;
+
+fn main() {
+    let (_talkback, params) = init::<Params>();
+
+    let mut builder = LearnerBuilder::new(&params.checkpoint_dir);
+
+    // Skip TUI rendering during argtuner campaigns
+    if !is_tuning_active() {
+        builder = builder.log_to_terminal();
+    }
+
+    let learner = builder.build(...);
+}
+```
+
+Standalone runs keep the native interactive TUI; during `argtuner run` the
+binary runs headless and you monitor live via `argtuner watch`.
+
 ## Core API reference
 
 - **Initialization**: `init::<T: Params>()` (unified entry; `init_with_args` is

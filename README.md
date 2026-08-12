@@ -100,6 +100,11 @@ generated template as their default and excluded from `[space]`.
 See the [`argtuner-talkback` README](./bindings/rust/README.md) for the full
 reference.
 
+- **TUI & progress bars:** if your application uses interactive terminal
+  loggers (e.g. `burn-rs` or `indicatif`), gate them on
+  [`is_tuning_active()`](./bindings/rust/README.md#headless-execution--tui-frameworks)
+  to disable UI rendering during tuning runs.
+
 ## Installation
 
 Building from source requires a **stable** Rust toolchain (1.85+ for edition 2024) and a C compiler for the bundled SQLite (`rusqlite` builds it from source): Xcode command-line tools on macOS, `build-essential` on Linux, or the MSVC Build Tools on Windows.
