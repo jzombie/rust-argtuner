@@ -13,7 +13,7 @@ Use argtuner when:
 
 ## CLI subcommands
 
-argtuner ships four subcommands:
+argtuner ships five subcommands:
 
 - `run` — run an optimization campaign against a project.
 - `rebuild-csv` — rebuild `trials.csv` from `trials.sqlite` (for example, after
