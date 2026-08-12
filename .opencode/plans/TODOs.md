@@ -9,3 +9,4 @@ Ongoing work items.
 - Mention in the README that `argtuner` expects a stateless environment for
   command execution; arguments sent to it should return as close to a
   deterministic result as possible.
+- Shouldn't boolean be an option as well?
