@@ -68,8 +68,37 @@ argtuner command template.
 argtuner run .
 ```
 
-Run the binary directly anytime for a normal CLI — emission silently no-ops
-when not under argtuner.
+**Use it directly, too.** The same binary is a normal CLI — run it for
+single-shot training, evaluation, or inference without argtuner:
+
+```bash
+./my_model --lr 0.002 --steps 200
+```
+
+`--help`, defaults, and validation all work; emission silently no-ops when not
+running under argtuner, so `stdout` stays clean.
+
+## Declaring parameters
+
+Each field of your `#[talkback_args]` struct becomes a `--flag <name>` CLI
+argument and a template placeholder; its doc comment becomes the `--help` text.
+`#[param(...)]` hints control the rest:
+
+- `default = 0.001` — CLI default; fields without one are required (unless `Option<T>`).
+- `min = …` / `max = …` — search-space bounds → `Float`/`Int` `[space]` entry.
+- `log = true` — log-scale range (floats).
+- `step = …` — stepped (linear) range.
+- `choices = ["a", "b"]` — categorical → `Choice` `[space]` entry + CLI validation.
+- `value_name = "trial_dir"` — reserved placeholder, injected by argtuner.
+- `long = "checkpoint-dir"` — override the `--flag` name.
+
+Supported field types: `f64`/`f32`, integers (`usize`, `i64`, …), `String`,
+`bool` (becomes a flag), and `Option<T>` (optional); other `FromStr` types work
+too. Fields with no `min`/`max`/`choices` are fixed CLI args — baked into the
+generated template as their default and excluded from `[space]`.
+
+See the [`argtuner-talkback` README](./bindings/rust/README.md) for the full
+reference.
 
 ## Installation
 
