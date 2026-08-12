@@ -98,6 +98,7 @@ ctrlc.workspace = true
 hostname = { workspace = true, optional = true }
 ignore.workspace = true
 libc.workspace = true
+line-ending.workspace = true
 portable-pty.workspace = true
 rand.workspace = true
 ratatui = { workspace = true, optional = true }

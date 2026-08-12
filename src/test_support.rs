@@ -71,8 +71,8 @@ pub fn extract_fenced_block(readme: &str, marker: &str, fence_lang: &str) -> Opt
     let fence = format!("```{fence_lang}");
     let fence_start = rest.find(&fence)? + fence.len();
     let after_fence = &rest[fence_start..];
-    let after_fence = after_fence.replace("\r\n", "\n");
-    let content = after_fence.strip_prefix('\n')?;
-    let close = content.find("\n```")?;
+    let after_fence = line_ending::LineEnding::normalize(after_fence);
+    let content = after_fence.strip_prefix(line_ending::LineEnding::LF.as_char())?;
+    let close = content.find(&format!("{}```", line_ending::LineEnding::LF.as_str()))?;
     Some(content[..close].trim().to_string())
 }

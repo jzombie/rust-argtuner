@@ -5,6 +5,8 @@
 
 use std::io;
 
+use line_ending::LineEnding;
+
 use crate::command::CommandTemplate;
 use crate::constants::{PLACEHOLDER_TRIAL_DIR, PLACEHOLDER_TRIAL_ID};
 use crate::project::{Goal, Project, Sampler, UnifiedConfig};
@@ -21,12 +23,13 @@ pub fn render_inspect(project: &Project) -> io::Result<String> {
     let config = project.load_unified_config()?;
     let root = project.root().to_string_lossy().replace('\\', "/");
 
+    let lf = LineEnding::LF.as_str();
     let mut out = String::new();
-    out.push_str(&format!("project: {root}\n\n"));
-    out.push_str("template:\n");
-    out.push_str(&format!("  {}\n\n", flatten_template(&config.template)));
+    out.push_str(&format!("project: {root}{lf}{lf}"));
+    out.push_str(&format!("template:{lf}"));
+    out.push_str(&format!("  {}{lf}{lf}", flatten_template(&config.template)));
     out.push_str(&placeholder_analysis(&config));
-    out.push('\n');
+    out.push(LineEnding::LF.as_char());
     out.push_str(&execution_summary(&config));
     Ok(out)
 }
@@ -52,9 +55,10 @@ fn placeholder_analysis(config: &UnifiedConfig) -> String {
         None
     };
     let template = CommandTemplate::new(config.template.clone());
+    let lf = LineEnding::LF.as_str();
     let placeholders = match template.placeholders() {
         Ok(placeholders) => placeholders,
-        Err(err) => return format!("placeholders:\n  template error: {err}\n"),
+        Err(err) => return format!("placeholders:{lf}  template error: {err}{lf}"),
     };
 
     // `{name}:` is name.len() + 3 (both braces + the colon); the format string
@@ -64,11 +68,11 @@ fn placeholder_analysis(config: &UnifiedConfig) -> String {
         .map(|name| name.len() + 3)
         .max()
         .unwrap_or(0);
-    let mut out = String::from("placeholders:\n");
+    let mut out = format!("placeholders:{lf}");
     for name in placeholders {
         let label = format!("{{{name}}}:");
         let desc = describe_placeholder(&name, &config.space, budget.as_deref());
-        out.push_str(&format!("  {label:<width$} {desc}\n"));
+        out.push_str(&format!("  {label:<width$} {desc}{lf}"));
     }
     out
 }
@@ -87,8 +91,9 @@ fn execution_summary(config: &UnifiedConfig) -> String {
         Scheduler::Fixed => "fixed",
         Scheduler::SuccessiveHalving => "successive_halving",
     };
+    let lf = LineEnding::LF.as_str();
     format!(
-        "execution:\n  {:<10} {} ({goal})\n  {:<10} {sampler}\n  {:<10} {scheduler} ({} trials)\n",
+        "execution:{lf}  {:<10} {} ({goal}){lf}  {:<10} {sampler}{lf}  {:<10} {scheduler} ({} trials){lf}",
         "metric:", config.project.metric_key,
         "sampler:",
         "scheduler:",

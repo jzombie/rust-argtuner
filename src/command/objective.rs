@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 
+use line_ending::LineEnding;
+
 use crate::{
     CommandTemplate, Goal, SearchSpace, TrialOverrides, TrialRecord, TrialStatus, TrialStore,
     constants::{
@@ -24,7 +26,7 @@ fn tail_lines(output: &str, max_lines: usize) -> String {
         return String::new();
     }
     let start = lines.len().saturating_sub(max_lines);
-    lines[start..].join("\n")
+    lines[start..].join(LineEnding::LF.as_str())
 }
 
 enum EvalError {
@@ -235,7 +237,11 @@ impl CommandObjective {
         };
         crate::analysis::print_top_trials(&self.store, 1);
 
-        eprintln!("\n===== Starting Trial {} =====", trial_id);
+        eprintln!(
+            "{}===== Starting Trial {} =====",
+            LineEnding::from_current_platform().as_str(),
+            trial_id
+        );
         use crate::{FIELD_TUNING_BUDGET_REMAINING, FIELD_TUNING_BUDGET_TOTAL};
         let budget_total = rendered.fields.get(FIELD_TRIAL_BUDGET_TOTAL).cloned();
         let budget_step = rendered.fields.get(FIELD_TRIAL_BUDGET_STEP).cloned();
@@ -409,7 +415,11 @@ impl CommandObjective {
                         println!("new best: trial={trial_id} metric={metric:.6} score={score:.6}");
                     }
                 }
-                eprintln!("\n===== Finished Trial {}: OK =====", trial_id);
+                eprintln!(
+                    "{}===== Finished Trial {}: OK =====",
+                    LineEnding::from_current_platform().as_str(),
+                    trial_id
+                );
                 eprintln!("Metric: {}  Score: {:.6}", metric, score);
                 let _ = std::io::stderr().flush();
                 Ok(score)
@@ -446,7 +456,11 @@ impl CommandObjective {
                     .map_err(|update_err| {
                         format!("trial log update failed: {update_err}; original error: {err}")
                     })?;
-                eprintln!("\n===== Finished Trial {}: ERROR =====", trial_id);
+                eprintln!(
+                    "{}===== Finished Trial {}: ERROR =====",
+                    LineEnding::from_current_platform().as_str(),
+                    trial_id
+                );
                 eprintln!("Error: {}", err);
                 let _ = std::io::stderr().flush();
                 Err(err)

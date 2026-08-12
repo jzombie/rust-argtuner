@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use line_ending::LineEnding;
+
 use crate::trial::metric_value_field;
 use crate::trial::store::TrialStatus;
 use crate::{
@@ -147,12 +149,20 @@ pub fn print_top_trials(store: &TrialStore, n: usize) {
 
     let top: Vec<&BestTrialSnapshot> = trials_vec.iter().take(n).collect();
     if top.is_empty() {
-        println!("\nTop {} trials: none", n);
+        println!(
+            "{}Top {} trials: none",
+            LineEnding::from_current_platform().as_str(),
+            n
+        );
         return;
     }
 
     // Print each top trial as a compact block that works on narrow terminals.
-    println!("\nTop {} trials:", top.len());
+    println!(
+        "{}Top {} trials:",
+        LineEnding::from_current_platform().as_str(),
+        top.len()
+    );
     for t in top {
         println!(
             "Trial {}  Metric: {}  Score: {:.6}",
@@ -179,7 +189,10 @@ pub fn print_hparam_impact(store: &TrialStore, goal: Goal, metric_key: &str) {
         }
     };
     let impacts = collect_hparam_impacts(&rows, goal, metric_key);
-    eprintln!("\n===== Hyperparameter Impact (heuristic) =====");
+    eprintln!(
+        "{}===== Hyperparameter Impact (heuristic) =====",
+        LineEnding::from_current_platform().as_str()
+    );
     eprintln!(
         "Pearson correlations vs metric; treat this as a heuristic that can be extremely inaccurate with low sample counts."
     );

@@ -3,6 +3,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use line_ending::LineEnding;
+
 use crate::constants::{DUPLICATE_CONFIG_PREFIX, FIELD_TRIAL_ID, FIELD_TRIAL_STATUS, HP_PREFIX};
 
 /// Maps sorted (key, value) HP pairs → previously-scored cost.
@@ -120,7 +122,10 @@ impl StopFlag {
         let flag = Arc::new(AtomicBool::new(false));
         let f = flag.clone();
         let _ = ctrlc::set_handler(move || {
-            eprintln!("\nShutdown requested (Ctrl-C). Finishing current work...");
+            eprintln!(
+                "{}Shutdown requested (Ctrl-C). Finishing current work...",
+                LineEnding::from_current_platform().as_str()
+            );
             f.store(true, Ordering::SeqCst);
         });
         StopFlag(flag)
