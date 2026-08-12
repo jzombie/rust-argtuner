@@ -963,6 +963,7 @@ fn load_trials(path: &Path) -> TrialLoadResult {
     Ok((trials, epoch_rows, step_rows))
 }
 
+// TODO: SQL queries should not be here
 fn load_trial_rows(conn: &Connection, table: &str) -> Result<Vec<TrialRow>, String> {
     let mut stmt = conn
         .prepare(&format!(
@@ -1001,6 +1002,7 @@ fn load_trial_rows(conn: &Connection, table: &str) -> Result<Vec<TrialRow>, Stri
     Ok(trials)
 }
 
+// TODO: SQL queries should not be here
 fn load_epoch_rows(conn: &Connection) -> Result<BTreeMap<i64, Vec<TrialRow>>, String> {
     let mut stmt = match conn.prepare(
         r#"
@@ -1049,6 +1051,7 @@ fn load_epoch_rows(conn: &Connection) -> Result<BTreeMap<i64, Vec<TrialRow>>, St
     Ok(by_trial)
 }
 
+// TODO: SQL queries should not be here
 fn load_step_rows(conn: &Connection) -> Result<TrialStepRows, String> {
     let mut stmt = match conn.prepare(
         r#"
@@ -1097,6 +1100,7 @@ fn load_step_rows(conn: &Connection) -> Result<TrialStepRows, String> {
     Ok(by_trial)
 }
 
+// TODO: SQL queries should not be here
 fn open_connection(path: &Path) -> Result<Connection, String> {
     if !path.exists() {
         return Err(format!("missing db: {}", path.display()));
