@@ -1,7 +1,6 @@
 # argtuner-interactive-probe
 
-Interactive CLI that emits ARGTUNER event lines so you can manually
-drive the tuner and validate logging/UX.
+[`argtuner`](https://crates.io/crates/argtuner) is a black-box hyperparameter optimization CLI whose talkback protocol lets a trial command report metrics on stdout. This probe is a REPL that emits those protocol events by hand (`model.epoch_end`, `model.early_stopped`, `model.invalid_config`) so you can exercise argtuner's logging and TUI without a real training script.
 
 Primary usage (run the bundled probe project):
 

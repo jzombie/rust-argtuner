@@ -6,6 +6,8 @@ edition.workspace = true
 description.workspace = true
 repository.workspace = true
 license.workspace = true
+keywords = ["hyperparameter", "optimization", "cli", "pso", "tuning"]
+categories = ["command-line-utilities", "science", "algorithms"]
 default-run = "argtuner"
 
 [package.metadata.cargo-udeps.ignore]
@@ -17,7 +19,7 @@ resolver = "2"
 
 [workspace.package]
 authors = ["Jeremy Harris <jeremy.harris@zenosmosis.com>"]
-version = "0.1.0-alpha"
+version = "0.1.1-alpha"
 edition = "2024"
 description = "Project-based command-template hyperparameter tuner CLI."
 repository = "https://github.com/jzombie/rust-argtuner"
@@ -27,9 +29,9 @@ publish = true
 [workspace.dependencies]
 argmin = { version = "0.11", features = ["serde1"] }
 argmin-math = { version = "0.5.1", features = ["vec"] }
-argtuner-common = { path = "crates/common", version = "0.1.0-alpha" }
-argtuner-talkback = { path = "bindings/rust", version = "0.1.0-alpha" }
-argtuner-talkback-derive = { path = "bindings/talkback-derive", version = "0.1.0-alpha" }
+argtuner-common = { path = "crates/common", version = "0.1.1-alpha" }
+argtuner-talkback = { path = "bindings/rust", version = "0.1.1-alpha" }
+argtuner-talkback-derive = { path = "bindings/talkback-derive", version = "0.1.1-alpha" }
 chrono = { version = "0.4.42", features = ["serde", "alloc"] }
 clap = "4.5.53"
 crossterm = "0.29.0"

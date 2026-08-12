@@ -1,7 +1,6 @@
 # Linear Regression Example
 
-A minimal gradient-descent linear regression that emits one `model.epoch_end`
-event, demonstrating the simplest possible ARGTUNER integration.
+[`argtuner`](https://crates.io/crates/argtuner) is a black-box hyperparameter optimization CLI that runs a command repeatedly with varying arguments. This example is the minimal integration: a gradient-descent linear regression that emits a single `model.epoch_end` metric event on stdout for `argtuner` to score.
 
 ## Run directly
 

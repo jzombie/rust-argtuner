@@ -1,8 +1,6 @@
 # Guitar Tuning Demo
 
-This self-contained project tunes a virtual six-string guitar by minimizing the
-mean absolute frequency error for each string. The target frequencies follow
-standard tuning (E2–A2–D3–G3–B3–E4). Each trial provides candidate frequencies
+[`argtuner`](https://crates.io/crates/argtuner) is a black-box hyperparameter optimization CLI; this demo maps that model onto guitar tuning. The six string frequencies (`{e2}`..`{e4}`) are the search-space parameters and the mean absolute frequency error is the metric `argtuner` minimizes with Particle Swarm Optimization (PSO). The target frequencies follow standard tuning (E2–A2–D3–G3–B3–E4). Each trial provides candidate frequencies
 via CLI flags, and the example binary emits ARGTUNER JSON events (for example `::ARGTUNER::{"type":"event","name":"model.epoch_end","fields":{"mean_abs":"0.123","epoch":"1"}}`); the mean absolute error is its primary metric.
 
 ## Layout

@@ -6,6 +6,8 @@ description = "Procedural macro helpers for argtuner-talkback."
 repository.workspace = true
 license.workspace = true
 publish.workspace = true
+keywords = ["derive", "proc-macro", "cli", "clap", "hyperparameter"]
+categories = ["development-tools::procedural-macro-helpers", "command-line-interface"]
 
 [lib]
 proc-macro = true

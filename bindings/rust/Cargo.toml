@@ -6,6 +6,8 @@ description = "Rust bindings for emitting argtuner talkback JSON events."
 repository.workspace = true
 license.workspace = true
 publish.workspace = true
+keywords = ["hyperparameter", "optimization", "machine-learning", "cli", "protocol"]
+categories = ["command-line-interface", "development-tools"]
 
 [features]
 clap = ["dep:clap"]

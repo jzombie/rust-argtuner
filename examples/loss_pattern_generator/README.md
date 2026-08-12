@@ -1,6 +1,6 @@
 # Loss Pattern Generator
 
-This project demonstrates `argtuner` using a synthetic loss generator. It simulates model training processes with various characteristics (smooth decay, overfitting, spikes, etc.) to test the tuner's visualization and optimization capabilities without the overhead of training real machine learning models.
+[`argtuner`](https://crates.io/crates/argtuner) is a black-box hyperparameter optimization CLI that repeatedly runs a command with varying arguments; this project demonstrates it with a synthetic loss generator. It simulates model training processes with various characteristics (smooth decay, overfitting, spikes, etc.) to test the tuner's visualization and optimization capabilities without the overhead of training real machine learning models.
 
 ## Prerequisites
 
