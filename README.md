@@ -123,9 +123,9 @@ Reserved placeholders injected automatically:
   Successive-halving promotions copy the parent rung's artifacts into the child
   trial's directory rather than sharing a directory across rungs.
 
-To see exactly what argtuner deserializes from that file — the parsed config
-structs (with defaults applied), the template, and how every `{placeholder}`
-resolves against the search space — run:
+To see how argtuner interprets that file — the rendered template, every
+`{placeholder}` resolved against the search space (or auto-injected), and a
+one-glance execution summary — run:
 
 ```bash
 argtuner inspect examples/config_showcase
@@ -135,54 +135,18 @@ argtuner inspect examples/config_showcase
 ```text
 project: examples/config_showcase
 
-[project]
-metric_key = "val_loss"
-goal = "min"
-pruner = "none"
-inject_trial_placeholders = true
-
-[sampler]
-type = "random"
-
-[scheduler]
-type = "successive_halving"
-n_trials = 30
-seed = 42
-
-[scheduler.successive_halving]
-budget_placeholder = "steps"
-min_epochs = 20
-max_epochs = 300
-eta = 3
-
-[space]
-[[space.params]]
-type = "Float"
-name = "noise"
-min = 0.01
-max = 0.5
-log_scale = true
-
-[[space.params]]
-type = "Int"
-name = "steps"
-min = 20
-max = 300
-step = 20
-
 template:
-  cargo run -p argtuner --example loss_pattern_generator -- \
-      --pattern noisy \
-      --steps {steps} \
-      --noise {noise} \
-      --metric-key val_loss \
-      --checkpoint-dir {trial_dir} \
-      --epoch-time 1
+  cargo run -p argtuner --example loss_pattern_generator -- --pattern noisy --steps {steps} --noise {noise} --metric-key val_loss --checkpoint-dir {trial_dir} --epoch-time 1
 
 placeholders:
-  {noise}: space param Float in [0.01, 0.5], log-scale
-  {steps}: space param Int in [20, 300], step 20; scheduler budget placeholder (overridden per rung)
+  {noise}:     space param Float in [0.01, 0.5], log-scale
+  {steps}:     space param Int in [20, 300], step 20; scheduler budget placeholder (overridden per rung)
   {trial_dir}: reserved: per-trial artifact directory (auto-injected)
+
+execution:
+  metric:    val_loss (minimize)
+  sampler:   random
+  scheduler: successive_halving (30 trials)
 ```
 
 The execution flow is:
@@ -204,7 +168,7 @@ Notes:
 - `n_trials` now belongs to the scheduler because the `fixed` and `successive_halving` schedulers manage the evaluation budget.
 - Scheduler type names always match their child tables: `type = "successive_halving"` pairs with `[scheduler.successive_halving]`, so you never need to memorize separate spellings.
 - `[space]` is still a top-level table describing the search space; it intentionally sits alongside the other sections for clarity.
-- `argtuner inspect <dir>` parses the project's config and prints the deserialized structs (defaults applied, e.g. `pruner = "none"` above was omitted in the file) plus a placeholder analysis — handy for checking what argtuner actually reads from a config.
+- `argtuner inspect <dir>` shows how argtuner interprets a project's config: the rendered template, each `{placeholder}` resolved against the search space (or reserved/injected), and an execution summary (metric, goal, sampler, scheduler).
 - When the `random` sampler hits a duplicate in a fully discrete space (choices/ints/stepped floats), it will try unused configs up to the exhaustive cap before continuing with random sampling.
 
 ## CLI subcommands
