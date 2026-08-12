@@ -76,12 +76,26 @@ argtuner plan ./argtuner/my-project --config-id 3
 
 ## Command templates
 
-Use `{placeholder}` tokens for tunable values. Double braces `{{`/`}}` escape
-literal braces.
+Each trial runs a command rendered from a template. Use `{placeholder}` tokens
+for tunable values; double braces `{{`/`}}` escape literal braces.
+
+This is the template from the bundled
+[`examples/config_showcase/`](https://github.com/jzombie/rust-argtuner/blob/main/examples/config_showcase/README.md)
+project (the full `argtuner.toml` and its `argtuner inspect` output are in
+[Config layout](#config-layout-argtunertoml)):
 
 ```text
-cargo run -p my-app -- --lr {lr} --steps {steps}
+cargo run -p argtuner --example loss_pattern_generator -- \
+  --pattern noisy \
+  --steps {steps} \
+  --noise {noise} \
+  --metric-key val_loss \
+  --checkpoint-dir {trial_dir} \
+  --epoch-time 1
 ```
+
+- `{steps}` and `{noise}` are sampled from the search space.
+- `{trial_dir}` is injected automatically (see below).
 
 Reserved placeholders injected automatically:
 - `{trial_id}`: the numeric trial id.
@@ -89,15 +103,6 @@ Reserved placeholders injected automatically:
   Successive-halving promotions copy the parent rung's artifacts into the child
   trial's directory rather than sharing a directory across rungs.
 
-For a realistic, runnable config that ties all of this together — a log-scale
-float search, a successive-halving budget placeholder, and a `{trial_dir}`
-checkpoint dir — see [`examples/config_showcase/`](https://github.com/jzombie/rust-argtuner/blob/main/examples/config_showcase/README.md)
-and its [`argtuner inspect` output](#config-layout-argtunertoml) below.
-
-- Example template with artifacts:
-```text
-my-train --lr {lr} --steps {steps} --output {trial_dir}
-```
 The execution flow is:
  - Render command template with sampled hyperparameters (and optional trial
    placeholders).
@@ -109,73 +114,6 @@ The execution flow is:
    - `metric.*` fields from the last `model.epoch_end` event
    - `trial.*` fields (budget/rung/bracket, trial_dir, etc.)
    - `hp.*` fields from the search space
-
-
-## Example: linear regression
-
-There is a runnable, self-contained example in [`examples/linear_regression/`](https://github.com/jzombie/rust-argtuner/blob/main/examples/linear_regression/README.md)
-(main.rs + argtuner.toml + README).
-
-Run directly:
-
-```bash
-cargo run -p argtuner --example linear_regression -- --lr 0.01 --steps 50
-```
-
-Tune it:
-
-```bash
-cargo run -p argtuner -- run examples/linear_regression
-```
-
-The bundled `argtuner.toml` searches `lr` (log-scale) and `steps` over a small
-random budget.
-
-## Example: guitar tuning demo
-
-The [guitar tuning demo](https://github.com/jzombie/rust-argtuner/blob/main/examples/guitar_tuning/README.md) keeps a
-simple CLI, its `argtuner.toml`, and the generated `trials.csv` in the same
-directory. Each placeholder represents a candidate string frequency (E2 through
-E4). The CLI computes the mean absolute detuning, prints helpful diagnostics,
-and emits ARGTUNER JSON events (for example `{"type":"event","name":"model.epoch_end","fields":{"mean_abs":"0.123"}}`) that PSO minimizes. The template
-includes `--checkpoint-dir {trial_dir}` (the CLI accepts and ignores it) so the
-demo also demonstrates the resume-friendly placeholder pattern.
-
-Run the CLI directly:
-
-```bash
-cargo run -p argtuner --example guitar_tuning -- \
-  --e2 83.0 --a2 109.5 --d3 147.0 --g3 196.0 --b3 246.8 --e4 329.6
-```
-
-Or launch the bundled argtuner project (uses PSO with six float parameters):
-
-```bash
-cargo run -p argtuner -- run examples/guitar_tuning
-```
-
-## Example: interactive probe
-
-The [interactive probe](https://github.com/jzombie/rust-argtuner/blob/main/examples/interactive_probe/README.md) is a REPL that
-lets you manually emit ARGTUNER event lines to drive the tuner and validate
-logging/UX (e.g. `result 0.42`, `event model.early_stopped`,
-`invalid <reason>`).
-
-```bash
-cargo run -p argtuner -- run examples/interactive_probe
-```
-
-## Example: loss-pattern generator
-
-The [loss-pattern generator](https://github.com/jzombie/rust-argtuner/blob/main/examples/loss_pattern_generator/README.md)
-simulates synthetic training runs (smooth decay, overfitting, spikes, noisy)
-and emits per-step and per-epoch loss events, so you can explore the tuner's
-visualization and `watch` TUI without training a real model.
-
-```bash
-cargo run -p argtuner -- run examples/loss_pattern_generator
-cargo run -p argtuner -- watch --project examples/loss_pattern_generator
-```
 
 ## Config layout (`argtuner.toml`)
 
