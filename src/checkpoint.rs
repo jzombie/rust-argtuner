@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn controllable_objective_returns_cached_score() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let template = crate::test_support::bin_command("emit_result");
+        let template = crate::test_support::bin_command("mock_emit_result");
         let template = CommandTemplate::new(template);
         let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template.clone());
 
@@ -541,7 +541,8 @@ mod tests {
     fn sweep_allows_re_eval_with_same_trial_id() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let template = CommandTemplate::new(crate::test_support::bin_command("emit_env_result"));
+        let template =
+            CommandTemplate::new(crate::test_support::bin_command("mock_emit_env_result"));
         let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template.clone());
 
         let space = crate::SearchSpace {

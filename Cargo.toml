@@ -3,6 +3,7 @@
 name = "argtuner"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
 repository.workspace = true
 license.workspace = true
 default-run = "argtuner"
@@ -11,13 +12,14 @@ default-run = "argtuner"
 normal = ["windows-sys"]
 
 [workspace]
-members = ["bindings/rust", "bindings/talkback-derive", "crates/common"]
+members = ["bindings/rust", "bindings/talkback-derive", "crates/common", "crates/mock-bin"]
 resolver = "2"
 
 [workspace.package]
 authors = ["Jeremy Harris <jeremy.harris@zenosmosis.com>"]
 version = "0.1.0-alpha"
 edition = "2024"
+description = "Project-based command-template hyperparameter tuner CLI."
 repository = "https://github.com/jzombie/argtuner-rs"
 license = "MIT OR Apache-2.0"
 

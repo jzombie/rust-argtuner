@@ -13,18 +13,7 @@ fn binding_version_mismatch_exits_with_message() {
     } else {
         "argtuner"
     });
-    let emit_bin = target_dir.join(if cfg!(windows) {
-        "emit_binding_version.exe"
-    } else {
-        "emit_binding_version"
-    });
-    if !emit_bin.exists() {
-        let status = Command::new("cargo")
-            .args(["build", "-p", "argtuner", "--bin", "emit_binding_version"])
-            .status()
-            .expect("build emit_binding_version");
-        assert!(status.success(), "failed to build emit_binding_version");
-    }
+    let emit_bin = argtuner::test_support::bin_path("mock_emit_binding_version");
     assert!(
         argtuner_bin.exists(),
         "argtuner bin not found at {}",
@@ -32,7 +21,7 @@ fn binding_version_mismatch_exits_with_message() {
     );
     assert!(
         emit_bin.exists(),
-        "emit_binding_version bin not found at {}",
+        "mock_emit_binding_version bin not found at {}",
         emit_bin.display()
     );
 
@@ -67,6 +56,7 @@ fn binding_version_mismatch_exits_with_message() {
     let output = Command::new(argtuner_bin)
         .arg("run")
         .arg(project_root)
+        .env(argtuner_common::FORCE_PIPES_ENV, "1")
         .output()
         .expect("run argtuner");
 

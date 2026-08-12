@@ -1,0 +1,19 @@
+# Test-only mock subprocesses for the argtuner test harness.
+#
+# Each binary acts as a fake training script that emits `::ARGTUNER::` events
+# over stdout. They are consumed by `argtuner::test_support::bin_command` and
+# are never published to crates.io (`publish = false`).
+
+[package]
+name = "argtuner-mock-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# No reason to publish this
+publish = false
+
+[dependencies]
+argtuner-common.workspace = true
+argtuner-talkback.workspace = true
+serde.workspace = true

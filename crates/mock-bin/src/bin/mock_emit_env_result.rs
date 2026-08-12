@@ -15,7 +15,4 @@ fn main() {
     fields.insert("trial_id_env".to_string(), trial_id);
     fields.insert("trial_dir_env".to_string(), trial_dir);
     let _ = argtuner_talkback::emit_event(argtuner_common::EventKind::EpochEnd, &fields);
-
-    // Keep the PTY slave open so the parent drains the buffered lines.
-    argtuner_talkback::hold_stdout_open();
 }

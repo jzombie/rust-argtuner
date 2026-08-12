@@ -2,6 +2,8 @@
 name = "argtuner-talkback"
 version.workspace = true
 edition.workspace = true
+description = "Rust bindings for emitting argtuner talkback JSON events."
+repository.workspace = true
 license.workspace = true
 publish.workspace = true
 

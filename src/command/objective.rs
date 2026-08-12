@@ -492,15 +492,15 @@ mod tests {
     use crate::TRIALS_CSV_FILENAME;
 
     fn emit_result_command() -> String {
-        crate::test_support::bin_command("emit_result")
+        crate::test_support::bin_command("mock_emit_result")
     }
 
     fn emit_invalid_result_command() -> String {
-        crate::test_support::bin_command("emit_invalid_result")
+        crate::test_support::bin_command("mock_emit_invalid_result")
     }
 
     fn emit_x_used_command() -> String {
-        crate::test_support::bin_command("emit_x_used")
+        crate::test_support::bin_command("mock_emit_x_used")
     }
 
     #[test]
@@ -684,7 +684,7 @@ mod tests {
     }
 
     fn emit_env_result_command() -> String {
-        crate::test_support::bin_command("emit_env_result")
+        crate::test_support::bin_command("mock_emit_env_result")
     }
 
     #[test]
@@ -983,8 +983,9 @@ mod tests {
     fn parent_artifacts_copied_to_child() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        // Use emit_env_result which reads ARGTUNER_TRIAL_DIR env var.
-        let template = CommandTemplate::new(crate::test_support::bin_command("emit_env_result"));
+        // Use mock_emit_env_result which reads ARGTUNER_TRIAL_DIR env var.
+        let template =
+            CommandTemplate::new(crate::test_support::bin_command("mock_emit_env_result"));
         let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template.clone());
 
         let space = SearchSpace {
@@ -1070,7 +1071,8 @@ mod tests {
     fn parent_artifacts_skipped_when_parent_dir_missing() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let template = CommandTemplate::new(crate::test_support::bin_command("emit_env_result"));
+        let template =
+            CommandTemplate::new(crate::test_support::bin_command("mock_emit_env_result"));
         let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template.clone());
 
         let space = crate::SearchSpace {

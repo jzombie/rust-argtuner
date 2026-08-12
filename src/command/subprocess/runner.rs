@@ -16,6 +16,9 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use super::talkback::{ParsedItem, parse_prefix_lines};
 use crate::constants::{METRIC_NAMESPACE, MODEL_NAMESPACE, TUNER_NAMESPACE};
 
+#[cfg(not(windows))]
+static FORCE_PIPES: AtomicBool = AtomicBool::new(false);
+
 #[derive(Debug)]
 pub struct CommandOutput {
     pub stdout: String,
@@ -174,56 +177,85 @@ fn payload_fields_from(data: &BTreeMap<String, String>) -> BTreeMap<String, Stri
 
 pub struct CommandRunner;
 
+/// Run a command with piped stdout/stderr (no PTY). POSIX pipes deliver all
+/// bytes before EOF, so there is no PTY buffer-destruction race on child exit.
+fn run_piped(command: &str, envs: &BTreeMap<String, String>) -> Result<CommandOutput, String> {
+    use std::process::Stdio;
+
+    let parts = split_command(command).map_err(|err| format!("command parse failed: {err}"))?;
+    if parts.is_empty() {
+        return Err("command is empty".to_string());
+    }
+    let cwd = std::env::current_dir().map_err(|err| format!("command cwd failed: {err}"))?;
+    let mut cmd = std::process::Command::new(&parts[0]);
+    cmd.current_dir(cwd)
+        .args(&parts[1..])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|err| format!("command failed: {err}"))?;
+    let child_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "command stdout unavailable".to_string())?;
+    let child_stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "command stderr unavailable".to_string())?;
+    let stdout_handle = spawn_reader(child_stdout, false);
+    let stderr_handle = spawn_reader(child_stderr, true);
+    let status = child
+        .wait()
+        .map_err(|err| format!("command wait failed: {err}"))?;
+    let stdout = stdout_handle
+        .join()
+        .map_err(|_| "stdout reader thread panicked".to_string())?;
+    let stderr = stderr_handle
+        .join()
+        .map_err(|_| "stderr reader thread panicked".to_string())?;
+    Ok(CommandOutput {
+        stdout,
+        _stderr: stderr,
+        exit_code: status.code().unwrap_or(-1),
+    })
+}
+
 impl CommandRunner {
     #[cfg(windows)]
     pub fn run(command: &str, envs: &BTreeMap<String, String>) -> Result<CommandOutput, String> {
-        use std::process::Stdio;
+        run_piped(command, envs)
+    }
 
-        let parts = split_command(command).map_err(|err| format!("command parse failed: {err}"))?;
-        if parts.is_empty() {
-            return Err("command is empty".to_string());
-        }
-        let cwd = std::env::current_dir().map_err(|err| format!("command cwd failed: {err}"))?;
-        let mut cmd = std::process::Command::new(&parts[0]);
-        cmd.current_dir(cwd)
-            .args(&parts[1..])
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        for (key, value) in envs {
-            cmd.env(key, value);
-        }
-        let mut child = cmd
-            .spawn()
-            .map_err(|err| format!("command failed: {err}"))?;
-        let child_stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "command stdout unavailable".to_string())?;
-        let child_stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| "command stderr unavailable".to_string())?;
-        let stdout_handle = spawn_reader(child_stdout, false);
-        let stderr_handle = spawn_reader(child_stderr, true);
-        let status = child
-            .wait()
-            .map_err(|err| format!("command wait failed: {err}"))?;
-        let stdout = stdout_handle
-            .join()
-            .map_err(|_| "stdout reader thread panicked".to_string())?;
-        let stderr = stderr_handle
-            .join()
-            .map_err(|_| "stderr reader thread panicked".to_string())?;
-        Ok(CommandOutput {
-            stdout,
-            _stderr: stderr,
-            exit_code: status.code().unwrap_or(-1),
-        })
+    /// Test-only: force all subprocesses in this process to use piped stdio
+    /// instead of a PTY (avoids the macOS PTY buffer-destruction race on child
+    /// exit). Idempotent; safe to call from any test thread.
+    /// Test-only: force all subprocesses in this process to use piped stdio
+    /// instead of a PTY (avoids the macOS PTY buffer-destruction race on child
+    /// exit). Idempotent; safe to call from any test thread. No-op on Windows,
+    /// where subprocesses always run over pipes.
+    #[cfg(windows)]
+    #[doc(hidden)]
+    pub fn force_pipes_for_tests() {}
+
+    #[cfg(not(windows))]
+    #[doc(hidden)]
+    pub fn force_pipes_for_tests() {
+        FORCE_PIPES.store(true, Ordering::Relaxed);
     }
 
     #[cfg(not(windows))]
     pub fn run(command: &str, envs: &BTreeMap<String, String>) -> Result<CommandOutput, String> {
+        if FORCE_PIPES.load(Ordering::Relaxed)
+            || envs.contains_key(argtuner_common::FORCE_PIPES_ENV)
+            || std::env::var_os(argtuner_common::FORCE_PIPES_ENV).is_some()
+        {
+            return run_piped(command, envs);
+        }
         let parts = split_command(command).map_err(|err| format!("command parse failed: {err}"))?;
         if parts.is_empty() {
             return Err("command is empty".to_string());

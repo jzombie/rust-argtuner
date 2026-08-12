@@ -41,7 +41,4 @@ fn main() {
         value: result_value,
         epoch: 1,
     });
-
-    // Keep the PTY slave open so the parent drains the buffered lines.
-    argtuner_talkback::hold_stdout_open();
 }
