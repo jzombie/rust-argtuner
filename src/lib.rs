@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod checkpoint;
+pub mod cli;
 pub mod command;
 pub mod constants;
 pub mod discover;
