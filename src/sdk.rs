@@ -246,9 +246,21 @@ pub struct ParamHint {
 }
 
 impl ParamHint {
+    /// True for the reserved placeholders (`trial_dir`/`trial_id`) that argtuner
+    /// injects automatically rather than samples from the search space.
+    pub fn is_reserved(&self) -> bool {
+        matches!(
+            self.value_name,
+            Some(
+                crate::constants::PLACEHOLDER_TRIAL_DIR
+                    | crate::constants::PLACEHOLDER_TRIAL_ID
+            )
+        )
+    }
+
     /// Whether this parameter belongs in the generated `[space]`.
     pub fn is_tunable(&self) -> bool {
-        if self.skip || matches!(self.value_name, Some("trial_dir" | "trial_id")) {
+        if self.skip || self.is_reserved() {
             return false;
         }
         match self.kind {
@@ -289,7 +301,7 @@ pub fn render_template_command<T: Params>() -> String {
     let bin = resolve_bin_path();
     let mut parts = vec![bin];
     for p in T::params() {
-        if p.is_tunable() || matches!(p.value_name, Some("trial_dir" | "trial_id")) {
+        if p.is_tunable() || p.is_reserved() {
             // Tunable params become placeholders filled from the search space;
             // reserved value_names are injected by argtuner.
             let placeholder = p.value_name.unwrap_or(p.name);

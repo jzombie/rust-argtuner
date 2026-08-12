@@ -100,3 +100,46 @@ fn talkback_template_round_trips_tricky_values() {
         other => panic!("expected Float, got {other:?}"),
     }
 }
+
+#[allow(dead_code)]
+#[talkback_args]
+struct BoolParamArgs {
+    #[param(default = true)]
+    use_dropout: bool,
+    #[param(skip = true, default = false)]
+    verbose: bool,
+}
+
+#[test]
+fn talkback_template_renders_bool() {
+    let toml_text = argtuner::render_template_toml::<BoolParamArgs>();
+    let parsed: UnifiedConfig =
+        toml::from_str(&toml_text).expect("template must parse as UnifiedConfig");
+
+    let names = space_names(&parsed);
+    assert!(
+        names.contains(&"use_dropout"),
+        "bool must be a tunable space param: {names:?}"
+    );
+    assert!(
+        !names.contains(&"verbose"),
+        "skipped bool must be excluded from the space: {names:?}"
+    );
+    match parsed
+        .space
+        .params
+        .iter()
+        .find(|p| p.name() == "use_dropout")
+        .expect("use_dropout in space")
+    {
+        argtuner::ParamSpec::Bool { .. } => {}
+        other => panic!("expected Bool, got {other:?}"),
+    }
+
+    // Tunable bool renders as a placeholder, not a bare flag.
+    let cmd = argtuner::render_template_command::<BoolParamArgs>();
+    assert!(
+        cmd.contains("--use-dropout {use_dropout}"),
+        "template: {cmd}"
+    );
+}

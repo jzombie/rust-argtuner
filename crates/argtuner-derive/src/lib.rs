@@ -243,8 +243,8 @@ struct ParamAttrs {
     log: bool,
     step: Option<f64>,
     choices: Vec<String>,
+    skip: bool,
 }
-
 fn parse_param_attrs(field: &syn::Field) -> ParamAttrs {
     let mut out = ParamAttrs {
         default: None,
@@ -255,6 +255,7 @@ fn parse_param_attrs(field: &syn::Field) -> ParamAttrs {
         log: false,
         step: None,
         choices: Vec::new(),
+        skip: false,
     };
     for attr in &field.attrs {
         if !attr.path().is_ident("param") {
@@ -277,6 +278,7 @@ fn parse_param_attrs(field: &syn::Field) -> ParamAttrs {
                 "step" => out.step = expr_f64(value),
                 "log" => out.log = expr_bool(value),
                 "choices" => out.choices = expr_string_array(value),
+                "skip" => out.skip = expr_bool(value),
                 _ => {}
             }
         }
