@@ -20,7 +20,7 @@ authors = ["Jeremy Harris <jeremy.harris@zenosmosis.com>"]
 version = "0.1.0-alpha"
 edition = "2024"
 description = "Project-based command-template hyperparameter tuner CLI."
-repository = "https://github.com/jzombie/argtuner-rs"
+repository = "https://github.com/jzombie/rust-argtuner"
 license = "MIT OR Apache-2.0"
 publish = true
 
