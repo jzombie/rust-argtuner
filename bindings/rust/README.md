@@ -1,14 +1,12 @@
 # argtuner-talkback
 
-Tiny Rust bindings for emitting ARGTUNER JSON event lines. This crate is
-the canonical reference for the protocol and is intentionally small so that
-other language bindings can mirror it easily.
+`argtuner` is a black-box hyperparameter optimization CLI that reads trial metrics from a command's stdout. `argtuner-talkback` is the client-side crate your training script uses to emit those protocol messages (the "talkback" lines). It is the canonical reference for the protocol and is intentionally small so that other language bindings can mirror it easily.
 
 The protocol is self-describing: the wire shapes are defined once in
 `argtuner-common` (`argtuner_common::TalkbackMessage`) and a JSON Schema is
 generated from that single type, so the schema can never drift from what the
 emitter writes or the tuner parses. The canonical schema is committed at
-`crates/common/assets/protocol.schema.json`.
+[`crates/common/assets/protocol.schema.json`](https://github.com/jzombie/rust-argtuner/blob/main/crates/common/assets/protocol.schema.json).
 
 Core API:
 

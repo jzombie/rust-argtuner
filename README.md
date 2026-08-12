@@ -1,6 +1,8 @@
 # argtuner
 
-Project-based command-template tuner CLI.
+`argtuner` is a language-agnostic CLI tool for black-box hyperparameter optimization. It repeatedly executes a target script or binary while systematically varying its command-line arguments to find the optimal configuration.
+
+By defining a search space in `argtuner.toml` and templating your command (e.g., `--lr {lr}`), `argtuner` orchestrates trials using algorithms like Particle Swarm Optimization (PSO) or Successive Halving. It reads trial metrics directly from the process `stdout` and logs results to a local SQLite/CSV database.
 
 ## When it fits
 
@@ -63,7 +65,7 @@ The execution flow is:
 
 ## Example: linear regression
 
-There is a runnable, self-contained example in `examples/linear_regression/`
+There is a runnable, self-contained example in [`examples/linear_regression/`](https://github.com/jzombie/rust-argtuner/blob/main/examples/linear_regression/README.md)
 (main.rs + argtuner.toml + README).
 
 Run directly:
@@ -83,7 +85,7 @@ random budget.
 
 ## Example: guitar tuning demo
 
-The [guitar tuning demo](examples/guitar_tuning/README.md) keeps a
+The [guitar tuning demo](https://github.com/jzombie/rust-argtuner/blob/main/examples/guitar_tuning/README.md) keeps a
 simple CLI, its `argtuner.toml`, and the generated `trials.csv` in the same
 directory. Each placeholder represents a candidate string frequency (E2 through
 E4). The CLI computes the mean absolute detuning, prints helpful diagnostics,
@@ -106,7 +108,7 @@ cargo run -p argtuner -- run examples/guitar_tuning
 
 ## Example: interactive probe
 
-The [interactive probe](examples/interactive_probe/README.md) is a REPL that
+The [interactive probe](https://github.com/jzombie/rust-argtuner/blob/main/examples/interactive_probe/README.md) is a REPL that
 lets you manually emit ARGTUNER event lines to drive the tuner and validate
 logging/UX (e.g. `result 0.42`, `event model.early_stopped`,
 `invalid <reason>`).
@@ -117,7 +119,7 @@ cargo run -p argtuner -- run examples/interactive_probe
 
 ## Example: loss-pattern generator
 
-The [loss-pattern generator](examples/loss_pattern_generator/README.md)
+The [loss-pattern generator](https://github.com/jzombie/rust-argtuner/blob/main/examples/loss_pattern_generator/README.md)
 simulates synthetic training runs (smooth decay, overfitting, spikes, noisy)
 and emits per-step and per-epoch loss events, so you can explore the tuner's
 visualization and `watch` TUI without training a real model.
@@ -307,7 +309,7 @@ argtuner watch --project ./argtuner/my-project --poll-ms 5000
 
 The protocol is **self-describing**: a JSON Schema generated from the shared
 `argtuner_common::TalkbackMessage` type is committed at
-`crates/common/assets/protocol.schema.json`, and any talkback binary can print
+[`crates/common/assets/protocol.schema.json`](https://github.com/jzombie/rust-argtuner/blob/main/crates/common/assets/protocol.schema.json), and any talkback binary can print
 the current schema with `--print-protocol-schema`. The schema validates the
 JSON document after the prefix; the prefix/ANSI line framing is documented in
 its `x-argtuner` extension object.
