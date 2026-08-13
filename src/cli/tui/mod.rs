@@ -28,7 +28,7 @@ use term_wm::window::{WindowKey, WindowManager, WindowState};
 use term_wm::wm_config::WmConfig;
 use term_wm::{
     AppContext, ListComponent, Rect as WmRect, ScrollKeyMode, ScrollViewComponent,
-    TextRendererComponent, ToggleItem, ToggleListComponent, view,
+    TextRendererComponent, ToggleItem, ToggleListComponent,
 };
 use term_wm_console::RatatuiBackend;
 use term_wm_console::RenderBackend;
@@ -340,12 +340,13 @@ impl ChartsView {
 }
 
 // Per-window views: each pane is a thin struct owning its stateful component
-// and exposing it through a declarative `view!` tree (a bordered card wrapping
-// the injected child). `impl_view_component!`'s `child:` form forwards the
-// component lifecycle to the per-frame view and delegates `desired_height` +
-// selection/hitbox to the child field, so variable-height content keeps its
-// layout contract and the copy pipeline (which reads selection off the focused
-// window root) keeps working.
+// and exposing it through a `view()` that returns the child directly (the
+// window manager's header already frames the pane — no nested card border).
+// `impl_view_component!`'s `child:` form forwards the component lifecycle to
+// the per-frame view and delegates `desired_height` + selection/hitbox to the
+// child field, so variable-height content keeps its layout contract and the
+// copy pipeline (which reads selection off the focused window root) keeps
+// working.
 
 struct TrialsWindow {
     sv: ScrollViewComponent<ListComponent>,
@@ -353,7 +354,7 @@ struct TrialsWindow {
 
 impl TrialsWindow {
     fn view(&mut self) -> impl Component<TermWmAction> + '_ {
-        view! { <Box padding=1>{ &mut self.sv }</Box> }
+        &mut self.sv
     }
 }
 
@@ -365,7 +366,7 @@ struct ChartsWindow {
 
 impl ChartsWindow {
     fn view(&mut self) -> impl Component<TermWmAction> + '_ {
-        view! { <Box padding=1>{ &mut self.sv }</Box> }
+        &mut self.sv
     }
 }
 
@@ -377,7 +378,7 @@ struct TextWindow {
 
 impl TextWindow {
     fn view(&mut self) -> impl Component<TermWmAction> + '_ {
-        view! { <Box padding=1>{ &mut self.sv }</Box> }
+        &mut self.sv
     }
 }
 
@@ -389,7 +390,7 @@ struct ToggleWindow {
 
 impl ToggleWindow {
     fn view(&mut self) -> impl Component<TermWmAction> + '_ {
-        view! { <Box padding=1>{ &mut self.list }</Box> }
+        &mut self.list
     }
 }
 
