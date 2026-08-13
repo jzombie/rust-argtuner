@@ -74,6 +74,9 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
     let project_info_key = inner.open_window(AppRootComponent::Custom(AppComponent::ProjectInfo(
         mk_project_info_sv(),
     )));
+    let frontier_key = inner.open_window(AppRootComponent::Custom(AppComponent::Frontier(
+        mk_project_info_sv(),
+    )));
 
     let mut step_subscriber = StepSubscriber::new();
     let _ = step_subscriber.connect(argtuner_common::STEP_PUBLISHER_PORT);
@@ -97,6 +100,7 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         params_key,
         metrics_key,
         project_info_key,
+        frontier_key,
         project_info_static,
         project_info_count: usize::MAX,
     };
@@ -109,6 +113,7 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         (app.params_key, "Hyperparameters"),
         (app.metrics_key, "Metrics"),
         (app.project_info_key, "Project Info"),
+        (app.frontier_key, "Pareto Frontier"),
     ] {
         wm.set_window_title(k, t);
         // The Watch TUI's panes are fixed views — never closable via the
@@ -334,6 +339,7 @@ enum AppComponent {
     Params(ToggleListComponent),
     Metrics(ToggleListComponent),
     ProjectInfo(ScrollViewComponent<TextRendererComponent>),
+    Frontier(ScrollViewComponent<TextRendererComponent>),
 }
 
 impl_component_delegate!(AppComponent {
@@ -342,7 +348,8 @@ impl_component_delegate!(AppComponent {
     Details,
     Params,
     Metrics,
-    ProjectInfo
+    ProjectInfo,
+    Frontier
 });
 
 struct AppState {
@@ -362,6 +369,7 @@ struct AppState {
     params_key: WindowKey,
     metrics_key: WindowKey,
     project_info_key: WindowKey,
+    frontier_key: WindowKey,
     /// Static Project Info lines (paths + poll) built once at startup.
     project_info_static: Vec<Line<'static>>,
     /// Last trial count rendered into the Project Info window.
@@ -407,6 +415,13 @@ impl AppState {
     fn project_info_sv(&mut self) -> Option<&mut ScrollViewComponent<TextRendererComponent>> {
         match self.inner.wm().component_for_key_mut(self.project_info_key) {
             Some(AppRootComponent::Custom(AppComponent::ProjectInfo(sv))) => Some(sv),
+            _ => None,
+        }
+    }
+
+    fn frontier_sv(&mut self) -> Option<&mut ScrollViewComponent<TextRendererComponent>> {
+        match self.inner.wm().component_for_key_mut(self.frontier_key) {
+            Some(AppRootComponent::Custom(AppComponent::Frontier(sv))) => Some(sv),
             _ => None,
         }
     }
@@ -579,6 +594,10 @@ impl AppState {
                 let items = build_trial_items(&self.trials);
                 if let Some(sv) = self.trials_sv() {
                     sv.content.borrow_mut().update_items(items);
+                }
+                let frontier = frontier_lines(&self.trials);
+                if let Some(sv) = self.frontier_sv() {
+                    sv.content.borrow_mut().set_text(Text::from(frontier));
                 }
                 if let Some(tid) = prev_trial_id
                     && let Some(pos) = self.trials.iter().position(|t| t.trial_id == tid)
@@ -1156,16 +1175,165 @@ fn metric_value_text(trial: &TrialRow) -> Option<String> {
 }
 
 fn build_trial_items(trials: &[TrialRow]) -> Vec<String> {
+    let nd: std::collections::HashSet<i64> = nondominated_trial_ids(trials);
     trials
         .iter()
         .map(|trial| {
             let metric_text = metric_value_text(trial).unwrap_or_else(|| "-".to_string());
+            let tag = if nd.contains(&trial.trial_id) {
+                "[nd]"
+            } else {
+                ""
+            };
             format!(
-                "trial {:>3}  {:<7}  {}",
-                trial.trial_id, trial.status, metric_text
+                "trial {:>3}  {:<7}  {:<5}  {}",
+                trial.trial_id, trial.status, tag, metric_text
             )
         })
         .collect()
+}
+
+/// Trial ids on the non-dominated front, computed from the signed `score.<name>`
+/// fields (fallback `score`). Only completed `ok` trials are eligible.
+fn nondominated_trial_ids(trials: &[TrialRow]) -> std::collections::HashSet<i64> {
+    let mut vectors: Vec<(i64, Vec<f64>)> = Vec::new();
+    for trial in trials {
+        if trial.status != "ok" {
+            continue;
+        }
+        if let Some(scores) = trial_signed_scores(trial) {
+            vectors.push((trial.trial_id, scores));
+        }
+    }
+    if vectors.is_empty() {
+        return std::collections::HashSet::new();
+    }
+    let normalized: Vec<Vec<f64>> = vectors.iter().map(|(_, s)| s.clone()).collect();
+    let fronts = crate::sampler::pareto::fast_nondominated_sort(&normalized);
+    fronts
+        .first()
+        .map(|front| front.iter().map(|&i| vectors[i].0).collect())
+        .unwrap_or_default()
+}
+
+/// Signed score vector for a trial, in a deterministic (sorted) objective
+/// order derived from `score.<name>` fields; falls back to the single `score`
+/// column.
+fn trial_signed_scores(trial: &TrialRow) -> Option<Vec<f64>> {
+    let mut keys: Vec<String> = trial
+        .fields
+        .keys()
+        .filter(|k| k.starts_with("score."))
+        .cloned()
+        .collect();
+    keys.sort();
+    if keys.is_empty() {
+        return trial
+            .fields
+            .get("score")
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|score| vec![score]);
+    }
+    Some(
+        keys.iter()
+            .map(|key| {
+                trial
+                    .fields
+                    .get(key)
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(f64::INFINITY)
+            })
+            .collect(),
+    )
+}
+
+/// Lines for the Pareto Frontier panel: the non-dominated completed trials
+/// with their raw metric vectors and hyperparameters.
+fn frontier_lines(trials: &[TrialRow]) -> Vec<Line<'static>> {
+    let ok: Vec<&TrialRow> = trials.iter().filter(|t| t.status == "ok").collect();
+    if ok.is_empty() {
+        return vec![Line::from("Pareto frontier: (no completed trials yet)")];
+    }
+    let vectors: Vec<(&TrialRow, Vec<f64>)> = ok
+        .iter()
+        .filter_map(|t| trial_signed_scores(t).map(|s| (*t, s)))
+        .collect();
+    if vectors.is_empty() {
+        return vec![Line::from("Pareto frontier: none")];
+    }
+    let multi = vectors.iter().any(|(_, s)| s.len() > 1);
+    if !multi {
+        let mut best = &vectors[0].0;
+        let mut best_score = vectors[0].1[0];
+        for (trial, scores) in &vectors[1..] {
+            if scores[0] < best_score {
+                best = trial;
+                best_score = scores[0];
+            }
+        }
+        return vec![
+            Line::from("Pareto frontier: (single-objective run)"),
+            Line::from(format!(
+                "Trial {}  score={best_score:.4}",
+                best.trial_id
+            )),
+        ];
+    }
+    let normalized: Vec<Vec<f64>> = vectors.iter().map(|(_, s)| s.clone()).collect();
+    let fronts = crate::sampler::pareto::fast_nondominated_sort(&normalized);
+    let front = fronts.first().cloned().unwrap_or_default();
+    // Objective labels from the first trial's sorted score.* keys.
+    let labels: Vec<String> = {
+        let mut keys: Vec<String> = vectors[0]
+            .0
+            .fields
+            .keys()
+            .filter(|k| k.starts_with("score."))
+            .map(|k| k.trim_start_matches("score.").to_string())
+            .collect();
+        keys.sort();
+        keys
+    };
+    let mut lines = vec![Line::from(format!(
+        "Pareto frontier ({} of {} trials):",
+        front.len(),
+        vectors.len()
+    ))];
+    for idx in front {
+        let (trial, signed) = &vectors[idx];
+        let parts: Vec<String> = labels
+            .iter()
+            .zip(signed.iter())
+            .map(|(name, value)| {
+                let raw = trial
+                    .fields
+                    .get(&format!("metric.{name}"))
+                    .and_then(|v| v.parse::<f64>().ok());
+                format!("{name}={:.4}", raw.unwrap_or(*value))
+            })
+            .collect();
+        lines.push(Line::from(format!("Trial {}  {}", trial.trial_id, parts.join(" "))));
+        let hparams: Vec<String> = trial
+            .fields
+            .iter()
+            .filter(|(k, _)| k.starts_with("hp."))
+            .map(|(k, v)| {
+                format!(
+                    "    {:<20} {}",
+                    k.trim_start_matches("hp."),
+                    v
+                )
+            })
+            .collect();
+        if !hparams.is_empty() {
+            lines.push(Line::from("  Hyperparameters:"));
+            for line in hparams {
+                lines.push(Line::from(line));
+            }
+        }
+        lines.push(Line::from(""));
+    }
+    lines
 }
 
 fn render_charts_content(
@@ -1917,5 +2085,61 @@ mod key_tests {
             modifiers: KeyModifiers::NONE,
         });
         assert!(pressed_key(&mouse).is_none());
+    }
+}
+
+#[cfg(test)]
+mod frontier_tests {
+    use super::*;
+
+    fn trial(id: i64, loss: &str, latency: &str) -> TrialRow {
+        TrialRow {
+            trial_id: id,
+            status: "ok".to_string(),
+            elapsed_ms: 0,
+            error: None,
+            fields: BTreeMap::from([
+                ("hp.dummy".to_string(), id.to_string()),
+                ("metric.loss".to_string(), loss.to_string()),
+                ("metric.latency_ms".to_string(), latency.to_string()),
+                ("score.loss".to_string(), loss.to_string()),
+                ("score.latency_ms".to_string(), latency.to_string()),
+            ]),
+        }
+    }
+
+    #[test]
+    fn nondominated_ids_exclude_dominated_trials() {
+        // trial 2 (loss=3, latency=4) is dominated by trial 0 (1, 3).
+        let trials = vec![trial(0, "1", "3"), trial(1, "2", "1"), trial(2, "3", "4")];
+        let nd = nondominated_trial_ids(&trials);
+        assert!(nd.contains(&0));
+        assert!(nd.contains(&1));
+        assert!(!nd.contains(&2));
+    }
+
+    #[test]
+    fn frontier_lines_list_only_non_dominated() {
+        let trials = vec![trial(0, "1", "3"), trial(1, "2", "1"), trial(2, "3", "4")];
+        let lines = frontier_lines(&trials);
+        let text = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Pareto frontier (2 of 3 trials)"), "{text}");
+        assert!(text.contains("Trial 0"), "{text}");
+        assert!(text.contains("Trial 1"), "{text}");
+        assert!(!text.contains("Trial 2"), "{text}");
+        assert!(text.contains("loss="), "{text}");
+    }
+
+    #[test]
+    fn build_trial_items_tags_non_dominated() {
+        let trials = vec![trial(0, "1", "3"), trial(1, "2", "1"), trial(2, "3", "4")];
+        let items = build_trial_items(&trials);
+        assert!(items[0].contains("[nd]"), "{}", items[0]);
+        assert!(items[1].contains("[nd]"), "{}", items[1]);
+        assert!(!items[2].contains("[nd]"), "{}", items[2]);
     }
 }

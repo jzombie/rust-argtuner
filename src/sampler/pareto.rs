@@ -108,10 +108,17 @@ pub fn crowding_distance(front: &[usize], normalized: &[Vec<f64>]) -> Vec<f64> {
     distances
 }
 
-/// Incrementally maintained non-dominated front of evaluated trials.
+/// Default cap on the retained non-dominated front, keeping memory bounded and
+/// crowding-distance eviction active in long runs.
+pub const DEFAULT_FRONT_CAPACITY: usize = 200;
+
+/// Incrementally maintained non-dominated front of evaluated trials. Bounded
+/// by a capacity: when it overflows, the non-boundary entry with the smallest
+/// crowding distance is evicted.
 #[derive(Debug)]
 pub struct ParetoFront {
     entries: Vec<FrontEntry>,
+    capacity: usize,
 }
 
 #[derive(Debug)]
@@ -122,8 +129,14 @@ struct FrontEntry {
 
 impl ParetoFront {
     pub fn new() -> Self {
+        Self::with_capacity(DEFAULT_FRONT_CAPACITY)
+    }
+
+    /// Create a front that retains at most `capacity` non-dominated entries.
+    pub fn with_capacity(capacity: usize) -> Self {
         Self {
             entries: Vec::new(),
+            capacity: capacity.max(1),
         }
     }
 
@@ -135,8 +148,9 @@ impl ParetoFront {
         self.entries.is_empty()
     }
 
-    /// Insert a trial's normalized scores, evicting any trial it now
-    /// dominates. Returns the evicted trial ids.
+    /// Insert a trial's normalized scores, evicting any trial it now dominates
+    /// and, when over capacity, the least-crowded non-boundary trial. Returns
+    /// the removed trial ids.
     pub fn update(&mut self, trial_id: usize, scores: Vec<f64>) -> Vec<usize> {
         let mut removed = Vec::new();
         self.entries.retain(|entry| {
@@ -152,7 +166,34 @@ impl ParetoFront {
             return removed;
         }
         self.entries.push(FrontEntry { trial_id, scores });
+        if self.entries.len() > self.capacity {
+            removed.push(self.evict_least_crowded());
+        }
         removed
+    }
+
+    /// Evict the non-boundary entry with the smallest crowding distance;
+    /// fall back to the oldest entry when every survivor is a boundary.
+    fn evict_least_crowded(&mut self) -> usize {
+        let all_scores: Vec<Vec<f64>> = self.entries.iter().map(|e| e.scores.clone()).collect();
+        let indices: Vec<usize> = (0..self.entries.len()).collect();
+        let distances = crowding_distance(&indices, &all_scores);
+        let mut evict = 0usize;
+        let mut best = distances[0];
+        for (i, &distance) in distances.iter().enumerate() {
+            let better = if best.is_infinite() {
+                distance.is_finite()
+            } else if distance.is_infinite() {
+                false
+            } else {
+                distance < best
+            };
+            if better {
+                evict = i;
+                best = distance;
+            }
+        }
+        self.entries.remove(evict).trial_id
     }
 
     /// Trial ids currently on the front, in insertion order.
@@ -233,5 +274,30 @@ mod tests {
         front.update(1, vec![2.0, 2.0]); // dominated
         assert_eq!(front.len(), 1);
         assert_eq!(front.trial_ids(), vec![0]);
+    }
+
+    #[test]
+    fn front_update_respects_capacity() {
+        let mut front = ParetoFront::with_capacity(3);
+        // Four mutually non-dominated points; the interior point (1,3) has the
+        // smallest crowding distance and must be the one evicted, keeping the
+        // boundary extremes.
+        front.update(0, vec![0.0, 4.0]);
+        front.update(1, vec![1.0, 3.0]);
+        front.update(2, vec![2.0, 2.0]);
+        front.update(3, vec![4.0, 0.0]);
+        assert_eq!(front.len(), 3);
+        let ids = front.trial_ids();
+        assert!(!ids.contains(&1), "interior point must be evicted, got {ids:?}");
+        assert!(ids.contains(&0) && ids.contains(&2) && ids.contains(&3));
+    }
+
+    #[test]
+    fn front_capacity_one_keeps_newest() {
+        let mut front = ParetoFront::with_capacity(1);
+        front.update(0, vec![1.0, 2.0]);
+        front.update(1, vec![2.0, 1.0]);
+        assert_eq!(front.len(), 1);
+        assert_eq!(front.trial_ids(), vec![1]);
     }
 }
