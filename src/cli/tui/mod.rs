@@ -28,7 +28,7 @@ use term_wm::window::{WindowKey, WindowManager, WindowState};
 use term_wm::wm_config::WmConfig;
 use term_wm::{
     AppContext, ListComponent, Rect as WmRect, ScrollKeyMode, ScrollViewComponent,
-    TextRendererComponent, ToggleItem, ToggleListComponent,
+    TextRendererComponent, ToggleItem, ToggleListComponent, view,
 };
 use term_wm_console::RatatuiBackend;
 use term_wm_console::RenderBackend;
@@ -57,25 +57,25 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
     );
 
     let trials_key = inner.open_window(AppRootComponent::Custom(AppComponent::Trials(
-        mk_trials_sv(),
+        mk_trials_window(),
     )));
     let charts_key = inner.open_window(AppRootComponent::Custom(AppComponent::Charts(
-        mk_charts_sv(),
+        mk_charts_window(),
     )));
     let details_key = inner.open_window(AppRootComponent::Custom(AppComponent::Details(
-        mk_details_sv(),
+        mk_text_window(),
     )));
     let params_key = inner.open_window(AppRootComponent::Custom(AppComponent::Params(
-        ToggleListComponent::new("Hyperparameters"),
+        mk_toggle_window("Hyperparameters"),
     )));
     let metrics_key = inner.open_window(AppRootComponent::Custom(AppComponent::Metrics(
-        ToggleListComponent::new("Metrics"),
+        mk_toggle_window("Metrics"),
     )));
     let project_info_key = inner.open_window(AppRootComponent::Custom(AppComponent::ProjectInfo(
         mk_project_info_sv(),
     )));
     let frontier_key = inner.open_window(AppRootComponent::Custom(AppComponent::Frontier(
-        mk_project_info_sv(),
+        mk_text_window(),
     )));
 
     let mut step_subscriber = StepSubscriber::new();
@@ -338,14 +338,156 @@ impl ChartsView {
     }
 }
 
+// Per-window views: each pane is a thin struct owning its stateful component
+// and exposing it through a declarative `view!` tree (a bordered card wrapping
+// the injected child).
+//
+// The Component bridge is the local `impl_view_window!` rather than term-wm's
+// `impl_view_component!`: that macro's `&mut self` form takes a *constant*
+// height expression (its `self`/`_width` bindings are macro-hygienic and cannot
+// be referenced from the macro argument), but these window roots must delegate
+// `desired_height` to their child so variable-height content keeps its layout
+// contract — and forward the `&self`-queried selection metadata
+// (`selection_status`/`selection_text`) that the copy pipeline reads from the
+// focused window root. Every window wraps exactly one child.
+macro_rules! impl_view_window {
+    ($ty:ty, $child:ident) => {
+        impl Component<TermWmAction> for $ty {
+            fn render(
+                &mut self,
+                backend: &mut dyn RenderBackend,
+                area: WmRect,
+                ctx: &ComponentContext,
+                registry: &mut HitboxRegistry,
+            ) {
+                self.view().render(backend, area, ctx, registry);
+            }
+
+            fn handle_events(
+                &mut self,
+                event: &Event,
+                ctx: &ComponentContext,
+            ) -> EventResult<TermWmAction> {
+                self.view().handle_events(event, ctx)
+            }
+
+            fn update(
+                &mut self,
+                action: TermWmAction,
+                ctx: &ComponentContext,
+                actions: &mut VecDeque<(WindowKey, TermWmAction)>,
+            ) {
+                self.view().update(action, ctx, actions);
+            }
+
+            fn destroy(&mut self) {
+                self.view().destroy();
+            }
+
+            fn desired_height(&self, width: u16) -> u16 {
+                term_wm::Component::desired_height(&self.$child, width)
+            }
+
+            fn hitbox_id(&self) -> Option<term_wm::hitbox_registry::HitboxId> {
+                self.$child.hitbox_id()
+            }
+
+            fn clear_selection(&mut self) {
+                self.$child.clear_selection();
+            }
+
+            fn selection_status(&self) -> term_wm::components::SelectionStatus {
+                self.$child.selection_status()
+            }
+
+            fn selection_text(&self) -> Option<String> {
+                self.$child.selection_text()
+            }
+
+            fn take_pending_title(&mut self) -> Option<String> {
+                self.view().take_pending_title()
+            }
+
+            fn take_alternate_screen_transition(&mut self) -> Option<bool> {
+                self.view().take_alternate_screen_transition()
+            }
+
+            fn take_teardown_parts(
+                &mut self,
+            ) -> Option<(
+                Box<dyn std::any::Any + Send + Sync>,
+                std::thread::JoinHandle<()>,
+            )> {
+                self.view().take_teardown_parts()
+            }
+
+            fn set_selection_enabled(&mut self, enabled: bool) {
+                self.$child.set_selection_enabled(enabled);
+            }
+
+            fn paste(&mut self, text: &str) -> bool {
+                self.$child.paste(text)
+            }
+        }
+    };
+}
+
+struct TrialsWindow {
+    sv: ScrollViewComponent<ListComponent>,
+}
+
+impl TrialsWindow {
+    fn view(&mut self) -> impl Component<TermWmAction> + '_ {
+        view! { <Box padding=1>{ &mut self.sv }</Box> }
+    }
+}
+
+impl_view_window!(TrialsWindow, sv);
+
+struct ChartsWindow {
+    sv: ScrollViewComponent<ChartsView>,
+}
+
+impl ChartsWindow {
+    fn view(&mut self) -> impl Component<TermWmAction> + '_ {
+        view! { <Box padding=1>{ &mut self.sv }</Box> }
+    }
+}
+
+impl_view_window!(ChartsWindow, sv);
+
+struct TextWindow {
+    sv: ScrollViewComponent<TextRendererComponent>,
+}
+
+impl TextWindow {
+    fn view(&mut self) -> impl Component<TermWmAction> + '_ {
+        view! { <Box padding=1>{ &mut self.sv }</Box> }
+    }
+}
+
+impl_view_window!(TextWindow, sv);
+
+struct ToggleWindow {
+    list: ToggleListComponent,
+}
+
+impl ToggleWindow {
+    fn view(&mut self) -> impl Component<TermWmAction> + '_ {
+        view! { <Box padding=1>{ &mut self.list }</Box> }
+    }
+}
+
+impl_view_window!(ToggleWindow, list);
+
 enum AppComponent {
-    Trials(ScrollViewComponent<ListComponent>),
-    Charts(ScrollViewComponent<ChartsView>),
-    Details(ScrollViewComponent<TextRendererComponent>),
-    Params(ToggleListComponent),
-    Metrics(ToggleListComponent),
-    ProjectInfo(ScrollViewComponent<TextRendererComponent>),
-    Frontier(ScrollViewComponent<TextRendererComponent>),
+    Trials(TrialsWindow),
+    Charts(ChartsWindow),
+    Details(TextWindow),
+    Params(ToggleWindow),
+    Metrics(ToggleWindow),
+    ProjectInfo(TextWindow),
+    Frontier(TextWindow),
 }
 
 impl_component_delegate!(AppComponent {
@@ -388,49 +530,49 @@ struct AppState {
 impl AppState {
     fn trials_sv(&mut self) -> Option<&mut ScrollViewComponent<ListComponent>> {
         match self.inner.wm().component_for_key_mut(self.trials_key) {
-            Some(AppRootComponent::Custom(AppComponent::Trials(sv))) => Some(sv),
+            Some(AppRootComponent::Custom(AppComponent::Trials(win))) => Some(&mut win.sv),
             _ => None,
         }
     }
 
     fn charts_sv(&mut self) -> Option<&mut ScrollViewComponent<ChartsView>> {
         match self.inner.wm().component_for_key_mut(self.charts_key) {
-            Some(AppRootComponent::Custom(AppComponent::Charts(sv))) => Some(sv),
+            Some(AppRootComponent::Custom(AppComponent::Charts(win))) => Some(&mut win.sv),
             _ => None,
         }
     }
 
     fn details_sv(&mut self) -> Option<&mut ScrollViewComponent<TextRendererComponent>> {
         match self.inner.wm().component_for_key_mut(self.details_key) {
-            Some(AppRootComponent::Custom(AppComponent::Details(sv))) => Some(sv),
+            Some(AppRootComponent::Custom(AppComponent::Details(win))) => Some(&mut win.sv),
             _ => None,
         }
     }
 
     fn params_list(&mut self) -> Option<&mut ToggleListComponent> {
         match self.inner.wm().component_for_key_mut(self.params_key) {
-            Some(AppRootComponent::Custom(AppComponent::Params(l))) => Some(l),
+            Some(AppRootComponent::Custom(AppComponent::Params(win))) => Some(&mut win.list),
             _ => None,
         }
     }
 
     fn metrics_list(&mut self) -> Option<&mut ToggleListComponent> {
         match self.inner.wm().component_for_key_mut(self.metrics_key) {
-            Some(AppRootComponent::Custom(AppComponent::Metrics(l))) => Some(l),
+            Some(AppRootComponent::Custom(AppComponent::Metrics(win))) => Some(&mut win.list),
             _ => None,
         }
     }
 
     fn project_info_sv(&mut self) -> Option<&mut ScrollViewComponent<TextRendererComponent>> {
         match self.inner.wm().component_for_key_mut(self.project_info_key) {
-            Some(AppRootComponent::Custom(AppComponent::ProjectInfo(sv))) => Some(sv),
+            Some(AppRootComponent::Custom(AppComponent::ProjectInfo(win))) => Some(&mut win.sv),
             _ => None,
         }
     }
 
     fn frontier_sv(&mut self) -> Option<&mut ScrollViewComponent<TextRendererComponent>> {
         match self.inner.wm().component_for_key_mut(self.frontier_key) {
-            Some(AppRootComponent::Custom(AppComponent::Frontier(sv))) => Some(sv),
+            Some(AppRootComponent::Custom(AppComponent::Frontier(win))) => Some(&mut win.sv),
             _ => None,
         }
     }
@@ -900,13 +1042,13 @@ fn argtuner_keybindings() -> KeyBindings {
     kb
 }
 
-fn mk_trials_sv() -> ScrollViewComponent<ListComponent> {
+fn mk_trials_window() -> TrialsWindow {
     let mut sv = ScrollViewComponent::new(ListComponent::new("Trials"));
     sv.set_keyboard_mode(ScrollKeyMode::None);
-    sv
+    TrialsWindow { sv }
 }
 
-fn mk_charts_sv() -> ScrollViewComponent<ChartsView> {
+fn mk_charts_window() -> ChartsWindow {
     let mut sv = ScrollViewComponent::new(ChartsView {
         trials: Vec::new(),
         epoch_rows: BTreeMap::new(),
@@ -924,10 +1066,10 @@ fn mk_charts_sv() -> ScrollViewComponent<ChartsView> {
     // PageUp/PageDown/Home/End scroll the chart list (the wrapper owns the
     // viewport). Up/Down fall through to ChartsView for selection moves.
     sv.set_keyboard_mode(ScrollKeyMode::PaginationOnly);
-    sv
+    ChartsWindow { sv }
 }
 
-fn mk_details_sv() -> ScrollViewComponent<TextRendererComponent> {
+fn mk_text_window() -> TextWindow {
     let mut sv = ScrollViewComponent::new(TextRendererComponent::new());
     // Keep one field per line (no reflow) so the key = value layout is preserved;
     // long values scroll horizontally if wider than the window.
@@ -937,17 +1079,13 @@ fn mk_details_sv() -> ScrollViewComponent<TextRendererComponent> {
     // Full keyboard scroll: Up/Down/PageUp/PageDown/Home/End all scroll the
     // details viewport. TextRendererComponent has no key handling of its own.
     sv.set_keyboard_mode(ScrollKeyMode::Full);
-    sv
+    TextWindow { sv }
 }
 
-fn mk_project_info_sv() -> ScrollViewComponent<TextRendererComponent> {
-    let mut sv = ScrollViewComponent::new(TextRendererComponent::new());
-    // Same presentation as Trial Details: one `key = value` line each, no
-    // reflow, full keyboard scroll.
-    sv.content.borrow_mut().set_wrap(false);
-    sv.content.borrow_mut().set_selection_enabled(true);
-    sv.set_keyboard_mode(ScrollKeyMode::Full);
-    sv
+fn mk_toggle_window(title: &str) -> ToggleWindow {
+    ToggleWindow {
+        list: ToggleListComponent::new(title),
+    }
 }
 
 fn sync_param_toggles(app: &mut AppState) {
@@ -2296,5 +2434,88 @@ mod frontier_tests {
         }];
         let items = build_trial_items(&single);
         assert!(!items[0].contains("[nd]"), "{}", items[0]);
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+
+    /// Render a window component into an in-memory buffer and return its text.
+    fn render_content<C: Component<TermWmAction>>(
+        window: &mut C,
+        width: u16,
+        height: u16,
+    ) -> String {
+        let area = WmRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        let buffer =
+            ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, width, height));
+        let mut backend =
+            RatatuiBackend::new_simple(buffer, ratatui::layout::Rect::new(0, 0, width, height));
+        let ctx = ComponentContext::new(true).with_screen_area(area);
+        let mut registry = HitboxRegistry::new();
+        window.render(&mut backend, area, &ctx, &mut registry);
+        backend
+            .buffer
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn window_roots_delegate_child_height() {
+        // Every child reports 0 (stretch); the window roots must delegate that
+        // contract to the child rather than hardcoding their own scalar.
+        assert_eq!(mk_trials_window().desired_height(30), 0);
+        assert_eq!(mk_charts_window().desired_height(30), 0);
+        assert_eq!(mk_text_window().desired_height(30), 0);
+        assert_eq!(mk_toggle_window("Params").desired_height(30), 0);
+    }
+
+    #[test]
+    fn view_windows_render_injected_children() {
+        let mut trials = mk_trials_window();
+        trials
+            .sv
+            .content
+            .borrow_mut()
+            .update_items(vec!["trial 7".to_string()]);
+        let out = render_content(&mut trials, 30, 8);
+        assert!(out.contains("trial 7"), "list item rendered: {out:?}");
+
+        let mut charts = mk_charts_window();
+        let out = render_content(&mut charts, 40, 15);
+        assert!(
+            out.contains("No trials loaded."),
+            "charts placeholder: {out:?}"
+        );
+
+        let mut toggle = mk_toggle_window("Hyperparameters");
+        toggle.list.set_items(vec![ToggleItem {
+            id: "lr".into(),
+            label: "lr".into(),
+            checked: true,
+        }]);
+        let out = render_content(&mut toggle, 30, 8);
+        assert!(out.contains("lr"), "toggle item rendered: {out:?}");
+    }
+
+    #[test]
+    fn view_window_forwards_selection_metadata() {
+        // The copy pipeline reads selection state off the focused window root;
+        // the window bridge must forward it to the scroll view content.
+        let text = mk_text_window();
+        text.sv.content.borrow_mut().set_selection_enabled(true);
+        let root = text.selection_status();
+        let child = text.sv.selection_status();
+        assert_eq!(root.active, child.active);
+        assert_eq!(root.dragging, child.dragging);
+        assert_eq!(text.selection_text(), text.sv.selection_text());
     }
 }
