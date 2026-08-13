@@ -74,8 +74,8 @@ impl<'a> SchedulerBinding<'a> {
                 dims,
                 self.config.scheduler.n_trials,
                 self.config.scheduler.seed,
-                None,   // budget_epochs
-                None,   // budget_key
+                None, // budget_epochs
+                None, // budget_key
             )),
             Scheduler::SuccessiveHalving => {
                 let sh = &self.config.scheduler.successive_halving;

@@ -1,6 +1,6 @@
 use argtuner::UnifiedConfig;
-use argtuner::Params;
-use argtuner_derive::talkback_args;
+use argtuner_sdk::Params;
+use argtuner_sdk::talkback_args;
 
 #[allow(dead_code)] // template-only definition: fields are read by the derive, not this test
 #[talkback_args]
@@ -21,7 +21,7 @@ fn space_names(config: &UnifiedConfig) -> Vec<&str> {
 
 #[test]
 fn talkback_template_toml_is_valid() {
-    let toml_text = argtuner::render_template_toml::<TemplateArgs>();
+    let toml_text = argtuner_sdk::render_template_toml::<TemplateArgs>();
     let parsed: UnifiedConfig =
         toml::from_str(&toml_text).expect("template must parse as UnifiedConfig");
     parsed
@@ -31,7 +31,10 @@ fn talkback_template_toml_is_valid() {
 
     let names = space_names(&parsed);
     assert!(names.contains(&"lr"), "lr missing from space: {names:?}");
-    assert!(names.contains(&"steps"), "steps missing from space: {names:?}");
+    assert!(
+        names.contains(&"steps"),
+        "steps missing from space: {names:?}"
+    );
     assert!(
         names.contains(&"optimizer"),
         "optimizer missing from space: {names:?}"
@@ -44,7 +47,7 @@ fn talkback_template_toml_is_valid() {
 
 #[test]
 fn talkback_template_renders_placeholders() {
-    let cmd = argtuner::render_template_command::<TemplateArgs>();
+    let cmd = argtuner_sdk::render_template_command::<TemplateArgs>();
     assert!(cmd.contains("--lr {lr}"), "template: {cmd}");
     assert!(cmd.contains("--steps {steps}"), "template: {cmd}");
     assert!(cmd.contains("--optimizer {optimizer}"), "template: {cmd}");
@@ -65,7 +68,7 @@ struct TrickyArgs {
 
 #[test]
 fn talkback_template_round_trips_tricky_values() {
-    let toml_text = argtuner::render_template_toml::<TrickyArgs>();
+    let toml_text = argtuner_sdk::render_template_toml::<TrickyArgs>();
     let parsed: UnifiedConfig = toml::from_str(&toml_text)
         .expect("template must parse as UnifiedConfig even with quotes/backslashes");
 
@@ -113,7 +116,7 @@ struct BoolParamArgs {
 
 #[test]
 fn talkback_template_renders_bool() {
-    let toml_text = argtuner::render_template_toml::<BoolParamArgs>();
+    let toml_text = argtuner_sdk::render_template_toml::<BoolParamArgs>();
     let parsed: UnifiedConfig =
         toml::from_str(&toml_text).expect("template must parse as UnifiedConfig");
 
@@ -138,7 +141,7 @@ fn talkback_template_renders_bool() {
     }
 
     // Tunable bool renders as a placeholder, not a bare flag.
-    let cmd = argtuner::render_template_command::<BoolParamArgs>();
+    let cmd = argtuner_sdk::render_template_command::<BoolParamArgs>();
     assert!(
         cmd.contains("--use-dropout {use_dropout}"),
         "template: {cmd}"

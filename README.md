@@ -13,17 +13,17 @@ By defining a search space in `argtuner.toml` and templating your command (e.g.,
 Use argtuner when:
 - You already have a runnable training command and just need structured, repeatable search.
 - You want a simple, project-based workflow that logs trials and lets you re-run exact commands.
-- You want black-box tuning: `argtuner` never instruments your model's internals (no gradients, no layer access). Integration happens strictly at the process boundary—your app simply emits `::ARGTUNER::` JSON events on stdout, manually or via the optional `argtuner` Rust SDK.
+- You want black-box tuning: `argtuner` never instruments your model's internals (no gradients, no layer access). Integration happens strictly at the process boundary—your app simply emits `::ARGTUNER::` JSON events on stdout, manually or via the optional [`argtuner-sdk`](https://crates.io/crates/argtuner-sdk) Rust binding.
 - Your command's result is reproducible for a given configuration: argtuner re-invokes it with fresh arguments each trial and compares the reported results, so the same arguments should return close to the same result. State you manage is fine — successive halving even copies the previous rung's `{trial_dir}` artifacts into the next rung's directory so a trial can resume from checkpoints. What skews the search is *uncontrolled* state: files written outside `{trial_dir}`, randomness that isn't seeded, or network calls that change results run to run.
 
 ## Quickstart
 
-**1. Declare your parameters once, in Rust.** Add `argtuner` (its default
-`clap` feature is on) and `argtuner-derive` to your app:
+**1. Declare your parameters once, in Rust.** Add the lightweight
+`argtuner-sdk` crate to your app (it also depends on the `argtuner-derive`
+proc-macro, so you only need to name one crate):
 
 ```rust,no_run
-use argtuner::{emit_metrics, init};
-use argtuner_derive::talkback_args;
+use argtuner_sdk::{emit_metrics, init, talkback_args};
 
 fn train(lr: f64, steps: usize) -> f64 {
     0.0 // your training logic
@@ -120,7 +120,7 @@ frames into captured logs generates unnecessary IO overhead. Disable interactive
 UI rendering when tuning is active:
 
 ```rust,ignore
-use argtuner::{init, is_tuning_active};
+use argtuner_sdk::{init, is_tuning_active};
 use burn::train::LearnerBuilder;
 
 fn main() {
@@ -396,12 +396,23 @@ argtuner watch --project ./argtuner/my-project --poll-ms 5000
 
 ## Protocol
 
-### The `argtuner` Rust SDK
-If your application is written in Rust, you do not need to format these JSON strings manually. Declare your algorithm's parameters once as a **plain struct** with `#[talkback_args]` and the derive generates the `clap` CLI, the command template, and a real search space (`argtuner::init::<P>()`, `argtuner::talkback_args`, `argtuner::Params`, and `argtuner::emit_metrics!` are re-exported from this crate's root; no `clap`/`serde` needed in your `Cargo.toml`). It provides:
+### The `argtuner-sdk` Rust binding
+If your application is written in Rust, you do not need to format these JSON strings manually. Add the **`argtuner-sdk`** crate and declare your algorithm's parameters once as a **plain struct** with `#[talkback_args]`; the derive generates the `clap` CLI, the command template, and a real search space (`argtuner_sdk::init::<P>()`, `argtuner_sdk::talkback_args`, `argtuner_sdk::Params`, and `argtuner_sdk::emit_metrics!` come from that crate's root; no `clap`/`serde` needed in your `Cargo.toml`). It provides:
 * **Type-safe emission:** `emit_metrics!` / `talkback.metrics()` and the serde-backed `emit_epoch_end()`, `emit_step_end()`, and `emit_result()` methods write `::ARGTUNER::` JSON to stdout (silently no-op when the binary runs standalone, so the same CLI doubles as a clean production tool).
 * **CLI auto-generation:** `--print-template-toml` prints a starter `argtuner.toml` — populated `[space]` included — directly from your struct definition.
 * **Version handshake:** Ensures compatibility between your app and the CLI.
 * **Typed argv parsing:** The derive parses flags for you and returns `(Talkback, Params)` via `init()`.
+
+`argtuner-sdk` is a deliberately tiny crate: it pulls in only a handful of
+small, common dependencies (`clap`, `serde`, `serde_json`, `toml_edit`,
+`argtuner-common`, `argtuner-derive`) — **none** of the CLI/TUI machinery
+(terminal UI, PTY supervision, SQLite, optimization solvers) that ships with
+the `argtuner` binary. The per-project overhead of using it is therefore
+**extremely low**, and at runtime it does nothing unless argtuner exported the
+`ARGTUNER_TUNING` environment variable to your process. If critical performance
+is paramount, the SDK can be **skipped entirely**: the protocol below is a
+plain, documented stdio format, and any language can emit the raw
+`::ARGTUNER::` JSON lines directly.
 
 For all other languages, simply emit the following raw JSON strings to standard output:
 

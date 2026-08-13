@@ -461,9 +461,7 @@ impl ParamSpec {
         }
         match self {
             ParamSpec::Float {
-                log_scale,
-                step,
-                ..
+                log_scale, step, ..
             } => {
                 if *log_scale && step.is_some() {
                     return Err(format!(
@@ -865,7 +863,10 @@ mod tests {
         };
         let toml_text = toml::to_string(&spec).expect("serialize");
         assert!(toml_text.contains("type = \"Bool\""), "toml: {toml_text}");
-        assert!(toml_text.contains("name = \"use_dropout\""), "toml: {toml_text}");
+        assert!(
+            toml_text.contains("name = \"use_dropout\""),
+            "toml: {toml_text}"
+        );
         let back: ParamSpec = toml::from_str(&toml_text).expect("deserialize");
         assert!(matches!(back, ParamSpec::Bool { .. }));
     }
@@ -879,11 +880,20 @@ mod tests {
             parent_values: Some(vec!["sgd".to_string()]),
         };
         let toml_text = toml::to_string(&spec).expect("serialize");
-        assert!(toml_text.contains("parent = \"optimizer\""), "toml: {toml_text}");
-        assert!(toml_text.contains("parent_values = [\"sgd\"]"), "toml: {toml_text}");
+        assert!(
+            toml_text.contains("parent = \"optimizer\""),
+            "toml: {toml_text}"
+        );
+        assert!(
+            toml_text.contains("parent_values = [\"sgd\"]"),
+            "toml: {toml_text}"
+        );
         let back: ParamSpec = toml::from_str(&toml_text).expect("deserialize");
         assert_eq!(back.parent(), Some("optimizer"));
-        assert_eq!(back.parent_values(), Some(vec!["sgd".to_string()].as_slice()));
+        assert_eq!(
+            back.parent_values(),
+            Some(vec!["sgd".to_string()].as_slice())
+        );
     }
 
     fn cond_optimizer_momentum_space() -> SearchSpace {
@@ -959,7 +969,9 @@ mod tests {
                 },
             ],
         };
-        space.validate_specs().expect("two-level conditional validates");
+        space
+            .validate_specs()
+            .expect("two-level conditional validates");
         // opt=sgd, sub=a -> lr active.
         assert!(space.values_from_unit(&[0.0, 0.0, 0.5]).contains_key("lr"));
         // opt=sgd, sub=b -> lr inactive (sub active but disallows).

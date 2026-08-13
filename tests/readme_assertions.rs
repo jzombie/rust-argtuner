@@ -42,9 +42,9 @@ fn inspect_render() -> String {
 #[test]
 fn readme_echoes_current_schema() {
     let echoed = readme_block("<!-- protocol.schema.json -->", "json");
-    let asset = line_ending::LineEnding::normalize(
-        include_str!("../crates/common/assets/protocol.schema.json"),
-    );
+    let asset = line_ending::LineEnding::normalize(include_str!(
+        "../crates/common/assets/protocol.schema.json"
+    ));
     assert_eq!(
         echoed,
         asset.trim(),
@@ -61,8 +61,7 @@ fn readme_echoes_current_schema() {
 
 #[test]
 fn readme_example_extracts_payload() {
-    let feed = readme_block("<!-- protocol.example.feed -->", "text")
-        .replace("\\x1b", "\u{1b}");
+    let feed = readme_block("<!-- protocol.example.feed -->", "text").replace("\\x1b", "\u{1b}");
     let expected: argtuner_common::TalkbackMessage =
         serde_json::from_str(&readme_block("<!-- protocol.example.parsed -->", "json"))
             .expect("README expected payload must be a valid TalkbackMessage");

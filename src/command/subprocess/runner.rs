@@ -326,7 +326,10 @@ fn wait_with_timeout<C: RunnableChild>(
             }
         } else {
             let timeout_hit = opts.timeout.is_some_and(|t| start.elapsed() >= t);
-            let cancelled = opts.stop.as_ref().is_some_and(|s| s.load(Ordering::Relaxed));
+            let cancelled = opts
+                .stop
+                .as_ref()
+                .is_some_and(|s| s.load(Ordering::Relaxed));
             if timeout_hit || cancelled {
                 timed_out = timeout_hit;
                 child.kill_group()?;
@@ -628,8 +631,7 @@ mod tests {
             "noop".to_string(),
         )]);
         let output =
-            CommandRunner::run(&crate::test_support::self_invoking_command(), &envs)
-                .expect("run");
+            CommandRunner::run(&crate::test_support::self_invoking_command(), &envs).expect("run");
         assert_eq!(output.exit_code, 0);
         assert!(!output.timed_out);
     }
@@ -727,6 +729,10 @@ mod tests {
         let pid: u32 = pid_text.trim().parse().unwrap_or_else(|err| {
             panic!("invalid grandchild PID in {pid_path:?}: {pid_text:?}: {err}")
         });
-        crate::test_support::assert_no_longer_running(pid, &heartbeat_path, Duration::from_millis(600));
+        crate::test_support::assert_no_longer_running(
+            pid,
+            &heartbeat_path,
+            Duration::from_millis(600),
+        );
     }
 }

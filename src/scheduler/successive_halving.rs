@@ -15,14 +15,14 @@ use super::{ScheduledTrial, TrialScheduler, TrialToken, plan, sample_unit};
 #[derive(Debug)]
 pub struct SuccessiveHalvingScheduler {
     dims: usize,
-    budgets: Vec<usize>,                 // per-rung budget epochs, from plan::build_budgets
+    budgets: Vec<usize>, // per-rung budget epochs, from plan::build_budgets
     eta: usize,
     budget_key: String,
-    rung: usize,                         // current rung index
-    current: Vec<ConfigCandidate>,       // candidates alive at current rung
-    pending: Vec<ConfigCandidate>,       // reversed issue queue for current rung
-    scores: BTreeMap<usize, f64>,        // config_id -> primary-objective scalar score
-    primary_index: usize,                // which objective drives rung truncation
+    rung: usize,                   // current rung index
+    current: Vec<ConfigCandidate>, // candidates alive at current rung
+    pending: Vec<ConfigCandidate>, // reversed issue queue for current rung
+    scores: BTreeMap<usize, f64>,  // config_id -> primary-objective scalar score
+    primary_index: usize,          // which objective drives rung truncation
     rng: rand::rngs::StdRng,
     total_budget: usize,
     issued_budget: usize,
@@ -293,15 +293,8 @@ mod tests {
 
     #[test]
     fn successive_halving_truncates_by_primary_objective() {
-        let mut scheduler = SuccessiveHalvingScheduler::new_with_seed(
-            0,
-            4,
-            1,
-            4,
-            2,
-            "epochs".to_string(),
-            7,
-        );
+        let mut scheduler =
+            SuccessiveHalvingScheduler::new_with_seed(0, 4, 1, 4, 2, "epochs".to_string(), 7);
         scheduler.with_primary_index(1);
         let mut tokens = Vec::new();
         for _ in 0..4 {

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 
-use argtuner_derive::talkback_args;
+use argtuner_sdk::talkback_args;
 
 #[talkback_args]
 struct ProbeArgs {
@@ -13,7 +13,7 @@ struct ProbeArgs {
 }
 
 fn main() -> io::Result<()> {
-    let (talkback, parsed) = argtuner::init::<ProbeArgs>();
+    let (talkback, parsed) = argtuner_sdk::init::<ProbeArgs>();
     let metric_key = parsed.metric_key.as_deref().unwrap_or("metric");
     let checkpoint_dir = parsed.checkpoint_dir.as_deref();
     let mut reader = input_reader();

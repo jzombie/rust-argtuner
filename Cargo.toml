@@ -13,46 +13,10 @@ default-run = "argtuner"
 [package.metadata.cargo-udeps.ignore]
 normal = ["windows-sys"]
 
-[features]
-default = ["cli"]
-cli = [
-    "dep:argmin",
-    "dep:argmin-math",
-    "dep:chrono",
-    "dep:command-group",
-    "dep:crossterm",
-    "dep:csv",
-    "dep:ctrlc",
-    "dep:hostname",
-    "dep:ignore",
-    "dep:libc",
-    "dep:line-ending",
-    "dep:portable-pty",
-    "dep:rand",
-    "dep:ratatui",
-    "dep:rusqlite",
-    "dep:shell-words",
-    "dep:similar",
-    "dep:tempfile",
-    "dep:term-wm",
-    "dep:term-wm-console",
-    "dep:term-wm-core",
-    "dep:term-wm-render",
-    "dep:term-wm-ui-facade",
-    "dep:thiserror",
-    "dep:toml",
-    "dep:tracing",
-    "dep:windows-sys",
-]
-
-[[bin]]
-name = "argtuner"
-path = "src/main.rs"
-required-features = ["cli"]
-
 [workspace]
 members = [
     "crates/argtuner-derive",
+    "crates/argtuner-sdk",
     "crates/common",
     "crates/deprecated/argtuner-talkback",
     "crates/deprecated/argtuner-talkback-derive",
@@ -72,9 +36,10 @@ publish = true
 [workspace.dependencies]
 argmin = { version = "0.11", features = ["serde1"] }
 argmin-math = { version = "0.5.1", features = ["vec"] }
+argtuner = { path = ".", version = "0.1.2-alpha" }
 argtuner-common = { path = "crates/common", version = "0.1.2-alpha" }
 argtuner-derive = { path = "crates/argtuner-derive", version = "0.1.2-alpha" }
-argtuner = { path = ".", version = "0.1.2-alpha" }
+argtuner-sdk = { path = "crates/argtuner-sdk", version = "0.1.2-alpha" }
 chrono = { version = "0.4.42", features = ["serde", "alloc"] }
 clap = "4.5.53"
 command-group = "5.0.1"
@@ -110,11 +75,47 @@ toml_edit = { version = "0.25.13", features = ["serde"] }
 tracing = "0.1.44"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
+[[bin]]
+name = "argtuner"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+cli = [
+    "dep:argmin",
+    "dep:argmin-math",
+    "dep:chrono",
+    "dep:command-group",
+    "dep:crossterm",
+    "dep:csv",
+    "dep:ctrlc",
+    "dep:hostname",
+    "dep:ignore",
+    "dep:libc",
+    "dep:line-ending",
+    "dep:portable-pty",
+    "dep:rand",
+    "dep:ratatui",
+    "dep:rusqlite",
+    "dep:shell-words",
+    "dep:similar",
+    "dep:tempfile",
+    "dep:term-wm",
+    "dep:term-wm-console",
+    "dep:term-wm-core",
+    "dep:term-wm-render",
+    "dep:term-wm-ui-facade",
+    "dep:thiserror",
+    "dep:toml",
+    "dep:tracing",
+    "dep:windows-sys",
+]
+
 [dependencies]
 argmin = { workspace = true, optional = true }
 argmin-math = { workspace = true, features = ["vec"], optional = true }
 argtuner-common.workspace = true
-argtuner-derive.workspace = true
 chrono = { workspace = true, features = ["serde", "alloc"], optional = true }
 clap = { workspace = true, features = ["derive"] }
 command-group = { workspace = true, optional = true }
@@ -146,6 +147,7 @@ tracing = { workspace = true, optional = true }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"], optional = true }
 
 [dev-dependencies]
+argtuner-sdk.workspace = true
 indicatif.workspace = true
 indoc.workspace = true
 jsonschema.workspace = true

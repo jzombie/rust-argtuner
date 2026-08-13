@@ -359,10 +359,7 @@ impl CommandObjective {
             )
             .map_err(EvalError::Other)?;
             if output.timed_out {
-                let seconds = self
-                    .run_timeout
-                    .map(|d| d.as_secs())
-                    .unwrap_or_default();
+                let seconds = self.run_timeout.map(|d| d.as_secs()).unwrap_or_default();
                 return Err(EvalError::Other(format!(
                     "command timed out after {seconds}s and was terminated"
                 )));
@@ -563,9 +560,7 @@ impl CommandObjective {
                         fields: out_fields,
                     })
                     .map_err(|err| format!("trial log update failed: {err}"))?;
-                if !multi
-                    && let Ok(mut best) = self.best_score.lock()
-                {
+                if !multi && let Ok(mut best) = self.best_score.lock() {
                     let is_best = best.is_none_or(|value| score < value);
                     if is_best {
                         *best = Some(score);
@@ -593,10 +588,7 @@ impl CommandObjective {
                         score
                     );
                 } else {
-                    eprintln!(
-                        "Metric: {}  Score: {:.6}",
-                        metrics[primary_index], score
-                    );
+                    eprintln!("Metric: {}  Score: {:.6}", metrics[primary_index], score);
                 }
                 let _ = std::io::stderr().flush();
                 Ok((score, scores))
@@ -685,9 +677,8 @@ fn metrics_from_map(
 ) -> Result<Vec<f64>, String> {
     let mut out = Vec::with_capacity(objectives.len());
     for objective in objectives {
-        let metric = metric_from_map(map, &objective.name).map_err(|err| {
-            format!("missing objective metric: {} ({err})", objective.name)
-        })?;
+        let metric = metric_from_map(map, &objective.name)
+            .map_err(|err| format!("missing objective metric: {} ({err})", objective.name))?;
         out.push(metric);
     }
     Ok(out)
@@ -954,8 +945,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         // Re-execute the test binary in a self-sleeping role so the timeout is
         // deterministic and cross-platform (no reliance on `sleep`/`sh`).
-        let template =
-            crate::CommandTemplate::new(crate::test_support::self_invoking_command());
+        let template = crate::CommandTemplate::new(crate::test_support::self_invoking_command());
         let store = crate::TrialStore::new(
             dir.path().join(crate::TRIALS_CSV_FILENAME),
             template.clone(),
@@ -980,7 +970,9 @@ mod tests {
             ..crate::TrialOverrides::default()
         };
         let start = std::time::Instant::now();
-        let err = objective.eval_with_overrides(&[], &overrides).expect_err("timed out");
+        let err = objective
+            .eval_with_overrides(&[], &overrides)
+            .expect_err("timed out");
         assert!(
             err.contains("timed out"),
             "error should mention timeout, got: {err}"
@@ -1533,9 +1525,8 @@ mod tests {
     #[test]
     fn objective_evaluates_two_objectives_and_persists_scores() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let template = crate::CommandTemplate::new(crate::test_support::bin_command(
-            "mock_emit_two_metrics",
-        ));
+        let template =
+            crate::CommandTemplate::new(crate::test_support::bin_command("mock_emit_two_metrics"));
         let store = crate::TrialStore::new(
             dir.path().join(crate::TRIALS_CSV_FILENAME),
             template.clone(),

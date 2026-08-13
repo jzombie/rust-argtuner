@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use argtuner_derive::talkback_args;
+use argtuner_sdk::talkback_args;
 
 #[talkback_args]
 struct ParetoArgs {
@@ -16,7 +16,7 @@ struct ParetoArgs {
 }
 
 fn main() {
-    let (_talkback, args) = argtuner::init::<ParetoArgs>();
+    let (_talkback, args) = argtuner_sdk::init::<ParetoArgs>();
     let _ = args.checkpoint_dir;
 
     let batch_size: f64 = args.batch_size.parse().unwrap_or(32.0);
@@ -36,7 +36,7 @@ fn main() {
         fields.insert("loss".to_string(), format!("{loss:.6}"));
         fields.insert("latency_ms".to_string(), format!("{latency_ms:.2}"));
         fields.insert("epoch".to_string(), epoch.to_string());
-        let _ = argtuner::emit_epoch_end(&fields);
+        let _ = argtuner_sdk::emit_epoch_end(&fields);
         std::thread::sleep(std::time::Duration::from_millis(60));
     }
 }

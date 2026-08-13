@@ -4,7 +4,7 @@ use syn::parse_macro_input;
 use syn::punctuated::Punctuated;
 use syn::{Fields, GenericArgument, ItemStruct, Lit, PathArguments, Token};
 
-/// Generate the `argtuner::Params` implementation for a plain struct,
+/// Generate the `argtuner_sdk::Params` implementation for a plain struct,
 /// turning it into both a production `clap` CLI and an argtuner
 /// template/search-space definition.
 ///
@@ -23,7 +23,7 @@ use syn::{Fields, GenericArgument, ItemStruct, Lit, PathArguments, Token};
 /// }
 ///
 /// fn main() {
-///     assert_eq!(<ModelParams as argtuner::Params>::params().len(), 3);
+///     assert_eq!(<ModelParams as argtuner_sdk::Params>::params().len(), 3);
 /// }
 /// ```
 #[proc_macro_attribute]
@@ -87,15 +87,15 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         let name_lit = lit_str(&name);
 
         let kind = if is_bool {
-            quote!(::argtuner::ParamKind::Bool)
+            quote!(::argtuner_sdk::ParamKind::Bool)
         } else if is_float {
-            quote!(::argtuner::ParamKind::Float)
+            quote!(::argtuner_sdk::ParamKind::Float)
         } else if is_int {
-            quote!(::argtuner::ParamKind::Int)
+            quote!(::argtuner_sdk::ParamKind::Int)
         } else if !attrs.choices.is_empty() {
-            quote!(::argtuner::ParamKind::Choice)
+            quote!(::argtuner_sdk::ParamKind::Choice)
         } else {
-            quote!(::argtuner::ParamKind::Other)
+            quote!(::argtuner_sdk::ParamKind::Other)
         };
 
         let value_name = match attrs.value_name.as_deref() {
@@ -133,7 +133,7 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         };
 
         param_specs.push(quote! {
-            ::argtuner::ParamHint {
+            ::argtuner_sdk::ParamHint {
                 name: #name_lit,
                 long: #long_lit,
                 value_name: #value_name,
@@ -172,19 +172,22 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         // bools are flag-friendly value args: `--flag` alone means `true`,
         // while `--flag false` (from a tuned trial) works too.
         let (value_parser, bool_flag) = if is_bool {
-            (quote!(::argtuner::clap::value_parser!(bool)), true)
+            (quote!(::argtuner_sdk::clap::value_parser!(bool)), true)
         } else if !attrs.choices.is_empty() && is_string {
             // PossibleValuesParser yields String; only attach it to String-typed
             // choice fields so typed get_one::<Inner> never downcasts wrong.
             let cs = attrs.choices.iter().map(|c| lit_str(c));
             (
                 quote! {
-                    ::argtuner::clap::builder::PossibleValuesParser::new([#(#cs),*])
+                    ::argtuner_sdk::clap::builder::PossibleValuesParser::new([#(#cs),*])
                 },
                 false,
             )
         } else {
-            (quote!(::argtuner::clap::value_parser!(#inner_ty)), false)
+            (
+                quote!(::argtuner_sdk::clap::value_parser!(#inner_ty)),
+                false,
+            )
         };
         let num_args = if bool_flag {
             quote!(.num_args(0..=1).default_missing_value("true"))
@@ -193,7 +196,7 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         };
         command_args.push(quote! {
             .arg(
-                ::argtuner::clap::Arg::new(#name_lit)
+                ::argtuner_sdk::clap::Arg::new(#name_lit)
                     .long(#long_lit)
                     #value_name_arg
                     #help_arg
@@ -218,25 +221,25 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input
 
-        impl ::argtuner::Params for #struct_ident {
+        impl ::argtuner_sdk::Params for #struct_ident {
             fn app_name() -> &'static str {
                 env!("CARGO_PKG_NAME")
             }
 
-            fn params() -> &'static [::argtuner::ParamHint] {
-                static PARAMS: [::argtuner::ParamHint; #field_count] = [
+            fn params() -> &'static [::argtuner_sdk::ParamHint] {
+                static PARAMS: [::argtuner_sdk::ParamHint; #field_count] = [
                     #(#param_specs),*
                 ];
                 &PARAMS
             }
 
-            fn command() -> ::argtuner::clap::Command {
-                ::argtuner::clap::Command::new(Self::app_name())
+            fn command() -> ::argtuner_sdk::clap::Command {
+                ::argtuner_sdk::clap::Command::new(Self::app_name())
                     .version(env!("CARGO_PKG_VERSION"))
                     #(#command_args)*
             }
 
-            fn from_matches(m: &::argtuner::clap::ArgMatches) -> Self {
+            fn from_matches(m: &::argtuner_sdk::clap::ArgMatches) -> Self {
                 Self {
                     #(#field_inits),*
                 }

@@ -50,7 +50,13 @@ fn flatten_template(template: &str) -> String {
 /// against the search space and the scheduler's budget placeholder.
 fn placeholder_analysis(config: &UnifiedConfig) -> String {
     let budget = if matches!(&config.scheduler.kind, Scheduler::SuccessiveHalving) {
-        Some(config.scheduler.successive_halving.budget_placeholder.clone())
+        Some(
+            config
+                .scheduler
+                .successive_halving
+                .budget_placeholder
+                .clone(),
+        )
     } else {
         None
     };
@@ -117,8 +123,7 @@ fn execution_summary(config: &UnifiedConfig) -> String {
     out.push_str(&format!("  {:<10} {sampler}{lf}", "sampler:"));
     out.push_str(&format!(
         "  {:<10} {scheduler} ({} trials){lf}",
-        "scheduler:",
-        config.scheduler.n_trials
+        "scheduler:", config.scheduler.n_trials
     ));
     out
 }
@@ -143,7 +148,11 @@ fn describe_placeholder(name: &str, space: &SearchSpace, budget: Option<&str>) -
 fn describe_param(spec: &ParamSpec) -> String {
     let base = match spec {
         ParamSpec::Float {
-            min, max, log_scale, step, ..
+            min,
+            max,
+            log_scale,
+            step,
+            ..
         } => {
             let mut desc = format!("space param Float in [{min}, {max}]");
             if *log_scale {
@@ -168,7 +177,10 @@ fn describe_param(spec: &ParamSpec) -> String {
     };
     match (spec.parent(), spec.parent_values()) {
         (Some(parent), Some(values)) => {
-            format!("{base}; conditional: sampled only when {parent} ∈ [{}]", values.join(", "))
+            format!(
+                "{base}; conditional: sampled only when {parent} ∈ [{}]",
+                values.join(", ")
+            )
         }
         _ => base,
     }

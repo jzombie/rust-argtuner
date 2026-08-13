@@ -43,7 +43,7 @@ pub enum Commands {
     },
     /// Watch trials in a live TUI
     Watch {
-        /// Path to the project directory (watches <dir>/trials.sqlite)
+        /// Path to the project directory (watches `<dir>/trials.sqlite`)
         #[arg(long, value_name = "PROJECT_DIR")]
         project: PathBuf,
         /// Polling interval (ms)

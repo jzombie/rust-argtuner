@@ -170,7 +170,7 @@ dependencies = [
  "argmin",
  "argmin-math",
  "argtuner-common",
- "argtuner-derive",
+ "argtuner-sdk",
  "chrono",
  "clap",
  "command-group",
@@ -220,7 +220,7 @@ dependencies = [
 name = "argtuner-derive"
 version = "0.1.2-alpha"
 dependencies = [
- "argtuner",
+ "argtuner-sdk",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -230,23 +230,35 @@ dependencies = [
 name = "argtuner-mock-bin"
 version = "0.1.2-alpha"
 dependencies = [
- "argtuner",
  "argtuner-common",
+ "argtuner-sdk",
  "serde",
+]
+
+[[package]]
+name = "argtuner-sdk"
+version = "0.1.2-alpha"
+dependencies = [
+ "argtuner-common",
+ "argtuner-derive",
+ "clap",
+ "serde",
+ "serde_json",
+ "toml_edit",
 ]
 
 [[package]]
 name = "argtuner-talkback"
 version = "0.1.2-alpha"
 dependencies = [
- "argtuner",
+ "argtuner-sdk",
 ]
 
 [[package]]
 name = "argtuner-talkback-derive"
 version = "0.1.2-alpha"
 dependencies = [
- "argtuner-derive",
+ "argtuner-sdk",
 ]
 
 [[package]]

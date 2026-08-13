@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 use std::collections::BTreeMap;
 use std::io;
 
@@ -6,18 +8,18 @@ use serde::de::DeserializeOwned;
 
 pub use argtuner_common::EventKind;
 
+use argtuner_common::{PLACEHOLDER_TRIAL_DIR, PLACEHOLDER_TRIAL_ID, TalkbackMessage};
 /// Re-export of the `#[talkback_args]` attribute macro so consumers only need
-/// `argtuner`.
+/// `argtuner-sdk`.
 pub use argtuner_derive::talkback_args;
-use argtuner_common::TalkbackMessage;
 
+/// `clap` re-exported so the derive-generated code can reference it through
+/// `argtuner_sdk::clap`, keeping clap off the consumer's dependency list.
+pub use clap;
 /// `serde` re-exported so consumers derive `Serialize` via this crate
-/// (e.g. `use argtuner::serde::Serialize;`) without adding serde as a
+/// (e.g. `use argtuner_sdk::serde::Serialize;`) without adding serde as a
 /// direct dependency.
 pub use serde;
-/// `clap` re-exported so the derive-generated code can reference it through
-/// `argtuner::clap`, keeping clap off the consumer's dependency list.
-pub use clap;
 
 pub const PREFIX: &str = argtuner_common::RESULT_PREFIX;
 pub const BINDING_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -256,10 +258,7 @@ impl ParamHint {
     pub fn is_reserved(&self) -> bool {
         matches!(
             self.value_name,
-            Some(
-                crate::constants::PLACEHOLDER_TRIAL_DIR
-                    | crate::constants::PLACEHOLDER_TRIAL_ID
-            )
+            Some(PLACEHOLDER_TRIAL_DIR | PLACEHOLDER_TRIAL_ID)
         )
     }
 

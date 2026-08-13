@@ -95,9 +95,8 @@ impl Project {
     /// form (`template` + `[project]` + `[sampler]` + `[scheduler]` + `[space]`).
     pub fn load_unified_config(&self) -> std::io::Result<UnifiedConfig> {
         let data = std::fs::read_to_string(self.unified_config_path())?;
-        toml::from_str(&data).map_err(|err| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string())
-        })
+        toml::from_str(&data)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))
     }
 
     pub fn save_unified_config(&self, config: &UnifiedConfig) -> std::io::Result<()> {

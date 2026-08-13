@@ -2,7 +2,7 @@
 name = "argtuner-talkback-derive"
 version.workspace = true
 edition.workspace = true
-description = "DEPRECATED: use `argtuner` and its `talkback_args` re-export instead."
+description = "DEPRECATED: use `argtuner-sdk` and its `talkback_args` re-export instead."
 repository.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -10,4 +10,4 @@ keywords = ["derive", "proc-macro", "cli", "clap", "deprecated"]
 categories = ["development-tools::procedural-macro-helpers", "command-line-interface"]
 
 [dependencies]
-argtuner-derive.workspace = true
+argtuner-sdk.workspace = true

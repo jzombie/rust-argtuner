@@ -6,6 +6,6 @@
 
 #[deprecated(
     since = "0.1.2-alpha",
-    note = "argtuner-talkback-derive is deprecated; use `argtuner::talkback_args` instead"
+    note = "argtuner-talkback-derive is deprecated; use `argtuner_sdk::talkback_args` instead"
 )]
-pub use argtuner_derive::talkback_args;
+pub use argtuner_sdk::talkback_args;

@@ -19,6 +19,12 @@ pub const TUNING_MARKER_ENV: &str = "ARGTUNER_TUNING";
 /// Value set for [`TUNING_MARKER_ENV`] on every trial subprocess.
 pub const TUNING_MARKER_VALUE: &str = "1";
 
+/// Reserved template placeholder for the auto-injected per-trial id.
+pub const PLACEHOLDER_TRIAL_ID: &str = "trial_id";
+
+/// Reserved template placeholder for the auto-injected per-trial directory.
+pub const PLACEHOLDER_TRIAL_DIR: &str = "trial_dir";
+
 /// Namespaces for payload keys.
 pub const METRIC_NAMESPACE: &str = "metric";
 pub const MODEL_NAMESPACE: &str = "model";

@@ -43,13 +43,6 @@ pub mod test_support;
 #[cfg(feature = "cli")]
 pub use discover::find_projects;
 
-// SDK: declare your algorithm's parameters once as a plain struct with
-// `#[talkback_args]`; the derive generates a production clap CLI, the argtuner
-// command template, and a real search space. This is the only code present under
-// `--no-default-features`, keeping the SDK dependency-light for training apps.
-mod sdk;
-pub use sdk::*;
-
 #[cfg(feature = "cli")]
 pub use crate::command::template::{CommandTemplate, TemplateError};
 #[cfg(feature = "cli")]

@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 fn main() {
-    let trial_id: i64 = std::env::var(argtuner::ENV_TRIAL_ID)
+    let trial_id: i64 = std::env::var("ARGTUNER_TRIAL_ID")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
@@ -23,5 +23,5 @@ fn main() {
     let mut fields = BTreeMap::new();
     fields.insert("loss".to_string(), loss.to_string());
     fields.insert("latency_ms".to_string(), latency_ms.to_string());
-    let _ = argtuner::emit_event(argtuner_common::EventKind::EpochEnd, &fields);
+    let _ = argtuner_sdk::emit_event(argtuner_common::EventKind::EpochEnd, &fields);
 }

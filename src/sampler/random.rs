@@ -147,8 +147,11 @@ fn run_scheduled(
         }
 
         let trial_id = retry_trial_ids.get(&token_key).cloned();
-        let mut outcome =
-            objective.eval_vector_with_overrides_retryable(&trial.coords, &trial.overrides, trial_id);
+        let mut outcome = objective.eval_vector_with_overrides_retryable(
+            &trial.coords,
+            &trial.overrides,
+            trial_id,
+        );
         match outcome {
             Ok((scores, finished_trial_id)) => {
                 scheduler.record_result(trial.token, scores.clone());
@@ -287,7 +290,10 @@ fn load_completed_trials(
 /// configured `objective_names` order. Missing `score.<name>` entries are
 /// treated as worst (`INFINITY`); a row with none of them falls back to the
 /// legacy single-objective `score` column.
-fn load_trial_scores(row: &BTreeMap<String, String>, objective_names: &[String]) -> Option<Vec<f64>> {
+fn load_trial_scores(
+    row: &BTreeMap<String, String>,
+    objective_names: &[String],
+) -> Option<Vec<f64>> {
     let mut scores = Vec::with_capacity(objective_names.len());
     let mut found = false;
     for name in objective_names {
@@ -526,7 +532,9 @@ mod tests {
         let rows = check_store.load_rows().expect("rows");
         let mut trials: Vec<(usize, Vec<f64>)> = Vec::new();
         for row in &rows {
-            if row.get(FIELD_TRIAL_STATUS).and_then(|s| s.parse::<TrialStatus>().ok())
+            if row
+                .get(FIELD_TRIAL_STATUS)
+                .and_then(|s| s.parse::<TrialStatus>().ok())
                 != Some(TrialStatus::Ok)
             {
                 continue;

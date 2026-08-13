@@ -123,9 +123,7 @@ impl Tuner {
             match config.sampler.kind {
                 Sampler::Pso => {
                     if config.scheduler.kind != Scheduler::Fixed {
-                        return Err(
-                            "scheduler must be fixed when using the pso sampler".into()
-                        );
+                        return Err("scheduler must be fixed when using the pso sampler".into());
                     }
                     let ctrl = ControllableObjective::new(objective, stop_flag.inner());
                     run_pso(ctrl, config.sampler.pso.iters, config.sampler.pso.particles)?;

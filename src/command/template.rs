@@ -217,8 +217,7 @@ mod tests {
 
     #[test]
     fn strip_inactive_flags_removes_two_token_segment() {
-        let template =
-            CommandTemplate::new("run --lr {lr} --momentum {momentum} --steps {steps}");
+        let template = CommandTemplate::new("run --lr {lr} --momentum {momentum} --steps {steps}");
         let stripped = template
             .strip_inactive_flags(&["momentum".to_string()])
             .expect("stripped");

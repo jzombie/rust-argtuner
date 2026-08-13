@@ -88,9 +88,7 @@ pub fn crowding_distance(front: &[usize], normalized: &[Vec<f64>]) -> Vec<f64> {
     let dims = normalized.first().map_or(0, |v| v.len());
     for dim in 0..dims {
         let mut order: Vec<usize> = (0..front.len()).collect();
-        order.sort_by(|&a, &b| {
-            normalized[front[a]][dim].total_cmp(&normalized[front[b]][dim])
-        });
+        order.sort_by(|&a, &b| normalized[front[a]][dim].total_cmp(&normalized[front[b]][dim]));
         let min = normalized[front[order[0]]][dim];
         let max = normalized[front[order[order.len() - 1]]][dim];
         let span = max - min;
@@ -162,7 +160,11 @@ impl ParetoFront {
             }
         });
         // A trial dominated by a survivor is not part of the front.
-        if self.entries.iter().any(|entry| dominates(&entry.scores, &scores)) {
+        if self
+            .entries
+            .iter()
+            .any(|entry| dominates(&entry.scores, &scores))
+        {
             return removed;
         }
         self.entries.push(FrontEntry { trial_id, scores });
@@ -288,7 +290,10 @@ mod tests {
         front.update(3, vec![4.0, 0.0]);
         assert_eq!(front.len(), 3);
         let ids = front.trial_ids();
-        assert!(!ids.contains(&1), "interior point must be evicted, got {ids:?}");
+        assert!(
+            !ids.contains(&1),
+            "interior point must be evicted, got {ids:?}"
+        );
         assert!(ids.contains(&0) && ids.contains(&2) && ids.contains(&3));
     }
 

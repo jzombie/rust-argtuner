@@ -104,7 +104,7 @@ pub fn self_invoking_command() -> String {
 /// - `grandchild`: writes its pid to [`SELF_PID_FILE_ENV`], then advances a
 ///   heartbeat in [`SELF_HEARTBEAT_ENV`] until killed (liveness signal).
 /// - `child`: spawns a `grandchild` and waits for it (group-kill target).
-#[test]
+#[cfg_attr(test, test)]
 pub fn self_invoking_helper() {
     match std::env::var(SELF_ROLE_ENV).as_deref() {
         Ok("noop") => {}

@@ -2,7 +2,7 @@
 name = "argtuner-talkback"
 version.workspace = true
 edition.workspace = true
-description = "DEPRECATED: use the `argtuner` crate instead."
+description = "DEPRECATED: use the `argtuner-sdk` crate instead."
 repository.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -10,4 +10,4 @@ keywords = ["hyperparameter", "optimization", "machine-learning", "cli", "protoc
 categories = ["command-line-interface", "development-tools"]
 
 [dependencies]
-argtuner.workspace = true
+argtuner-sdk.workspace = true

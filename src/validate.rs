@@ -87,7 +87,10 @@ fn template_has_checkpoint_dir(template: &CommandTemplate, checkpoint_arg: &str)
 /// Conditional params (those with a `parent`) must be bound to a named `--flag`
 /// in the template; there is no flag token to strip for a positional
 /// placeholder.
-fn validate_conditional_flags(space: &SearchSpace, template: &CommandTemplate) -> Result<(), String> {
+fn validate_conditional_flags(
+    space: &SearchSpace,
+    template: &CommandTemplate,
+) -> Result<(), String> {
     let tokens = shell_words::split(template.as_str())
         .map_err(|err| format!("template tokenize failed: {err}"))?;
     for spec in space.params.iter().filter(|s| s.is_conditional()) {
@@ -221,8 +224,7 @@ mod tests {
 
     #[test]
     fn accepts_flag_bound_conditional_params() {
-        let template =
-            CommandTemplate::new("run --use {use} --momentum={momentum}".to_string());
+        let template = CommandTemplate::new("run --use {use} --momentum={momentum}".to_string());
         let space = crate::SearchSpace {
             params: vec![
                 crate::ParamSpec::Bool {

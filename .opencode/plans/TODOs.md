@@ -2,7 +2,6 @@
 
 Ongoing work items.
 
-- Re-extract SDK... do not allow large dependencies to be compiled into ML workloads.  The deprecated "talkback" crates should point to the SDK instead, and the SDK should be very lightweight, communicating with the argtuner via stdio.  Be sure to document that the extra overhead for using the SDK *per project* will be extremely low, and the SDK can be skipped entirely if critical performance is paramount.
 - Centralize configuration constants into constants.rs (i.e. DEFAULT_FRONT_CAPACITY)
 - Fix `run {project}` vs. `watch --project {project}` inconsistencies
 - Compare prior states before determining new state, to ensure new configs are

@@ -1415,7 +1415,11 @@ fn frontier_lines(trials: &[TrialRow], in_progress: bool) -> Vec<Line<'static>> 
                 format!("{name}={:.4}", raw.unwrap_or(*value))
             })
             .collect();
-        lines.push(Line::from(format!("Trial {}  {}", trial.trial_id, parts.join(" "))));
+        lines.push(Line::from(format!(
+            "Trial {}  {}",
+            trial.trial_id,
+            parts.join(" ")
+        )));
         for line in hparam_lines(trial) {
             lines.push(Line::from(line));
         }
@@ -2251,7 +2255,11 @@ mod frontier_tests {
                 ("score".to_string(), score.to_string()),
             ]),
         };
-        let trials = vec![mk(0, "0.5", "0.5"), mk(1, "0.9", "0.9"), mk(2, "0.2", "0.2")];
+        let trials = vec![
+            mk(0, "0.5", "0.5"),
+            mk(1, "0.9", "0.9"),
+            mk(2, "0.2", "0.2"),
+        ];
         let lines = frontier_lines(&trials, false);
         let text = lines
             .iter()

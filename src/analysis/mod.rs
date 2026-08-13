@@ -502,12 +502,16 @@ pub fn print_pareto_frontier(store: &TrialStore, objectives: &[crate::Objective]
     };
     let mut candidates = Vec::new();
     for row in rows {
-        if row.get(FIELD_TRIAL_STATUS).and_then(|s| s.parse::<TrialStatus>().ok())
+        if row
+            .get(FIELD_TRIAL_STATUS)
+            .and_then(|s| s.parse::<TrialStatus>().ok())
             != Some(TrialStatus::Ok)
         {
             continue;
         }
-        let Some(trial_id) = row.get(FIELD_TRIAL_ID).and_then(|v| v.parse::<usize>().ok())
+        let Some(trial_id) = row
+            .get(FIELD_TRIAL_ID)
+            .and_then(|v| v.parse::<usize>().ok())
         else {
             continue;
         };
@@ -536,7 +540,12 @@ pub fn print_pareto_frontier(store: &TrialStore, objectives: &[crate::Objective]
         let hparams: Vec<(String, String)> = row
             .iter()
             .filter(|(k, _)| k.starts_with(crate::HP_PREFIX))
-            .map(|(k, v)| (k.trim_start_matches(crate::HP_PREFIX).to_string(), v.clone()))
+            .map(|(k, v)| {
+                (
+                    k.trim_start_matches(crate::HP_PREFIX).to_string(),
+                    v.clone(),
+                )
+            })
             .collect();
         candidates.push(FrontierCandidate {
             trial_id,
