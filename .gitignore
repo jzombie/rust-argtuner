@@ -2,3 +2,4 @@
 **/artifacts/
 *.csv
 *.sqlite*
+.cargo/config.toml
