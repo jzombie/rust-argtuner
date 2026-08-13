@@ -101,6 +101,7 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         metrics_key,
         project_info_key,
         frontier_key,
+        last_activity: None,
         project_info_static,
         project_info_count: usize::MAX,
     };
@@ -129,6 +130,11 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
     output.exit()?;
     result
 }
+
+/// How long of silence (no step frames, no `running` rows) before the run is
+/// declared complete in the frontier/best-trials header. Also the hysteresis
+/// that bridges inter-trial scheduling gaps.
+const IN_PROGRESS_HOLD: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 struct TrialRow {
@@ -370,6 +376,9 @@ struct AppState {
     metrics_key: WindowKey,
     project_info_key: WindowKey,
     frontier_key: WindowKey,
+    /// Last time live activity (step frames or `running` rows) was observed;
+    /// drives the run-in-progress header with [`IN_PROGRESS_HOLD`] hysteresis.
+    last_activity: Option<std::time::Instant>,
     /// Static Project Info lines (paths + poll) built once at startup.
     project_info_static: Vec<Line<'static>>,
     /// Last trial count rendered into the Project Info window.
@@ -424,6 +433,14 @@ impl AppState {
             Some(AppRootComponent::Custom(AppComponent::Frontier(sv))) => Some(sv),
             _ => None,
         }
+    }
+
+    /// Whether a tuner run appears active: live activity was observed and the
+    /// last observation is within [`IN_PROGRESS_HOLD`]. The hold doubles as
+    /// hysteresis so inter-trial gaps don't flicker the header.
+    fn run_in_progress(&self) -> bool {
+        self.last_activity
+            .is_some_and(|last| last.elapsed() < IN_PROGRESS_HOLD)
     }
 
     fn apply_chart_mode(&mut self) {
@@ -549,10 +566,20 @@ impl AppState {
             self.charts_key,
             charts_window_title(mode, cv, cs, ml, charts_focused, trial_id),
         );
+        wm.set_window_title(
+            self.frontier_key,
+            if is_multi_objective(&self.trials) {
+                "Pareto Frontier"
+            } else {
+                "Best Trials"
+            },
+        );
     }
 
     fn refresh_trials(&mut self) {
+        let mut saw_activity = false;
         while let Some(line) = self.step_subscriber.try_recv() {
+            saw_activity = true;
             if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line)
                 && let (Some(trial_id), Some(steps)) = (
                     msg.get("trial_id").and_then(|v| v.as_i64()),
@@ -591,11 +618,29 @@ impl AppState {
                 for (trial_id, rows) in step_rows {
                     self.step_rows.entry(trial_id).or_default().extend(rows);
                 }
+                if self.trials.iter().any(|t| t.status == "running")
+                    || self
+                        .epoch_rows
+                        .values()
+                        .flatten()
+                        .any(|r| r.status == "running")
+                    || self
+                        .step_rows
+                        .values()
+                        .flatten()
+                        .any(|r| r.status == "running")
+                {
+                    saw_activity = true;
+                }
+                if saw_activity {
+                    self.last_activity = Some(std::time::Instant::now());
+                }
+                let in_progress = self.run_in_progress();
                 let items = build_trial_items(&self.trials);
                 if let Some(sv) = self.trials_sv() {
                     sv.content.borrow_mut().update_items(items);
                 }
-                let frontier = frontier_lines(&self.trials);
+                let frontier = frontier_lines(&self.trials, in_progress);
                 if let Some(sv) = self.frontier_sv() {
                     sv.content.borrow_mut().set_text(Text::from(frontier));
                 }
@@ -1174,8 +1219,21 @@ fn metric_value_text(trial: &TrialRow) -> Option<String> {
     metric_for_trial(trial).map(|(label, value)| format!("{label}={value:.4}"))
 }
 
+/// Whether any trial carries per-objective `score.<name>` fields, i.e. this is
+/// a multi-objective run (single-objective runs persist only `score`).
+fn is_multi_objective(trials: &[TrialRow]) -> bool {
+    trials
+        .iter()
+        .any(|t| t.fields.keys().any(|k| k.starts_with("score.")))
+}
+
 fn build_trial_items(trials: &[TrialRow]) -> Vec<String> {
-    let nd: std::collections::HashSet<i64> = nondominated_trial_ids(trials);
+    let multi = is_multi_objective(trials);
+    let nd: std::collections::HashSet<i64> = if multi {
+        nondominated_trial_ids(trials)
+    } else {
+        std::collections::HashSet::new()
+    };
     trials
         .iter()
         .map(|trial| {
@@ -1194,7 +1252,8 @@ fn build_trial_items(trials: &[TrialRow]) -> Vec<String> {
 }
 
 /// Trial ids on the non-dominated front, computed from the signed `score.<name>`
-/// fields (fallback `score`). Only completed `ok` trials are eligible.
+/// fields. Only completed `ok` trials are eligible. Meaningful for
+/// multi-objective runs only.
 fn nondominated_trial_ids(trials: &[TrialRow]) -> std::collections::HashSet<i64> {
     let mut vectors: Vec<(i64, Vec<f64>)> = Vec::new();
     for trial in trials {
@@ -1247,37 +1306,81 @@ fn trial_signed_scores(trial: &TrialRow) -> Option<Vec<f64>> {
     )
 }
 
-/// Lines for the Pareto Frontier panel: the non-dominated completed trials
-/// with their raw metric vectors and hyperparameters.
-fn frontier_lines(trials: &[TrialRow]) -> Vec<Line<'static>> {
+fn hparam_lines(trial: &TrialRow) -> Vec<String> {
+    let mut hparams: Vec<String> = trial
+        .fields
+        .iter()
+        .filter(|(k, _)| k.starts_with("hp."))
+        .map(|(k, v)| format!("    {:<20} {}", k.trim_start_matches("hp."), v))
+        .collect();
+    if hparams.is_empty() {
+        return hparams;
+    }
+    let mut out = vec!["  Hyperparameters:".to_string()];
+    out.append(&mut hparams);
+    out
+}
+
+/// Lines for the adaptive frontier/best-trials panel: a run-state header, then
+/// the non-dominated frontier (multi-objective) or the top trials by score
+/// (single-objective), mirroring the end-of-run summary live.
+fn frontier_lines(trials: &[TrialRow], in_progress: bool) -> Vec<Line<'static>> {
+    let status = if in_progress {
+        "Run in progress — results are live"
+    } else {
+        "Run complete — final results"
+    };
+    let mut lines = vec![Line::from(status)];
     let ok: Vec<&TrialRow> = trials.iter().filter(|t| t.status == "ok").collect();
     if ok.is_empty() {
-        return vec![Line::from("Pareto frontier: (no completed trials yet)")];
+        lines.push(Line::from("(no completed trials yet)"));
+        return lines;
+    }
+    if !is_multi_objective(trials) {
+        // Single-objective: top trials by the stored score (lower is better),
+        // matching the CLI's end-of-run `print_top_trials` table.
+        let mut ranked: Vec<(&TrialRow, f64)> = ok
+            .iter()
+            .filter_map(|t| {
+                t.fields
+                    .get("score")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .map(|score| (*t, score))
+            })
+            .collect();
+        ranked.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let top = ranked.len().min(5);
+        lines.push(Line::from(format!(
+            "Best trials (top {top} of {}):",
+            ok.len()
+        )));
+        for (trial, score) in ranked.into_iter().take(top) {
+            let metric = trial
+                .fields
+                .get("metric")
+                .and_then(|name| trial.fields.get(&format!("metric.{name}")))
+                .and_then(|v| v.parse::<f64>().ok());
+            let metric_part = metric
+                .map(|m| format!("  metric={m:.4}"))
+                .unwrap_or_default();
+            lines.push(Line::from(format!(
+                "Trial {}  score={score:.4}{metric_part}",
+                trial.trial_id
+            )));
+            for line in hparam_lines(trial) {
+                lines.push(Line::from(line));
+            }
+            lines.push(Line::from(""));
+        }
+        return lines;
     }
     let vectors: Vec<(&TrialRow, Vec<f64>)> = ok
         .iter()
         .filter_map(|t| trial_signed_scores(t).map(|s| (*t, s)))
         .collect();
     if vectors.is_empty() {
-        return vec![Line::from("Pareto frontier: none")];
-    }
-    let multi = vectors.iter().any(|(_, s)| s.len() > 1);
-    if !multi {
-        let mut best = &vectors[0].0;
-        let mut best_score = vectors[0].1[0];
-        for (trial, scores) in &vectors[1..] {
-            if scores[0] < best_score {
-                best = trial;
-                best_score = scores[0];
-            }
-        }
-        return vec![
-            Line::from("Pareto frontier: (single-objective run)"),
-            Line::from(format!(
-                "Trial {}  score={best_score:.4}",
-                best.trial_id
-            )),
-        ];
+        lines.push(Line::from("Pareto frontier: none"));
+        return lines;
     }
     let normalized: Vec<Vec<f64>> = vectors.iter().map(|(_, s)| s.clone()).collect();
     let fronts = crate::sampler::pareto::fast_nondominated_sort(&normalized);
@@ -1294,11 +1397,11 @@ fn frontier_lines(trials: &[TrialRow]) -> Vec<Line<'static>> {
         keys.sort();
         keys
     };
-    let mut lines = vec![Line::from(format!(
+    lines.push(Line::from(format!(
         "Pareto frontier ({} of {} trials):",
         front.len(),
         vectors.len()
-    ))];
+    )));
     for idx in front {
         let (trial, signed) = &vectors[idx];
         let parts: Vec<String> = labels
@@ -1313,23 +1416,8 @@ fn frontier_lines(trials: &[TrialRow]) -> Vec<Line<'static>> {
             })
             .collect();
         lines.push(Line::from(format!("Trial {}  {}", trial.trial_id, parts.join(" "))));
-        let hparams: Vec<String> = trial
-            .fields
-            .iter()
-            .filter(|(k, _)| k.starts_with("hp."))
-            .map(|(k, v)| {
-                format!(
-                    "    {:<20} {}",
-                    k.trim_start_matches("hp."),
-                    v
-                )
-            })
-            .collect();
-        if !hparams.is_empty() {
-            lines.push(Line::from("  Hyperparameters:"));
-            for line in hparams {
-                lines.push(Line::from(line));
-            }
+        for line in hparam_lines(trial) {
+            lines.push(Line::from(line));
         }
         lines.push(Line::from(""));
     }
@@ -2121,12 +2209,13 @@ mod frontier_tests {
     #[test]
     fn frontier_lines_list_only_non_dominated() {
         let trials = vec![trial(0, "1", "3"), trial(1, "2", "1"), trial(2, "3", "4")];
-        let lines = frontier_lines(&trials);
+        let lines = frontier_lines(&trials, false);
         let text = lines
             .iter()
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
             .join("\n");
+        assert!(text.contains("Run complete — final results"), "{text}");
         assert!(text.contains("Pareto frontier (2 of 3 trials)"), "{text}");
         assert!(text.contains("Trial 0"), "{text}");
         assert!(text.contains("Trial 1"), "{text}");
@@ -2135,11 +2224,69 @@ mod frontier_tests {
     }
 
     #[test]
-    fn build_trial_items_tags_non_dominated() {
-        let trials = vec![trial(0, "1", "3"), trial(1, "2", "1"), trial(2, "3", "4")];
-        let items = build_trial_items(&trials);
+    fn frontier_lines_marks_run_in_progress() {
+        let mut trials = vec![trial(0, "1", "3"), trial(1, "2", "1")];
+        trials[1].status = "running".to_string();
+        let lines = frontier_lines(&trials, true);
+        let text = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Run in progress"), "{text}");
+        assert!(text.contains("Pareto frontier (1 of 1 trials)"), "{text}");
+    }
+
+    #[test]
+    fn frontier_lines_single_objective_lists_best_trials() {
+        let mk = |id: i64, score: &str, metric: &str| TrialRow {
+            trial_id: id,
+            status: "ok".to_string(),
+            elapsed_ms: 0,
+            error: None,
+            fields: BTreeMap::from([
+                ("hp.x".to_string(), id.to_string()),
+                ("metric".to_string(), "loss".to_string()),
+                ("metric.loss".to_string(), metric.to_string()),
+                ("score".to_string(), score.to_string()),
+            ]),
+        };
+        let trials = vec![mk(0, "0.5", "0.5"), mk(1, "0.9", "0.9"), mk(2, "0.2", "0.2")];
+        let lines = frontier_lines(&trials, false);
+        let text = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Best trials (top 3 of 3)"), "{text}");
+        // Trial 2 has the best (lowest) score -> listed first.
+        assert!(text.starts_with("Run complete"), "{text}");
+        let first_trial_idx = text.find("Trial").expect("has a trial line");
+        assert!(
+            text[first_trial_idx..].starts_with("Trial 2"),
+            "best trial first: {text}"
+        );
+        assert!(text.contains("score=0.2000"), "{text}");
+        assert!(text.contains("Hyperparameters"), "{text}");
+    }
+
+    #[test]
+    fn build_trial_items_tags_non_dominated_only_in_multi_objective() {
+        let multi = vec![trial(0, "1", "3"), trial(1, "2", "1"), trial(2, "3", "4")];
+        let items = build_trial_items(&multi);
         assert!(items[0].contains("[nd]"), "{}", items[0]);
         assert!(items[1].contains("[nd]"), "{}", items[1]);
         assert!(!items[2].contains("[nd]"), "{}", items[2]);
+
+        // Single-objective rows (only `score`) must not be tagged `[nd]`.
+        let single = vec![TrialRow {
+            trial_id: 0,
+            status: "ok".to_string(),
+            elapsed_ms: 0,
+            error: None,
+            fields: BTreeMap::from([("score".to_string(), "0.5".to_string())]),
+        }];
+        let items = build_trial_items(&single);
+        assert!(!items[0].contains("[nd]"), "{}", items[0]);
     }
 }

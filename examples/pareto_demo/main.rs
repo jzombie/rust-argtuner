@@ -35,6 +35,7 @@ fn main() {
         let mut fields = BTreeMap::new();
         fields.insert("loss".to_string(), format!("{loss:.6}"));
         fields.insert("latency_ms".to_string(), format!("{latency_ms:.2}"));
+        fields.insert("epoch".to_string(), epoch.to_string());
         let _ = argtuner::emit_epoch_end(&fields);
         std::thread::sleep(std::time::Duration::from_millis(60));
     }
