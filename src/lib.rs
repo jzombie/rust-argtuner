@@ -54,9 +54,9 @@ pub use sdk::*;
 pub use crate::command::template::{CommandTemplate, TemplateError};
 #[cfg(feature = "cli")]
 pub use project::{
-    FixedSchedulerConfig, Goal, Project, ProjectConfig, ProjectSettings, Pruner, PsoSamplerConfig,
-    RandomSamplerConfig, Sampler, SamplerConfig, SchedulerConfig, SuccessiveHalvingSchedulerConfig,
-    UnifiedConfig, format_injected_env,
+    FixedSchedulerConfig, Goal, Objective, Project, ProjectConfig, ProjectSettings, Pruner,
+    PsoSamplerConfig, RandomSamplerConfig, Sampler, SamplerConfig, SchedulerConfig,
+    SuccessiveHalvingSchedulerConfig, UnifiedConfig, format_injected_env,
 };
 #[cfg(feature = "cli")]
 pub use scheduler::{

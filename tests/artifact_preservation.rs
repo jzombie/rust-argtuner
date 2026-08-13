@@ -32,6 +32,7 @@ fn engine_preserves_existing_artifacts_on_resume() {
         pruner: argtuner::Pruner::None,
         inject_trial_placeholders: true,
         checkpoint_arg: None,
+        objectives: vec![],
     };
     let sampler = SamplerConfig {
         kind: Sampler::Random,

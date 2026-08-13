@@ -41,6 +41,7 @@ fn tuner_skips_completed_trials() {
         pruner: argtuner::Pruner::None,
         inject_trial_placeholders: true,
         checkpoint_arg: None,
+        objectives: vec![],
     };
     let sampler = SamplerConfig {
         kind: Sampler::Random,
@@ -126,6 +127,7 @@ fn resume_aborts_on_config_change() {
         pruner: argtuner::Pruner::None,
         inject_trial_placeholders: true,
         checkpoint_arg: None,
+        objectives: vec![],
     };
     let sampler = SamplerConfig {
         kind: Sampler::Random,
@@ -195,6 +197,7 @@ fn resume_allows_config_override_with_flag() {
         pruner: argtuner::Pruner::None,
         inject_trial_placeholders: true,
         checkpoint_arg: None,
+        objectives: vec![],
     };
     let sampler = SamplerConfig {
         kind: Sampler::Random,

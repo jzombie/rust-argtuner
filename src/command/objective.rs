@@ -37,6 +37,21 @@ enum EvalError {
     Other(String),
 }
 
+/// Everything a trial run extracted from the subprocess payload.
+struct Extracted {
+    /// Primary objective's normalized score (backward-compatible scalar).
+    score: f64,
+    /// All objectives' normalized scores, in declaration order.
+    scores: Vec<f64>,
+    /// Raw metrics, in declaration order.
+    metrics: Vec<f64>,
+    primary_index: usize,
+    extra_fields: BTreeMap<String, String>,
+    epoch_results: Vec<BTreeMap<String, String>>,
+    epoch_fields: Vec<BTreeMap<String, String>>,
+    step_fields: Vec<BTreeMap<String, String>>,
+}
+
 pub struct CommandObjective {
     store: TrialStore,
     template: CommandTemplate,
@@ -44,6 +59,7 @@ pub struct CommandObjective {
     artifacts_dir: PathBuf,
     metric_key: String,
     goal: Goal,
+    objectives: Vec<crate::Objective>,
     inject_trial_placeholders: bool,
     next_id: std::sync::Mutex<usize>,
     best_score: std::sync::Mutex<Option<f64>>,
@@ -70,12 +86,50 @@ impl CommandObjective {
             artifacts_dir,
             metric_key,
             goal,
+            objectives: Vec::new(),
             inject_trial_placeholders,
             next_id: std::sync::Mutex::new(next_id),
             best_score: std::sync::Mutex::new(None),
             run_timeout: None,
             stop_flag: None,
         }
+    }
+
+    /// Attach the declared objectives. When empty (single-objective runs),
+    /// `metric_key` + `goal` act as the sole primary objective.
+    pub fn with_objectives(mut self, objectives: Vec<crate::Objective>) -> Self {
+        self.objectives = objectives;
+        self
+    }
+
+    /// The effective objectives: the declared list, or the legacy single
+    /// `{metric_key, goal, primary}` fallback.
+    fn objectives_effective(&self) -> Vec<crate::Objective> {
+        if self.objectives.is_empty() {
+            vec![crate::Objective {
+                name: self.metric_key.clone(),
+                goal: self.goal,
+                primary: true,
+            }]
+        } else {
+            self.objectives.clone()
+        }
+    }
+
+    /// Index of the primary objective within the effective objectives list.
+    pub fn primary_index(&self) -> usize {
+        self.objectives_effective()
+            .iter()
+            .position(|o| o.primary)
+            .unwrap_or(0)
+    }
+
+    /// Effective objective names, in declaration order.
+    pub fn objective_names(&self) -> Vec<String> {
+        self.objectives_effective()
+            .into_iter()
+            .map(|o| o.name)
+            .collect()
     }
 
     /// Attach per-trial subprocess supervision: a hard timeout (the command's
@@ -103,6 +157,7 @@ impl CommandObjective {
     ) -> Result<f64, String> {
         let trial_id = self.next_trial_id();
         self.eval_with_overrides_internal(coords, overrides, true, trial_id)
+            .map(|(score, _)| score)
     }
 
     pub fn eval_with_overrides_retryable(
@@ -113,7 +168,23 @@ impl CommandObjective {
     ) -> Result<(f64, usize), (String, usize)> {
         let trial_id = trial_id.unwrap_or_else(|| self.next_trial_id());
         match self.eval_with_overrides_internal(coords, overrides, true, trial_id) {
-            Ok(score) => Ok((score, trial_id)),
+            Ok((score, _)) => Ok((score, trial_id)),
+            Err(err) => Err((err, trial_id)),
+        }
+    }
+
+    /// Like `eval_with_overrides_retryable` but returns the full normalized
+    /// score vector (one entry per objective, lower is better) for
+    /// multi-objective samplers.
+    pub fn eval_vector_with_overrides_retryable(
+        &self,
+        coords: &[f64],
+        overrides: &TrialOverrides,
+        trial_id: Option<usize>,
+    ) -> Result<(Vec<f64>, usize), (String, usize)> {
+        let trial_id = trial_id.unwrap_or_else(|| self.next_trial_id());
+        match self.eval_with_overrides_internal(coords, overrides, true, trial_id) {
+            Ok((_, scores)) => Ok((scores, trial_id)),
             Err(err) => Err((err, trial_id)),
         }
     }
@@ -124,7 +195,7 @@ impl CommandObjective {
         overrides: &TrialOverrides,
         persist_invalid_config: bool,
         trial_id: usize,
-    ) -> Result<f64, String> {
+    ) -> Result<(f64, Vec<f64>), String> {
         // Load existing fields first to check for validity
         let existing_fields = match self.store.load_fields(trial_id) {
             Ok(Some(fields)) => Some(fields),
@@ -340,38 +411,73 @@ impl CommandObjective {
                     fields: extra_fields,
                 });
             }
-            let metric = payload.get_metric(&self.metric_key).map_err(|err| {
-                EvalError::Other(format!(
-                    "{err} (stdout tail: {:?})",
-                    tail_lines(&output.stdout, 3)
-                ))
-            })?;
-            let score = match self.goal {
-                Goal::Min => metric,
-                Goal::Max => -metric,
-            };
+            let objectives = self.objectives_effective();
+            let primary_index = objectives.iter().position(|o| o.primary).unwrap_or(0);
+            let mut metrics = Vec::with_capacity(objectives.len());
+            for objective in &objectives {
+                let metric = payload.get_metric(&objective.name).map_err(|err| {
+                    EvalError::Other(format!(
+                        "missing objective metric: {} ({err})",
+                        objective.name
+                    ))
+                })?;
+                metrics.push(metric);
+            }
+            let scores: Vec<f64> = objectives
+                .iter()
+                .zip(metrics.iter())
+                .map(|(objective, metric)| match objective.goal {
+                    Goal::Min => *metric,
+                    Goal::Max => -*metric,
+                })
+                .collect();
+            let score = scores[primary_index];
             let epoch_results = payload.epoch_results.clone();
             let epoch_fields = payload.epoch_fields();
             let step_fields = payload.step_fields();
-            Ok((
-                metric,
+            Ok(Extracted {
                 score,
+                scores,
+                metrics,
+                primary_index,
                 extra_fields,
                 epoch_results,
                 epoch_fields,
                 step_fields,
-            ))
+            })
         })();
         match result {
-            Ok((metric, score, extra_fields, epoch_results, epoch_fields, step_fields)) => {
+            Ok(Extracted {
+                score,
+                scores,
+                metrics,
+                primary_index,
+                extra_fields,
+                epoch_results,
+                epoch_fields,
+                step_fields,
+            }) => {
                 let base_fields = rendered.fields;
+                let objectives = self.objectives_effective();
+                let multi = objectives.len() > 1;
                 let mut out_fields = base_fields.clone();
                 for (key, value) in extra_fields {
                     out_fields.entry(key).or_insert(value);
                 }
-                let metric_field = crate::trial::metric_value_field(&self.metric_key);
-                out_fields.entry(metric_field).or_insert(metric.to_string());
-                out_fields.insert(FIELD_METRIC.to_string(), self.metric_key.clone());
+                for (i, objective) in objectives.iter().enumerate() {
+                    let metric_field = crate::trial::metric_value_field(&objective.name);
+                    out_fields
+                        .entry(metric_field)
+                        .or_insert(metrics[i].to_string());
+                    if multi {
+                        out_fields
+                            .insert(format!("score.{}", objective.name), scores[i].to_string());
+                    }
+                }
+                out_fields.insert(
+                    FIELD_METRIC.to_string(),
+                    objectives[primary_index].name.clone(),
+                );
                 out_fields.insert(FIELD_SCORE.to_string(), score.to_string());
                 crate::trial::enforce_hp_immutability(existing_fields.as_ref(), &mut out_fields);
                 // Cache step results in memory for this trial
@@ -394,21 +500,37 @@ impl CommandObjective {
                 for (epoch_result, epoch_row_fields) in
                     epoch_results.iter().zip(epoch_fields.iter())
                 {
-                    let epoch_metric = metric_from_map(epoch_result, &self.metric_key)
+                    let epoch_metrics = metrics_from_map(epoch_result, &objectives)
                         .map_err(|err| format!("epoch metric parse failed: {err}"))?;
-                    let epoch_score = match self.goal {
-                        Goal::Min => epoch_metric,
-                        Goal::Max => -epoch_metric,
-                    };
+                    let epoch_scores: Vec<f64> = objectives
+                        .iter()
+                        .zip(epoch_metrics.iter())
+                        .map(|(objective, metric)| match objective.goal {
+                            Goal::Min => *metric,
+                            Goal::Max => -*metric,
+                        })
+                        .collect();
+                    let epoch_score = epoch_scores[primary_index];
                     let mut epoch_fields = base_fields.clone();
                     for (key, value) in epoch_row_fields {
                         epoch_fields.entry(key.clone()).or_insert(value.clone());
                     }
-                    let metric_field = crate::trial::metric_value_field(&self.metric_key);
-                    epoch_fields
-                        .entry(metric_field)
-                        .or_insert(epoch_metric.to_string());
-                    epoch_fields.insert(FIELD_METRIC.to_string(), self.metric_key.clone());
+                    for (i, objective) in objectives.iter().enumerate() {
+                        let metric_field = crate::trial::metric_value_field(&objective.name);
+                        epoch_fields
+                            .entry(metric_field)
+                            .or_insert(epoch_metrics[i].to_string());
+                        if multi {
+                            epoch_fields.insert(
+                                format!("score.{}", objective.name),
+                                epoch_scores[i].to_string(),
+                            );
+                        }
+                    }
+                    epoch_fields.insert(
+                        FIELD_METRIC.to_string(),
+                        objectives[primary_index].name.clone(),
+                    );
                     epoch_fields.insert(FIELD_SCORE.to_string(), epoch_score.to_string());
                     crate::trial::enforce_hp_immutability(
                         existing_fields.as_ref(),
@@ -441,11 +563,16 @@ impl CommandObjective {
                         fields: out_fields,
                     })
                     .map_err(|err| format!("trial log update failed: {err}"))?;
-                if let Ok(mut best) = self.best_score.lock() {
+                if !multi
+                    && let Ok(mut best) = self.best_score.lock()
+                {
                     let is_best = best.is_none_or(|value| score < value);
                     if is_best {
                         *best = Some(score);
-                        println!("new best: trial={trial_id} metric={metric:.6} score={score:.6}");
+                        println!(
+                            "new best: trial={trial_id} metric={:.6} score={score:.6}",
+                            metrics[primary_index]
+                        );
                     }
                 }
                 eprintln!(
@@ -453,9 +580,26 @@ impl CommandObjective {
                     LineEnding::from_current_platform().as_str(),
                     trial_id
                 );
-                eprintln!("Metric: {}  Score: {:.6}", metric, score);
+                if multi {
+                    let parts: Vec<String> = objectives
+                        .iter()
+                        .zip(metrics.iter())
+                        .map(|(objective, metric)| format!("{}={metric:.6}", objective.name))
+                        .collect();
+                    eprintln!(
+                        "Metrics: {}  Score(primary={}): {:.6}",
+                        parts.join(" "),
+                        objectives[primary_index].name,
+                        score
+                    );
+                } else {
+                    eprintln!(
+                        "Metric: {}  Score: {:.6}",
+                        metrics[primary_index], score
+                    );
+                }
                 let _ = std::io::stderr().flush();
-                Ok(score)
+                Ok((score, scores))
             }
             Err(err) => {
                 let mut extra_fields = BTreeMap::new();
@@ -531,6 +675,22 @@ fn metric_from_map(map: &BTreeMap<String, String>, metric_key: &str) -> Result<f
     }
     text.parse::<f64>()
         .map_err(|_| format!("result key '{metric_key}' not numeric"))
+}
+
+/// Extract every objective's raw metric from an epoch/result map, in
+/// declaration order.
+fn metrics_from_map(
+    map: &BTreeMap<String, String>,
+    objectives: &[crate::Objective],
+) -> Result<Vec<f64>, String> {
+    let mut out = Vec::with_capacity(objectives.len());
+    for objective in objectives {
+        let metric = metric_from_map(map, &objective.name).map_err(|err| {
+            format!("missing objective metric: {} ({err})", objective.name)
+        })?;
+        out.push(metric);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1315,5 +1475,116 @@ mod tests {
             matches!(result, Err((ref err, _)) if err.starts_with(DUPLICATE_CONFIG_PREFIX)),
             "expected duplicate config error, got: {result:?}"
         );
+    }
+
+    #[test]
+    fn objective_rejects_missing_objective_metric() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = crate::CommandTemplate::new(emit_result_command());
+        let store = crate::TrialStore::new(
+            dir.path().join(crate::TRIALS_CSV_FILENAME),
+            template.clone(),
+        );
+        let space = crate::SearchSpace { params: vec![] };
+        let objectives = vec![
+            crate::Objective {
+                name: "loss".to_string(),
+                goal: crate::Goal::Min,
+                primary: true,
+            },
+            crate::Objective {
+                name: "latency_ms".to_string(),
+                goal: crate::Goal::Min,
+                primary: false,
+            },
+        ];
+        let objective = CommandObjective::new(
+            store,
+            template,
+            space,
+            dir.path().join("artifacts"),
+            "metric".to_string(),
+            crate::Goal::Min,
+            true,
+            0,
+        )
+        .with_objectives(objectives);
+        let err = objective.eval(&[]).expect_err("missing objective metric");
+        assert!(
+            err.contains("missing objective metric: loss"),
+            "error should name the missing metric: {err}"
+        );
+        let fields = objective
+            .store()
+            .load_fields(0)
+            .expect("load fields")
+            .expect("row");
+        assert_eq!(
+            fields.get(crate::FIELD_TRIAL_STATUS),
+            Some(&"error".to_string())
+        );
+        assert!(
+            fields
+                .get(crate::FIELD_TRIAL_ERROR)
+                .is_some_and(|e| e.contains("missing objective metric"))
+        );
+    }
+
+    #[test]
+    fn objective_evaluates_two_objectives_and_persists_scores() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = crate::CommandTemplate::new(crate::test_support::bin_command(
+            "mock_emit_two_metrics",
+        ));
+        let store = crate::TrialStore::new(
+            dir.path().join(crate::TRIALS_CSV_FILENAME),
+            template.clone(),
+        );
+        let space = crate::SearchSpace { params: vec![] };
+        let objectives = vec![
+            crate::Objective {
+                name: "loss".to_string(),
+                goal: crate::Goal::Min,
+                primary: true,
+            },
+            crate::Objective {
+                name: "latency_ms".to_string(),
+                goal: crate::Goal::Max,
+                primary: false,
+            },
+        ];
+        let objective = CommandObjective::new(
+            store,
+            template,
+            space,
+            dir.path().join("artifacts"),
+            "loss".to_string(),
+            crate::Goal::Min,
+            true,
+            0,
+        )
+        .with_objectives(objectives);
+        let (scores, _trial_id) = objective
+            .eval_vector_with_overrides_retryable(&[], &TrialOverrides::default(), Some(0))
+            .expect("eval");
+        // mock_emit_two_metrics trial 0 -> loss=1 (min), latency_ms=3 (max -> -3).
+        assert_eq!(scores, vec![1.0, -3.0]);
+        let fields = objective
+            .store()
+            .load_fields(0)
+            .expect("load fields")
+            .expect("row");
+        assert_eq!(fields.get("metric.loss").map(String::as_str), Some("1"));
+        assert_eq!(
+            fields.get("metric.latency_ms").map(String::as_str),
+            Some("3")
+        );
+        assert_eq!(fields.get("score.loss").map(String::as_str), Some("1"));
+        assert_eq!(
+            fields.get("score.latency_ms").map(String::as_str),
+            Some("-3")
+        );
+        assert_eq!(fields.get(FIELD_SCORE).map(String::as_str), Some("1"));
+        assert_eq!(fields.get(FIELD_METRIC).map(String::as_str), Some("loss"));
     }
 }

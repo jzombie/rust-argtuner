@@ -1134,6 +1134,24 @@ fn metric_for_trial(trial: &TrialRow) -> Option<(String, f64)> {
 }
 
 fn metric_value_text(trial: &TrialRow) -> Option<String> {
+    // Multi-objective: show every numeric metric.* value; otherwise the
+    // resolved primary metric.
+    let mut metrics: Vec<(String, f64)> = trial
+        .fields
+        .iter()
+        .filter(|(k, _)| k.starts_with("metric.") && k.as_str() != "metric")
+        .filter_map(|(k, v)| v.parse::<f64>().ok().map(|value| (k.clone(), value)))
+        .collect();
+    metrics.sort_by(|a, b| a.0.cmp(&b.0));
+    if !metrics.is_empty() {
+        return Some(
+            metrics
+                .iter()
+                .map(|(label, value)| format!("{label}={value:.4}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
     metric_for_trial(trial).map(|(label, value)| format!("{label}={value:.4}"))
 }
 

@@ -25,6 +25,22 @@ pub struct ProjectSettings {
     pub inject_trial_placeholders: bool,
     #[serde(default)]
     pub checkpoint_arg: Option<String>,
+    #[serde(default)]
+    pub objectives: Vec<Objective>,
+}
+
+/// One objective of a multi-objective run. `primary` selects the deterministic
+/// objective used for scalar fallback columns (`score`/`metric`) and for
+/// successive-halving rung truncation; exactly one objective must be primary
+/// whenever `objectives` is non-empty.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Objective {
+    pub name: String,
+    #[serde(default = "default_goal")] // TODO: Is a hardcoded "default_goal" the best approach?
+    pub goal: Goal,
+    #[serde(default)]
+    pub primary: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +52,7 @@ pub struct ProjectConfig {
     pub pruner: Pruner,
     pub inject_trial_placeholders: bool,
     pub checkpoint_arg: Option<String>,
+    pub objectives: Vec<Objective>,
 }
 
 impl ProjectConfig {
@@ -52,7 +69,18 @@ impl ProjectConfig {
             pruner: project.pruner,
             inject_trial_placeholders: project.inject_trial_placeholders,
             checkpoint_arg: project.checkpoint_arg,
+            objectives: project.objectives,
         }
+    }
+
+    /// Index of the primary objective, or `0` when none is configured.
+    pub fn primary_objective_index(&self) -> usize {
+        self.objectives.iter().position(|o| o.primary).unwrap_or(0)
+    }
+
+    /// Whether this run is multi-objective (more than one declared objective).
+    pub fn is_multi_objective(&self) -> bool {
+        self.objectives.len() > 1
     }
 }
 

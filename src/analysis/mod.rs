@@ -479,3 +479,100 @@ fn format_range_label(min_v: f64, max_v: f64) -> String {
         format!("{:.4}..{:.4}", min_v, max_v)
     }
 }
+
+struct FrontierCandidate {
+    trial_id: usize,
+    signed: Vec<f64>,
+    display: Vec<f64>,
+    hparams: Vec<(String, String)>,
+}
+
+/// Print the non-dominated Pareto frontier of completed trials: each
+/// non-dominated trial with its objective vector. Dominance is computed on the
+/// stored signed (`score.<name>`) vectors; the displayed values are the raw
+/// `metric.<name>` values when present.
+pub fn print_pareto_frontier(store: &TrialStore, objectives: &[crate::Objective]) {
+    let lf = LineEnding::from_current_platform().as_str();
+    let rows = match store.load_rows() {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("failed to load trials for frontier: {e}");
+            return;
+        }
+    };
+    let mut candidates = Vec::new();
+    for row in rows {
+        if row.get(FIELD_TRIAL_STATUS).and_then(|s| s.parse::<TrialStatus>().ok())
+            != Some(TrialStatus::Ok)
+        {
+            continue;
+        }
+        let Some(trial_id) = row.get(FIELD_TRIAL_ID).and_then(|v| v.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        let mut signed = Vec::with_capacity(objectives.len());
+        let mut display = Vec::with_capacity(objectives.len());
+        let mut complete = true;
+        for objective in objectives {
+            let Some(value) = row
+                .get(&format!("score.{}", objective.name))
+                .and_then(|v| v.parse::<f64>().ok())
+                .or_else(|| row.get(FIELD_SCORE).and_then(|v| v.parse::<f64>().ok()))
+            else {
+                complete = false;
+                break;
+            };
+            signed.push(value);
+            display.push(
+                row.get(&metric_value_field(&objective.name))
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(value),
+            );
+        }
+        if !complete {
+            continue;
+        }
+        let hparams: Vec<(String, String)> = row
+            .iter()
+            .filter(|(k, _)| k.starts_with(crate::HP_PREFIX))
+            .map(|(k, v)| (k.trim_start_matches(crate::HP_PREFIX).to_string(), v.clone()))
+            .collect();
+        candidates.push(FrontierCandidate {
+            trial_id,
+            signed,
+            display,
+            hparams,
+        });
+    }
+    if candidates.is_empty() {
+        println!("{lf}Pareto frontier: none");
+        return;
+    }
+    let normalized: Vec<Vec<f64>> = candidates.iter().map(|c| c.signed.clone()).collect();
+    let fronts = crate::sampler::pareto::fast_nondominated_sort(&normalized);
+    let front = fronts.first().cloned().unwrap_or_default();
+    println!(
+        "{lf}Pareto frontier ({} of {} trials):",
+        front.len(),
+        candidates.len()
+    );
+    for idx in front {
+        let candidate = &candidates[idx];
+        let values: Vec<String> = objectives
+            .iter()
+            .zip(&candidate.display)
+            .map(|(objective, value)| format!("{}={value:.6}", objective.name))
+            .collect();
+        println!("Trial {}  {}", candidate.trial_id, values.join("  "));
+        if candidate.hparams.is_empty() {
+            println!("  (no hyperparameters)");
+        } else {
+            println!("  Hyperparameters:");
+            for (k, v) in &candidate.hparams {
+                println!("    {:<20} {}", k, v);
+            }
+        }
+        println!();
+    }
+}

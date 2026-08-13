@@ -297,6 +297,41 @@ Notes:
 - `argtuner inspect <dir>` shows how argtuner interprets a project's config: the rendered template, each `{placeholder}` resolved against the search space (or reserved/injected), and an execution summary (metric, goal, sampler, scheduler).
 - When the `random` sampler hits a duplicate in a fully discrete space (choices/ints/stepped floats), it will try unused configs up to the exhaustive cap before continuing with random sampling.
 
+## Multi-objective optimization (Pareto frontier)
+
+Declare several objectives under `[project]`; each is an independent metric the
+search optimizes against a Pareto frontier instead of a single scalar:
+
+```toml
+[project]
+metric_key = "loss"
+goal = "min"
+
+[[project.objectives]]
+name = "loss"
+goal = "min"
+primary = true
+
+[[project.objectives]]
+name = "latency_ms"
+goal = "min"
+```
+
+Rules:
+
+- `name` is the metric key the trial payload emits (a `metric.<name>` field).
+- `goal` is `min` or `max` per objective. Direction is normalized internally
+  (maximize objectives are negated for dominance) — stored and displayed values
+  stay raw.
+- Exactly one objective must set `primary = true`. The primary drives
+  successive-halving rung truncation and the scalar `score`/`metric` columns.
+- Multi-objective requires the `random` sampler (`pso` is single-objective).
+- Without `[[project.objectives]]`, behavior is unchanged: `metric_key` +
+  `goal` drive a single-objective run.
+
+Runs report the non-dominated frontier at the end (e.g. `Pareto frontier (2 of
+3 trials)`), and `argtuner inspect` lists the objectives.
+
 ## CLI subcommands
 
 argtuner ships six subcommands:

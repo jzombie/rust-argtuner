@@ -14,10 +14,10 @@ use crate::scheduler::TrialScheduler;
 use crate::search_space::SearchSpace;
 
 use crate::trial::store::{TrialStatus, TrialStore};
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct CompletedTrial {
     status: TrialStatus,
-    score: Option<f64>,
+    score: Option<Vec<f64>>,
     trial_id: usize,
 }
 
@@ -29,8 +29,22 @@ pub fn run_random(
     scheduler: Box<dyn TrialScheduler>,
     stop_flag: Option<Arc<AtomicBool>>,
 ) -> Result<(), Box<dyn Error>> {
-    let completed = load_completed_trials(objective.store())?;
-    run_scheduled(objective, scheduler, completed, stop_flag)
+    let completed = load_completed_trials(objective.store(), &objective.objective_names())?;
+    run_scheduled(objective, scheduler, completed, stop_flag, None)
+}
+
+/// Multi-objective driver: the same scheduler-driven loop, additionally
+/// maintaining the non-dominated front and printing it at the end.
+pub fn run_pareto(
+    objective: CommandObjective,
+    scheduler: Box<dyn TrialScheduler>,
+    stop_flag: Option<Arc<AtomicBool>>,
+) -> Result<(), Box<dyn Error>> {
+    let objective_names = objective.objective_names();
+    let completed = load_completed_trials(objective.store(), &objective_names)?;
+    let mut front = crate::sampler::pareto::ParetoFront::new();
+    run_scheduled(objective, scheduler, completed, stop_flag, Some(&mut front))?;
+    Ok(())
 }
 
 struct DiscreteConfigPool {
@@ -103,6 +117,7 @@ fn run_scheduled(
     mut scheduler: Box<dyn TrialScheduler>,
     mut completed: CompletedTrialMap,
     stop_flag: Option<Arc<AtomicBool>>,
+    mut pareto_front: Option<&mut crate::sampler::pareto::ParetoFront>,
 ) -> Result<(), Box<dyn Error>> {
     let mut retry_trial_ids: HashMap<TrialKey, usize> = HashMap::new();
     let mut duplicate_retries = 0usize;
@@ -116,12 +131,12 @@ fn run_scheduled(
         let token_key = (trial.token.config_id, trial.token.rung, trial.token.bracket);
         if let Some(existing) = completed.get(&token_key) {
             if matches!(existing.status, TrialStatus::Ok | TrialStatus::Error) {
-                let score = match existing.status {
-                    TrialStatus::Ok => existing.score,
+                let scores = match existing.status {
+                    TrialStatus::Ok => existing.score.clone(),
                     TrialStatus::Error => None,
                     _ => unreachable!(),
                 };
-                scheduler.record_result(trial.token, score);
+                scheduler.record_result(trial.token, scores.unwrap_or_default());
                 continue;
             }
             // If it's running, we want to resume it, so we don't skip.
@@ -133,17 +148,24 @@ fn run_scheduled(
 
         let trial_id = retry_trial_ids.get(&token_key).cloned();
         let mut outcome =
-            objective.eval_with_overrides_retryable(&trial.coords, &trial.overrides, trial_id);
+            objective.eval_vector_with_overrides_retryable(&trial.coords, &trial.overrides, trial_id);
         match outcome {
-            Ok((score, finished_trial_id)) => {
-                scheduler.record_result(trial.token, Some(score));
+            Ok((scores, finished_trial_id)) => {
+                scheduler.record_result(trial.token, scores.clone());
+                if let Some(front) = pareto_front.as_deref_mut() {
+                    let before = front.len();
+                    let removed = front.update(finished_trial_id, scores.clone());
+                    if front.len() != before || !removed.is_empty() {
+                        eprintln!("frontier: {} non-dominated trials", front.len());
+                    }
+                }
                 retry_trial_ids.remove(&token_key);
                 duplicate_retries = 0;
                 completed.insert(
                     token_key,
                     CompletedTrial {
                         status: TrialStatus::Ok,
-                        score: Some(score),
+                        score: Some(scores),
                         trial_id: finished_trial_id,
                     },
                 );
@@ -163,20 +185,27 @@ fn run_scheduled(
                     {
                         let mut overrides = trial.overrides.clone();
                         pool.apply_to_overrides(&values, &mut overrides);
-                        outcome = objective.eval_with_overrides_retryable(
+                        outcome = objective.eval_vector_with_overrides_retryable(
                             &trial.coords,
                             &overrides,
                             Some(_id),
                         );
-                        if let Ok((score, finished_trial_id)) = outcome {
-                            scheduler.record_result(trial.token, Some(score));
+                        if let Ok((scores, finished_trial_id)) = outcome {
+                            scheduler.record_result(trial.token, scores.clone());
+                            if let Some(front) = pareto_front.as_deref_mut() {
+                                let before = front.len();
+                                let removed = front.update(finished_trial_id, scores.clone());
+                                if front.len() != before || !removed.is_empty() {
+                                    eprintln!("frontier: {} non-dominated trials", front.len());
+                                }
+                            }
                             retry_trial_ids.remove(&token_key);
                             duplicate_retries = 0;
                             completed.insert(
                                 token_key,
                                 CompletedTrial {
                                     status: TrialStatus::Ok,
-                                    score: Some(score),
+                                    score: Some(scores),
                                     trial_id: finished_trial_id,
                                 },
                             );
@@ -213,7 +242,7 @@ fn run_scheduled(
                     },
                 );
                 eprintln!("trial error: {err}");
-                scheduler.record_result(trial.token, None);
+                scheduler.record_result(trial.token, Vec::new());
                 retry_trial_ids.remove(&token_key);
             }
         }
@@ -221,7 +250,10 @@ fn run_scheduled(
     Ok(())
 }
 
-fn load_completed_trials(store: &TrialStore) -> Result<CompletedTrialMap, Box<dyn Error>> {
+fn load_completed_trials(
+    store: &TrialStore,
+    objective_names: &[String],
+) -> Result<CompletedTrialMap, Box<dyn Error>> {
     let rows = store.load_rows()?;
     let mut completed: CompletedTrialMap = BTreeMap::new();
     for row in rows {
@@ -238,7 +270,7 @@ fn load_completed_trials(store: &TrialStore) -> Result<CompletedTrialMap, Box<dy
         let Some(config_id) = config_id else {
             continue;
         };
-        let score = row.get(FIELD_SCORE).and_then(|v| v.parse::<f64>().ok());
+        let score = load_trial_scores(&row, objective_names);
         completed.insert(
             (config_id, rung, bracket),
             CompletedTrial {
@@ -249,6 +281,33 @@ fn load_completed_trials(store: &TrialStore) -> Result<CompletedTrialMap, Box<dy
         );
     }
     Ok(completed)
+}
+
+/// Reconstruct a trial's normalized score vector from stored fields, in the
+/// configured `objective_names` order. Missing `score.<name>` entries are
+/// treated as worst (`INFINITY`); a row with none of them falls back to the
+/// legacy single-objective `score` column.
+fn load_trial_scores(row: &BTreeMap<String, String>, objective_names: &[String]) -> Option<Vec<f64>> {
+    let mut scores = Vec::with_capacity(objective_names.len());
+    let mut found = false;
+    for name in objective_names {
+        if let Some(value) = row
+            .get(&format!("score.{name}"))
+            .and_then(|v| v.parse::<f64>().ok())
+        {
+            scores.push(value);
+            found = true;
+        } else {
+            scores.push(f64::INFINITY);
+        }
+    }
+    if found {
+        Some(scores)
+    } else {
+        row.get(FIELD_SCORE)
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|value| vec![value])
+    }
 }
 
 fn parse_usize_field(row: &BTreeMap<String, String>, keys: &[&str]) -> Option<usize> {
@@ -413,5 +472,84 @@ mod tests {
             .collect();
         sgd_combos.sort();
         assert_eq!(sgd_combos, vec!["false".to_string(), "true".to_string()]);
+    }
+
+    #[test]
+    fn pareto_driver_keeps_only_non_dominated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(TRIALS_CSV_FILENAME);
+        let template =
+            CommandTemplate::new(crate::test_support::bin_command("mock_emit_two_metrics"));
+        let store = TrialStore::new(path.clone(), template.clone());
+        // A unique-per-trial param keeps configs distinct (metrics still come
+        // from the mock's injected trial id).
+        let space = SearchSpace {
+            params: vec![crate::ParamSpec::Int {
+                name: "dummy".to_string(),
+                min: 0,
+                max: 100_000,
+                step: None,
+                parent: None,
+                parent_values: None,
+            }],
+        };
+        let objectives = vec![
+            crate::Objective {
+                name: "loss".to_string(),
+                goal: crate::Goal::Min,
+                primary: true,
+            },
+            crate::Objective {
+                name: "latency_ms".to_string(),
+                goal: crate::Goal::Min,
+                primary: false,
+            },
+        ];
+        let objective = crate::command::CommandObjective::new(
+            store,
+            template.clone(),
+            space,
+            dir.path().join("artifacts"),
+            "loss".to_string(),
+            crate::Goal::Min,
+            true,
+            0,
+        )
+        .with_objectives(objectives);
+        let scheduler = crate::scheduler::FixedScheduler::new(1, 3, None, None);
+        crate::sampler::run_pareto(objective, Box::new(scheduler), None).expect("run_pareto");
+
+        // Recompute the non-dominated front from the stored raw metrics.
+        // mock_emit_two_metrics yields trial 0=(1,3), trial 1=(2,1),
+        // trial 2=(3,4); trial 2 is dominated by trial 0.
+        let check_store = TrialStore::new(path, template);
+        let rows = check_store.load_rows().expect("rows");
+        let mut trials: Vec<(usize, Vec<f64>)> = Vec::new();
+        for row in &rows {
+            if row.get(FIELD_TRIAL_STATUS).and_then(|s| s.parse::<TrialStatus>().ok())
+                != Some(TrialStatus::Ok)
+            {
+                continue;
+            }
+            let id = row
+                .get(FIELD_TRIAL_ID)
+                .and_then(|v| v.parse::<usize>().ok())
+                .expect("trial id");
+            let loss = row
+                .get("metric.loss")
+                .and_then(|v| v.parse::<f64>().ok())
+                .expect("loss");
+            let latency = row
+                .get("metric.latency_ms")
+                .and_then(|v| v.parse::<f64>().ok())
+                .expect("latency_ms");
+            trials.push((id, vec![loss, latency]));
+        }
+        assert_eq!(trials.len(), 3);
+        let normalized: Vec<Vec<f64>> = trials.iter().map(|(_, scores)| scores.clone()).collect();
+        let fronts = crate::sampler::pareto::fast_nondominated_sort(&normalized);
+        let front_ids: Vec<usize> = fronts[0].iter().map(|&i| trials[i].0).collect();
+        assert_eq!(front_ids, vec![0, 1]);
+        assert!(!front_ids.contains(&2), "dominated trial must be excluded");
     }
 }

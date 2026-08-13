@@ -9,9 +9,9 @@ use crate::search_space::SearchSpace;
 use crate::trial::store::TrialStore;
 
 pub use config::{
-    FixedSchedulerConfig, Goal, ProjectConfig, ProjectSettings, Pruner, PsoSamplerConfig,
-    RandomSamplerConfig, Sampler, SamplerConfig, SchedulerConfig, SuccessiveHalvingSchedulerConfig,
-    UnifiedConfig,
+    FixedSchedulerConfig, Goal, Objective, ProjectConfig, ProjectSettings, Pruner,
+    PsoSamplerConfig, RandomSamplerConfig, Sampler, SamplerConfig, SchedulerConfig,
+    SuccessiveHalvingSchedulerConfig, UnifiedConfig,
 };
 
 pub fn format_injected_env(trial_id: usize, trial_dir: &Path) -> String {

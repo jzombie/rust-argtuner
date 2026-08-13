@@ -265,6 +265,7 @@ mod tests {
             pruner: crate::Pruner::None,
             inject_trial_placeholders: true,
             checkpoint_arg: None,
+            objectives: vec![],
         };
 
         let plan = build_plan(&config, Some(0));

@@ -22,6 +22,7 @@ pub fn validate_project_config(
 
     space.validate_specs()?;
     validate_conditional_flags(space, template)?;
+    validate_objectives(config)?;
 
     let space_params: Vec<_> = space.params.iter().map(|p| p.name()).collect();
     let scheduler_binding = SchedulerBinding::new(config);
@@ -109,6 +110,38 @@ fn validate_conditional_flags(space: &SearchSpace, template: &CommandTemplate) -
     Ok(())
 }
 
+/// Multi-objective config invariants: unique names, exactly one primary (any
+/// scheduler), and PSO stays single-objective.
+fn validate_objectives(config: &ProjectConfig) -> Result<(), String> {
+    if config.objectives.is_empty() {
+        return Ok(());
+    }
+    let mut names = std::collections::HashSet::new();
+    let mut primaries = 0usize;
+    for objective in &config.objectives {
+        if !names.insert(objective.name.as_str()) {
+            return Err(format!(
+                "objective name '{}' is declared more than once in [project.objectives]",
+                objective.name
+            ));
+        }
+        if objective.primary {
+            primaries += 1;
+        }
+    }
+    if primaries != 1 {
+        return Err(
+            "exactly one objective must set primary = true in [project.objectives]".to_string(),
+        );
+    }
+    if matches!(config.sampler.kind, crate::Sampler::Pso) {
+        return Err(
+            "multi-objective runs require the random sampler (pso is single-objective)".to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn tokens_have_checkpoint_dir(tokens: &[String], checkpoint_arg: &str) -> bool {
     for (idx, token) in tokens.iter().enumerate() {
         let arg_eq = format!("{checkpoint_arg}=");
@@ -129,7 +162,10 @@ fn tokens_have_checkpoint_dir(tokens: &[String], checkpoint_arg: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{template_has_checkpoint_dir, tokens_have_checkpoint_dir, validate_conditional_flags};
+    use super::{
+        template_has_checkpoint_dir, tokens_have_checkpoint_dir, validate_conditional_flags,
+        validate_objectives,
+    };
     use crate::command::CommandTemplate;
 
     #[test]
@@ -207,5 +243,69 @@ mod tests {
             ],
         };
         validate_conditional_flags(&space, &template).expect("flag-bound is valid");
+    }
+
+    fn base_project_config() -> crate::ProjectConfig {
+        crate::ProjectConfig {
+            metric_key: "loss".to_string(),
+            goal: crate::Goal::Min,
+            sampler: crate::SamplerConfig {
+                kind: crate::Sampler::Random,
+                ..crate::SamplerConfig::default()
+            },
+            scheduler: crate::SchedulerConfig::default(),
+            pruner: crate::Pruner::None,
+            inject_trial_placeholders: true,
+            checkpoint_arg: None,
+            objectives: vec![],
+        }
+    }
+
+    fn objective(name: &str, primary: bool) -> crate::Objective {
+        crate::Objective {
+            name: name.to_string(),
+            goal: crate::Goal::Min,
+            primary,
+        }
+    }
+
+    #[test]
+    fn rejects_multi_objective_without_primary() {
+        let mut config = base_project_config();
+        config.objectives = vec![objective("loss", false), objective("latency_ms", false)];
+        let err = validate_objectives(&config).expect_err("no primary");
+        assert!(err.contains("exactly one objective"));
+    }
+
+    #[test]
+    fn rejects_multi_objective_with_multiple_primaries() {
+        let mut config = base_project_config();
+        config.objectives = vec![objective("loss", true), objective("latency_ms", true)];
+        let err = validate_objectives(&config).expect_err("two primaries");
+        assert!(err.contains("exactly one objective"));
+    }
+
+    #[test]
+    fn rejects_duplicate_objective_names() {
+        let mut config = base_project_config();
+        config.objectives = vec![objective("loss", true), objective("loss", false)];
+        let err = validate_objectives(&config).expect_err("duplicate name");
+        assert!(err.contains("more than once"));
+    }
+
+    #[test]
+    fn rejects_multi_objective_with_pso_sampler() {
+        let mut config = base_project_config();
+        config.objectives = vec![objective("loss", true), objective("latency_ms", false)];
+        config.sampler.kind = crate::Sampler::Pso;
+        let err = validate_objectives(&config).expect_err("pso");
+        assert!(err.contains("random sampler"));
+    }
+
+    #[test]
+    fn accepts_single_primary_objectives() {
+        let mut config = base_project_config();
+        config.objectives = vec![objective("loss", true), objective("latency_ms", false)];
+        validate_objectives(&config).expect("valid multi-objective config");
     }
 }

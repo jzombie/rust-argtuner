@@ -15,13 +15,14 @@ use super::{ScheduledTrial, TrialScheduler, TrialToken, plan, sample_unit};
 #[derive(Debug)]
 pub struct SuccessiveHalvingScheduler {
     dims: usize,
-    budgets: Vec<usize>,
+    budgets: Vec<usize>,                 // per-rung budget epochs, from plan::build_budgets
     eta: usize,
     budget_key: String,
-    rung: usize,
-    current: Vec<ConfigCandidate>,
-    pending: Vec<ConfigCandidate>,
-    scores: BTreeMap<usize, f64>,
+    rung: usize,                         // current rung index
+    current: Vec<ConfigCandidate>,       // candidates alive at current rung
+    pending: Vec<ConfigCandidate>,       // reversed issue queue for current rung
+    scores: BTreeMap<usize, f64>,        // config_id -> primary-objective scalar score
+    primary_index: usize,                // which objective drives rung truncation
     rng: rand::rngs::StdRng,
     total_budget: usize,
     issued_budget: usize,
@@ -83,10 +84,17 @@ impl SuccessiveHalvingScheduler {
             current,
             pending,
             scores: BTreeMap::new(),
+            primary_index: 0,
             rng,
             total_budget,
             issued_budget: 0,
         }
+    }
+
+    /// Set which objective (by index in the configured objectives list) drives
+    /// rung truncation. Defaults to 0.
+    pub fn with_primary_index(&mut self, primary_index: usize) {
+        self.primary_index = primary_index;
     }
 
     fn promote(&mut self) {
@@ -184,8 +192,13 @@ impl TrialScheduler for SuccessiveHalvingScheduler {
         })
     }
 
-    fn record_result(&mut self, token: TrialToken, score: Option<f64>) {
-        let value = score.unwrap_or(f64::INFINITY);
+    fn record_result(&mut self, token: TrialToken, scores: Vec<f64>) {
+        // Truncation uses only the primary objective's (already normalized)
+        // scalar; the full vector flows to the sampler's Pareto tracking.
+        let value = scores
+            .get(self.primary_index)
+            .copied()
+            .unwrap_or(f64::INFINITY);
         self.scores.insert(token.config_id, value);
     }
 
@@ -243,7 +256,7 @@ mod tests {
             SuccessiveHalvingScheduler::new_with_seed(2, 6, 2, 8, 2, "epochs".to_string(), 7);
         let mut seen = 0;
         while let Some(trial) = scheduler.next_trial() {
-            scheduler.record_result(trial.token, Some(seen as f64));
+            scheduler.record_result(trial.token, vec![seen as f64]);
             seen += 1;
         }
         assert!(scheduler.is_done());
@@ -269,13 +282,47 @@ mod tests {
         let mut counts: BTreeMap<usize, usize> = BTreeMap::new();
         while let Some(trial) = scheduler.next_trial() {
             *counts.entry(trial.token.budget_epochs).or_insert(0) += 1;
-            scheduler.record_result(trial.token, Some(trial.token.config_id as f64));
+            scheduler.record_result(trial.token, vec![trial.token.config_id as f64]);
         }
         assert_eq!(counts.get(&2), Some(&6));
         assert_eq!(counts.get(&3), Some(&3));
         assert_eq!(counts.get(&5), Some(&2));
         assert_eq!(counts.get(&8), Some(&1));
         assert!(scheduler.is_done());
+    }
+
+    #[test]
+    fn successive_halving_truncates_by_primary_objective() {
+        let mut scheduler = SuccessiveHalvingScheduler::new_with_seed(
+            0,
+            4,
+            1,
+            4,
+            2,
+            "epochs".to_string(),
+            7,
+        );
+        scheduler.with_primary_index(1);
+        let mut tokens = Vec::new();
+        for _ in 0..4 {
+            tokens.push(scheduler.next_trial().expect("trial").token);
+        }
+        // Primary (index 1) ranks ids 0,1 best; the secondary (index 0) would
+        // rank them worst — a wrong index would keep ids 2,3 instead.
+        for (i, token) in tokens.iter().enumerate() {
+            let primary = i as f64;
+            let secondary = 100.0 - i as f64;
+            scheduler.record_result(*token, vec![secondary, primary]);
+        }
+        let mut rung1_ids = Vec::new();
+        while let Some(trial) = scheduler.next_trial() {
+            if trial.token.rung == 1 {
+                rung1_ids.push(trial.token.config_id);
+            }
+            scheduler.record_result(trial.token, vec![0.0, 0.0]);
+        }
+        rung1_ids.sort();
+        assert_eq!(rung1_ids, vec![0, 1]);
     }
 
     #[test]
@@ -296,10 +343,10 @@ mod tests {
             first.overrides.values.get("epochs").map(String::as_str),
             Some("1")
         );
-        scheduler.record_result(first.token, Some(1.0));
+        scheduler.record_result(first.token, vec![1.0]);
 
         let second = scheduler.next_trial().expect("trial 1");
-        scheduler.record_result(second.token, Some(2.0));
+        scheduler.record_result(second.token, vec![2.0]);
 
         let promoted = scheduler.next_trial().expect("trial 2");
         assert_eq!(promoted.token.rung, 1);
@@ -351,12 +398,12 @@ mod tests {
                 .map(|s: &String| s.as_str()),
             Some("9") // Should be 9 again
         );
-        scheduler.record_result(t1_retry.token, Some(1.0));
+        scheduler.record_result(t1_retry.token, vec![1.0]);
 
         // 4. Run remaining 3 trials in Rung 0
         for _ in 0..3 {
             let t = scheduler.next_trial().expect("rung0");
-            scheduler.record_result(t.token, Some(1.0));
+            scheduler.record_result(t.token, vec![1.0]);
         }
         // Issued so far: 4 * 2 = 8. Remaining: 11 - 8 = 3.
 

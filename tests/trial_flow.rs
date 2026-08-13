@@ -21,6 +21,7 @@ fn successive_halving_creates_new_row_per_rung() {
         pruner: Pruner::None,
         inject_trial_placeholders: true,
         checkpoint_arg: None,
+        objectives: vec![],
     };
     let sampler = SamplerConfig {
         kind: Sampler::Random,

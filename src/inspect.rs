@@ -79,10 +79,6 @@ fn placeholder_analysis(config: &UnifiedConfig) -> String {
 
 /// What argtuner will optimize and how the search is managed.
 fn execution_summary(config: &UnifiedConfig) -> String {
-    let goal = match config.project.goal {
-        Goal::Min => "minimize",
-        Goal::Max => "maximize",
-    };
     let sampler = match config.sampler.kind {
         Sampler::Pso => "pso",
         Sampler::Random => "random",
@@ -92,13 +88,39 @@ fn execution_summary(config: &UnifiedConfig) -> String {
         Scheduler::SuccessiveHalving => "successive_halving",
     };
     let lf = LineEnding::LF.as_str();
-    format!(
-        "execution:{lf}  {:<10} {} ({goal}){lf}  {:<10} {sampler}{lf}  {:<10} {scheduler} ({} trials){lf}",
-        "metric:", config.project.metric_key,
-        "sampler:",
+    let mut out = format!("execution:{lf}");
+    if config.project.objectives.is_empty() {
+        let goal = match config.project.goal {
+            Goal::Min => "minimize",
+            Goal::Max => "maximize",
+        };
+        out.push_str(&format!(
+            "  {:<10} {} ({goal}){lf}",
+            "metric:", config.project.metric_key
+        ));
+    } else {
+        let parts: Vec<String> = config
+            .project
+            .objectives
+            .iter()
+            .map(|objective| {
+                let goal = match objective.goal {
+                    Goal::Min => "minimize",
+                    Goal::Max => "maximize",
+                };
+                let primary = if objective.primary { " (primary)" } else { "" };
+                format!("{}({goal}){primary}", objective.name)
+            })
+            .collect();
+        out.push_str(&format!("  {:<10} {}{lf}", "objectives:", parts.join(", ")));
+    }
+    out.push_str(&format!("  {:<10} {sampler}{lf}", "sampler:"));
+    out.push_str(&format!(
+        "  {:<10} {scheduler} ({} trials){lf}",
         "scheduler:",
-        config.scheduler.n_trials,
-    )
+        config.scheduler.n_trials
+    ));
+    out
 }
 
 fn describe_placeholder(name: &str, space: &SearchSpace, budget: Option<&str>) -> String {
