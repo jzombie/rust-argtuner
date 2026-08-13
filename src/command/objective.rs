@@ -788,7 +788,10 @@ mod tests {
     #[test]
     fn objective_times_out_long_command_and_marks_error() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let template = crate::CommandTemplate::new("sleep 30".to_string());
+        // Re-execute the test binary in a self-sleeping role so the timeout is
+        // deterministic and cross-platform (no reliance on `sleep`/`sh`).
+        let template =
+            crate::CommandTemplate::new(crate::test_support::self_invoking_command());
         let store = crate::TrialStore::new(
             dir.path().join(crate::TRIALS_CSV_FILENAME),
             template.clone(),
@@ -805,15 +808,22 @@ mod tests {
             0,
         )
         .with_runner_options(Some(std::time::Duration::from_millis(400)), None);
+        let overrides = crate::TrialOverrides {
+            env: BTreeMap::from([(
+                crate::test_support::SELF_ROLE_ENV.to_string(),
+                "sleepy".to_string(),
+            )]),
+            ..crate::TrialOverrides::default()
+        };
         let start = std::time::Instant::now();
-        let err = objective.eval(&[]).expect_err("timed out");
+        let err = objective.eval_with_overrides(&[], &overrides).expect_err("timed out");
         assert!(
             err.contains("timed out"),
             "error should mention timeout, got: {err}"
         );
         assert!(
             start.elapsed() < std::time::Duration::from_secs(15),
-            "should not wait out the full 30s sleep"
+            "should not wait out the full 100s sleep"
         );
         let fields = objective
             .store()

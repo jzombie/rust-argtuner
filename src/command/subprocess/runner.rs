@@ -623,21 +623,30 @@ mod tests {
     #[test]
     fn run_piped_completes_without_options() {
         CommandRunner::force_pipes_for_tests();
-        let output = CommandRunner::run("echo runner-ok", &BTreeMap::new()).expect("run");
+        let envs = BTreeMap::from([(
+            crate::test_support::SELF_ROLE_ENV.to_string(),
+            "noop".to_string(),
+        )]);
+        let output =
+            CommandRunner::run(&crate::test_support::self_invoking_command(), &envs)
+                .expect("run");
         assert_eq!(output.exit_code, 0);
         assert!(!output.timed_out);
-        assert!(output.stdout.contains("runner-ok"));
     }
 
     #[test]
     fn run_times_out_and_kills_process_group() {
         CommandRunner::force_pipes_for_tests();
+        let envs = BTreeMap::from([(
+            crate::test_support::SELF_ROLE_ENV.to_string(),
+            "sleepy".to_string(),
+        )]);
         let start = Instant::now();
         let output = CommandRunner::run_with_options(
-            "sleep 30",
-            &BTreeMap::new(),
+            &crate::test_support::self_invoking_command(),
+            &envs,
             RunnerOptions {
-                timeout: Some(Duration::from_millis(300)),
+                timeout: Some(Duration::from_secs(2)),
                 stop: None,
             },
         )
@@ -646,22 +655,26 @@ mod tests {
         assert_ne!(output.exit_code, 0, "killed process has non-zero status");
         assert!(
             start.elapsed() < Duration::from_secs(15),
-            "should not wait out the full 30s sleep"
+            "should not wait out the full 100s sleep"
         );
     }
 
     #[test]
     fn run_stop_flag_kills_process_group_without_timeout() {
         CommandRunner::force_pipes_for_tests();
+        let envs = BTreeMap::from([(
+            crate::test_support::SELF_ROLE_ENV.to_string(),
+            "sleepy".to_string(),
+        )]);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_worker = stop.clone();
         let worker = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(200));
+            thread::sleep(Duration::from_millis(300));
             stop_for_worker.store(true, Ordering::Relaxed);
         });
         let output = CommandRunner::run_with_options(
-            "sleep 30",
-            &BTreeMap::new(),
+            &crate::test_support::self_invoking_command(),
+            &envs,
             RunnerOptions {
                 timeout: None,
                 stop: Some(stop),
@@ -671,5 +684,49 @@ mod tests {
         worker.join().expect("worker");
         assert!(!output.timed_out, "cancellation is not a timeout");
         assert_ne!(output.exit_code, 0, "killed process has non-zero status");
+    }
+
+    #[test]
+    fn run_timeout_kills_grandchild_processes() {
+        CommandRunner::force_pipes_for_tests();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_path = dir.path().join("grandchild.pid");
+        let heartbeat_path = dir.path().join("grandchild.heartbeat");
+        let envs = BTreeMap::from([
+            (
+                crate::test_support::SELF_ROLE_ENV.to_string(),
+                "child".to_string(),
+            ),
+            (
+                crate::test_support::SELF_PID_FILE_ENV.to_string(),
+                pid_path.to_string_lossy().into_owned(),
+            ),
+            (
+                crate::test_support::SELF_HEARTBEAT_ENV.to_string(),
+                heartbeat_path.to_string_lossy().into_owned(),
+            ),
+        ]);
+        // The child role spawns a grandchild and waits for it; the timeout
+        // kills the whole process group, so the grandchild must stop too.
+        let output = CommandRunner::run_with_options(
+            &crate::test_support::self_invoking_command(),
+            &envs,
+            RunnerOptions {
+                timeout: Some(Duration::from_secs(2)),
+                stop: None,
+            },
+        )
+        .expect("run");
+        assert!(output.timed_out, "should be marked as timed out");
+        let pid_text = std::fs::read_to_string(&pid_path).unwrap_or_else(|err| {
+            panic!(
+                "grandchild failed to write PID before timeout: {err} (stdout: {})",
+                output.stdout
+            )
+        });
+        let pid: u32 = pid_text.trim().parse().unwrap_or_else(|err| {
+            panic!("invalid grandchild PID in {pid_path:?}: {pid_text:?}: {err}")
+        });
+        crate::test_support::assert_no_longer_running(pid, &heartbeat_path, Duration::from_millis(600));
     }
 }
