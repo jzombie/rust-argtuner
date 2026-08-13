@@ -36,6 +36,7 @@ use term_wm_console::console_event_source::ConsoleEventSource;
 use term_wm_console::console_render_target::ConsoleRenderTarget;
 use term_wm_core::hitbox_registry::HitboxRegistry;
 use term_wm_core::impl_component_delegate;
+use term_wm_core::impl_view_component;
 use term_wm_core::task_scheduler::{AppTask, TaskHandle};
 use term_wm_ui_facade::{LayerComponent, OverlayComponent};
 
@@ -72,7 +73,7 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         mk_toggle_window("Metrics"),
     )));
     let project_info_key = inner.open_window(AppRootComponent::Custom(AppComponent::ProjectInfo(
-        mk_project_info_sv(),
+        mk_text_window(),
     )));
     let frontier_key = inner.open_window(AppRootComponent::Custom(AppComponent::Frontier(
         mk_text_window(),
@@ -340,97 +341,11 @@ impl ChartsView {
 
 // Per-window views: each pane is a thin struct owning its stateful component
 // and exposing it through a declarative `view!` tree (a bordered card wrapping
-// the injected child).
-//
-// The Component bridge is the local `impl_view_window!` rather than term-wm's
-// `impl_view_component!`: that macro's `&mut self` form takes a *constant*
-// height expression (its `self`/`_width` bindings are macro-hygienic and cannot
-// be referenced from the macro argument), but these window roots must delegate
-// `desired_height` to their child so variable-height content keeps its layout
-// contract — and forward the `&self`-queried selection metadata
-// (`selection_status`/`selection_text`) that the copy pipeline reads from the
-// focused window root. Every window wraps exactly one child.
-macro_rules! impl_view_window {
-    ($ty:ty, $child:ident) => {
-        impl Component<TermWmAction> for $ty {
-            fn render(
-                &mut self,
-                backend: &mut dyn RenderBackend,
-                area: WmRect,
-                ctx: &ComponentContext,
-                registry: &mut HitboxRegistry,
-            ) {
-                self.view().render(backend, area, ctx, registry);
-            }
-
-            fn handle_events(
-                &mut self,
-                event: &Event,
-                ctx: &ComponentContext,
-            ) -> EventResult<TermWmAction> {
-                self.view().handle_events(event, ctx)
-            }
-
-            fn update(
-                &mut self,
-                action: TermWmAction,
-                ctx: &ComponentContext,
-                actions: &mut VecDeque<(WindowKey, TermWmAction)>,
-            ) {
-                self.view().update(action, ctx, actions);
-            }
-
-            fn destroy(&mut self) {
-                self.view().destroy();
-            }
-
-            fn desired_height(&self, width: u16) -> u16 {
-                term_wm::Component::desired_height(&self.$child, width)
-            }
-
-            fn hitbox_id(&self) -> Option<term_wm::hitbox_registry::HitboxId> {
-                self.$child.hitbox_id()
-            }
-
-            fn clear_selection(&mut self) {
-                self.$child.clear_selection();
-            }
-
-            fn selection_status(&self) -> term_wm::components::SelectionStatus {
-                self.$child.selection_status()
-            }
-
-            fn selection_text(&self) -> Option<String> {
-                self.$child.selection_text()
-            }
-
-            fn take_pending_title(&mut self) -> Option<String> {
-                self.view().take_pending_title()
-            }
-
-            fn take_alternate_screen_transition(&mut self) -> Option<bool> {
-                self.view().take_alternate_screen_transition()
-            }
-
-            fn take_teardown_parts(
-                &mut self,
-            ) -> Option<(
-                Box<dyn std::any::Any + Send + Sync>,
-                std::thread::JoinHandle<()>,
-            )> {
-                self.view().take_teardown_parts()
-            }
-
-            fn set_selection_enabled(&mut self, enabled: bool) {
-                self.$child.set_selection_enabled(enabled);
-            }
-
-            fn paste(&mut self, text: &str) -> bool {
-                self.$child.paste(text)
-            }
-        }
-    };
-}
+// the injected child). `impl_view_component!`'s `child:` form forwards the
+// component lifecycle to the per-frame view and delegates `desired_height` +
+// selection/hitbox to the child field, so variable-height content keeps its
+// layout contract and the copy pipeline (which reads selection off the focused
+// window root) keeps working.
 
 struct TrialsWindow {
     sv: ScrollViewComponent<ListComponent>,
@@ -442,7 +357,7 @@ impl TrialsWindow {
     }
 }
 
-impl_view_window!(TrialsWindow, sv);
+impl_view_component!(TrialsWindow, child: sv);
 
 struct ChartsWindow {
     sv: ScrollViewComponent<ChartsView>,
@@ -454,7 +369,7 @@ impl ChartsWindow {
     }
 }
 
-impl_view_window!(ChartsWindow, sv);
+impl_view_component!(ChartsWindow, child: sv);
 
 struct TextWindow {
     sv: ScrollViewComponent<TextRendererComponent>,
@@ -466,7 +381,7 @@ impl TextWindow {
     }
 }
 
-impl_view_window!(TextWindow, sv);
+impl_view_component!(TextWindow, child: sv);
 
 struct ToggleWindow {
     list: ToggleListComponent,
@@ -478,7 +393,7 @@ impl ToggleWindow {
     }
 }
 
-impl_view_window!(ToggleWindow, list);
+impl_view_component!(ToggleWindow, child: list);
 
 enum AppComponent {
     Trials(TrialsWindow),
