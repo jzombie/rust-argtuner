@@ -326,6 +326,8 @@ mod tests {
                 log_scale: false,
                 step: None,
                 format: None,
+                parent: None,
+                parent_values: None,
             }],
         };
         let objective = crate::command::CommandObjective::new(
@@ -558,6 +560,8 @@ mod tests {
                 log_scale: false,
                 step: None,
                 format: None,
+                parent: None,
+                parent_values: None,
             }],
         };
 

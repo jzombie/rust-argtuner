@@ -16,6 +16,8 @@ pub enum TemplateError {
     MissingValue(String),
     #[error("unclosed placeholder in template")]
     UnclosedPlaceholder,
+    #[error("invalid conditional parameter: {0}")]
+    InvalidConditional(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -65,6 +67,46 @@ impl CommandTemplate {
             }
         }
         Ok(out)
+    }
+
+    /// Return a copy of this template with the flag segments of the given
+    /// (inactive) parameters removed, so their placeholders never render.
+    ///
+    /// Supports both `--flag {name}` (two shell tokens) and `--flag={name}`
+    /// (one unified token). A conditional parameter must be flag-bound
+    /// (enforced by config validation); if a placeholder is not, this returns
+    /// [`TemplateError::InvalidConditional`].
+    pub fn strip_inactive_flags(&self, inactive: &[String]) -> Result<String, TemplateError> {
+        let tokens = shell_words::split(&self.template).map_err(|err| {
+            TemplateError::InvalidConditional(format!("template tokenize failed: {err}"))
+        })?;
+        let mut remove = vec![false; tokens.len()];
+        for name in inactive {
+            let ph = format!("{{{name}}}");
+            for (i, token) in tokens.iter().enumerate() {
+                if !token.contains(&ph) {
+                    continue;
+                }
+                if token.starts_with('-') {
+                    // `--flag={name}` (unified): drop the whole token.
+                    remove[i] = true;
+                } else {
+                    // `{name}` (or a quoted `"{name}"`) value token; the
+                    // immediately preceding token is the flag to drop too.
+                    if let Some(j) = i.checked_sub(1).filter(|&j| tokens[j].starts_with('-')) {
+                        remove[j] = true;
+                    }
+                    remove[i] = true;
+                }
+            }
+        }
+        Ok(tokens
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !remove[*i])
+            .map(|(_, token)| quote(token))
+            .collect::<Vec<_>>()
+            .join(" "))
     }
 
     pub fn write_to<P: AsRef<Path>>(&self, path: P) -> Result<(), TemplateError> {
@@ -171,5 +213,34 @@ mod tests {
         values.insert("dir".to_string(), "with spaces".to_string());
         let rendered = template.render(&values).expect("rendered");
         assert_eq!(rendered, "run --out 'with spaces'");
+    }
+
+    #[test]
+    fn strip_inactive_flags_removes_two_token_segment() {
+        let template =
+            CommandTemplate::new("run --lr {lr} --momentum {momentum} --steps {steps}");
+        let stripped = template
+            .strip_inactive_flags(&["momentum".to_string()])
+            .expect("stripped");
+        assert_eq!(stripped, "run --lr {lr} --steps {steps}");
+    }
+
+    #[test]
+    fn strip_inactive_flags_removes_eq_form() {
+        let template = CommandTemplate::new("run --lr {lr} --momentum={momentum}");
+        let stripped = template
+            .strip_inactive_flags(&["momentum".to_string()])
+            .expect("stripped");
+        assert_eq!(stripped, "run --lr {lr}");
+    }
+
+    #[test]
+    fn strip_inactive_flags_preserves_quoted_literals() {
+        let template = CommandTemplate::new("run --out \"my dir\" --momentum {momentum}");
+        let stripped = template
+            .strip_inactive_flags(&["momentum".to_string()])
+            .expect("stripped");
+        // The remaining literal still quotes the space-containing value.
+        assert_eq!(stripped, "run --out 'my dir'");
     }
 }

@@ -121,6 +121,16 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
             quote!(&[#(#cs),*])
         };
         let skip = attrs.skip;
+        let parent = match attrs.parent.as_deref() {
+            Some(p) => quote!(Some(#p)),
+            None => quote!(None),
+        };
+        let parent_values = if attrs.parent_values.is_empty() {
+            quote!(&[])
+        } else {
+            let pvs = attrs.parent_values.iter().map(|v| lit_str(v));
+            quote!(&[#(#pvs),*])
+        };
 
         param_specs.push(quote! {
             ::argtuner::ParamHint {
@@ -136,6 +146,8 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 log: #log,
                 step: #step,
                 choices: #choices,
+                parent: #parent,
+                parent_values: #parent_values,
             }
         });
 
@@ -244,6 +256,8 @@ struct ParamAttrs {
     step: Option<f64>,
     choices: Vec<String>,
     skip: bool,
+    parent: Option<String>,
+    parent_values: Vec<String>,
 }
 fn parse_param_attrs(field: &syn::Field) -> ParamAttrs {
     let mut out = ParamAttrs {
@@ -256,6 +270,8 @@ fn parse_param_attrs(field: &syn::Field) -> ParamAttrs {
         step: None,
         choices: Vec::new(),
         skip: false,
+        parent: None,
+        parent_values: Vec::new(),
     };
     for attr in &field.attrs {
         if !attr.path().is_ident("param") {
@@ -279,6 +295,8 @@ fn parse_param_attrs(field: &syn::Field) -> ParamAttrs {
                 "log" => out.log = expr_bool(value),
                 "choices" => out.choices = expr_string_array(value),
                 "skip" => out.skip = expr_bool(value),
+                "parent" => out.parent = expr_string(value),
+                "parent_values" => out.parent_values = expr_string_array(value),
                 _ => {}
             }
         }

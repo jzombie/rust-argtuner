@@ -30,6 +30,8 @@ fn tuner_skips_completed_trials() {
             log_scale: false,
             step: None,
             format: None,
+            parent: None,
+            parent_values: None,
         }],
     };
 
@@ -113,6 +115,8 @@ fn resume_aborts_on_config_change() {
             log_scale: false,
             step: None,
             format: None,
+            parent: None,
+            parent_values: None,
         }],
     };
 
@@ -180,6 +184,8 @@ fn resume_allows_config_override_with_flag() {
             log_scale: false,
             step: None,
             format: None,
+            parent: None,
+            parent_values: None,
         }],
     };
 

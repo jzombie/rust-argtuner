@@ -119,14 +119,9 @@ fn describe_placeholder(name: &str, space: &SearchSpace, budget: Option<&str>) -
 }
 
 fn describe_param(spec: &ParamSpec) -> String {
-    match spec {
+    let base = match spec {
         ParamSpec::Float {
-            name: _,
-            min,
-            max,
-            log_scale,
-            step,
-            format: _,
+            min, max, log_scale, step, ..
         } => {
             let mut desc = format!("space param Float in [{min}, {max}]");
             if *log_scale {
@@ -137,21 +132,22 @@ fn describe_param(spec: &ParamSpec) -> String {
             }
             desc
         }
-        ParamSpec::Int {
-            name: _,
-            min,
-            max,
-            step,
-        } => {
+        ParamSpec::Int { min, max, step, .. } => {
             let mut desc = format!("space param Int in [{min}, {max}]");
             if let Some(step) = step {
                 desc.push_str(&format!(", step {step}"));
             }
             desc
         }
-        ParamSpec::Choice { name: _, values, .. } => {
+        ParamSpec::Choice { values, .. } => {
             format!("space param Choice: {}", values.join(", "))
         }
-        ParamSpec::Bool { name: _ } => "space param Bool (true/false)".to_string(),
+        ParamSpec::Bool { .. } => "space param Bool (true/false)".to_string(),
+    };
+    match (spec.parent(), spec.parent_values()) {
+        (Some(parent), Some(values)) => {
+            format!("{base}; conditional: sampled only when {parent} ∈ [{}]", values.join(", "))
+        }
+        _ => base,
     }
 }

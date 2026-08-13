@@ -53,19 +53,18 @@ impl DiscreteConfigPool {
                 return Ok(None);
             }
         }
-        let mut params = Vec::with_capacity(space.params.len());
-        let mut values = Vec::with_capacity(space.params.len());
-        for spec in &space.params {
-            let Some(discrete) = spec.discrete_values() else {
-                return Ok(None);
-            };
-            params.push(spec.name().to_string());
-            values.push(discrete);
-        }
-        let used = collect_used_configs(store, &params)?;
+        let params: Vec<String> = space.params.iter().map(|s| s.name().to_string()).collect();
+        let conditional: HashSet<String> = space
+            .params
+            .iter()
+            .filter(|s| s.is_conditional())
+            .map(|s| s.name().to_string())
+            .collect();
+        let used = collect_used_configs(store, &params, &conditional)?;
         let mut available = Vec::new();
-        let mut current = Vec::with_capacity(params.len());
-        build_available_configs(&values, &used, &mut current, &mut available);
+        let mut current = Vec::with_capacity(space.params.len());
+        let mut sampled = HashMap::new();
+        build_available_configs(space, &used, &mut current, &mut available, &mut sampled);
         Ok(Some(Self {
             params,
             available,
@@ -84,6 +83,9 @@ impl DiscreteConfigPool {
 
     fn apply_to_overrides(&self, values: &[String], overrides: &mut TrialOverrides) {
         for (name, value) in self.params.iter().zip(values.iter()) {
+            if value.is_empty() {
+                continue; // inactive conditional param: keep omitted
+            }
             overrides.values.insert(name.clone(), value.clone());
             overrides
                 .fields
@@ -263,6 +265,7 @@ fn parse_usize_field(row: &BTreeMap<String, String>, keys: &[&str]) -> Option<us
 fn collect_used_configs(
     store: &TrialStore,
     params: &[String],
+    conditional: &HashSet<String>,
 ) -> Result<HashSet<Vec<String>>, Box<dyn Error>> {
     let rows = store.load_rows()?;
     let mut used = HashSet::new();
@@ -274,8 +277,13 @@ fn collect_used_configs(
             match row.get(&key) {
                 Some(value) => config.push(value.clone()),
                 None => {
-                    missing = true;
-                    break;
+                    if conditional.contains(name) {
+                        // Inactive params are omitted from stored hp.* fields.
+                        config.push(String::new());
+                    } else {
+                        missing = true;
+                        break;
+                    }
                 }
             }
         }
@@ -287,21 +295,37 @@ fn collect_used_configs(
 }
 
 fn build_available_configs(
-    values: &[Vec<String>],
+    space: &SearchSpace,
     used: &HashSet<Vec<String>>,
     current: &mut Vec<String>,
     available: &mut Vec<Vec<String>>,
+    sampled: &mut HashMap<String, String>,
 ) {
-    if current.len() == values.len() {
+    let idx = current.len();
+    if idx == space.params.len() {
         if !used.contains(current) {
             available.push(current.clone());
         }
         return;
     }
-    let idx = current.len();
-    for value in &values[idx] {
+    let spec = &space.params[idx];
+    let active = space.param_active(spec, sampled);
+    let values: Vec<String> = if active {
+        spec.discrete_values().unwrap_or_default()
+    } else {
+        // Inactive conditional param: canonical empty value so it is neither
+        // forced into overrides nor required in stored rows.
+        vec![String::new()]
+    };
+    for value in values {
         current.push(value.clone());
-        build_available_configs(values, used, current, available);
+        if active {
+            sampled.insert(spec.name().to_string(), value.clone());
+        }
+        build_available_configs(space, used, current, available, sampled);
+        if active {
+            sampled.remove(spec.name());
+        }
         current.pop();
     }
 }
@@ -319,6 +343,8 @@ mod tests {
                 min: 0,
                 max: 99,
                 step: None,
+                parent: None,
+                parent_values: None,
             }],
         };
         let dir = tempfile::tempdir().expect("tempdir");
@@ -344,5 +370,48 @@ mod tests {
         let mut pool = pool;
         let values = pool.assign_values(0).expect("unused");
         assert_eq!(values, vec!["99".to_string()]);
+    }
+
+    #[test]
+    fn discrete_pool_skips_parent_invalid_combos() {
+        let space = SearchSpace {
+            params: vec![
+                crate::ParamSpec::Choice {
+                    name: "opt".to_string(),
+                    values: vec!["sgd".to_string(), "adam".to_string()],
+                    parent: None,
+                    parent_values: None,
+                },
+                crate::ParamSpec::Bool {
+                    name: "momentum".to_string(),
+                    parent: Some("opt".to_string()),
+                    parent_values: Some(vec!["sgd".to_string()]),
+                },
+            ],
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = CommandTemplate::new("".to_string());
+        let store = TrialStore::new(dir.path().join(TRIALS_CSV_FILENAME), template);
+        let mut pool = DiscreteConfigPool::new(&space, &store)
+            .expect("pool")
+            .expect("pool present");
+        let mut combos = Vec::new();
+        while let Some(values) = pool.assign_values(combos.len()) {
+            combos.push(values);
+        }
+        // sgd→momentum {false,true}; adam→momentum inactive (empty sentinel).
+        assert_eq!(combos.len(), 3, "combos: {combos:?}");
+        let adam_combo = combos
+            .iter()
+            .find(|c| c[0] == "adam")
+            .expect("adam combo present");
+        assert!(adam_combo[1].is_empty(), "adam leaves momentum omitted");
+        let mut sgd_combos: Vec<String> = combos
+            .iter()
+            .filter(|c| c[0] == "sgd")
+            .map(|c| c[1].clone())
+            .collect();
+        sgd_combos.sort();
+        assert_eq!(sgd_combos, vec!["false".to_string(), "true".to_string()]);
     }
 }

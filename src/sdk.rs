@@ -243,6 +243,11 @@ pub struct ParamHint {
     pub log: bool,
     pub step: Option<f64>,
     pub choices: &'static [&'static str],
+    /// Parent param this field is conditional on (`#[param(parent = "...")]`).
+    pub parent: Option<&'static str>,
+    /// Parent values that activate this field
+    /// (`#[param(parent_values = ["..."])]`).
+    pub parent_values: &'static [&'static str],
 }
 
 impl ParamHint {
@@ -329,6 +334,10 @@ enum SpaceParam<'a> {
         log_scale: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         step: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent: Option<&'a str>,
+        #[serde(skip_serializing_if = "is_empty")]
+        parent_values: &'a [&'a str],
     },
     Int {
         name: &'a str,
@@ -336,18 +345,34 @@ enum SpaceParam<'a> {
         max: i64,
         #[serde(skip_serializing_if = "Option::is_none")]
         step: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent: Option<&'a str>,
+        #[serde(skip_serializing_if = "is_empty")]
+        parent_values: &'a [&'a str],
     },
     Choice {
         name: &'a str,
         values: &'a [&'a str],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent: Option<&'a str>,
+        #[serde(skip_serializing_if = "is_empty")]
+        parent_values: &'a [&'a str],
     },
     Bool {
         name: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent: Option<&'a str>,
+        #[serde(skip_serializing_if = "is_empty")]
+        parent_values: &'a [&'a str],
     },
 }
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+fn is_empty(s: &&[&str]) -> bool {
+    s.is_empty()
 }
 
 fn finite_i64(f: Option<f64>) -> i64 {
@@ -356,6 +381,8 @@ fn finite_i64(f: Option<f64>) -> i64 {
 
 impl<'a> SpaceParam<'a> {
     fn from_hint(p: &'a ParamHint) -> Option<Self> {
+        let parent = p.parent;
+        let parent_values = p.parent_values;
         match p.kind {
             ParamKind::Float => Some(SpaceParam::Float {
                 name: p.name,
@@ -363,18 +390,28 @@ impl<'a> SpaceParam<'a> {
                 max: p.max.unwrap_or(0.0),
                 log_scale: p.log,
                 step: p.step,
+                parent,
+                parent_values,
             }),
             ParamKind::Int => Some(SpaceParam::Int {
                 name: p.name,
                 min: finite_i64(p.min),
                 max: finite_i64(p.max),
                 step: p.step.filter(|f| f.is_finite()).map(|f| f.round() as i64),
+                parent,
+                parent_values,
             }),
             ParamKind::Choice => Some(SpaceParam::Choice {
                 name: p.name,
                 values: p.choices,
+                parent,
+                parent_values,
             }),
-            ParamKind::Bool => Some(SpaceParam::Bool { name: p.name }),
+            ParamKind::Bool => Some(SpaceParam::Bool {
+                name: p.name,
+                parent,
+                parent_values,
+            }),
             ParamKind::Other => None,
         }
     }

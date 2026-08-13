@@ -670,6 +670,8 @@ mod tests {
                 log_scale: false,
                 step: None,
                 format: None,
+                parent: None,
+                parent_values: None,
             }],
         };
 
@@ -750,6 +752,8 @@ mod tests {
                 log_scale: false,
                 step: None,
                 format: None,
+                parent: None,
+                parent_values: None,
             }],
         };
 
@@ -861,6 +865,8 @@ mod tests {
                 log_scale: false,
                 step: None,
                 format: None,
+                parent: None,
+                parent_values: None,
             }],
         };
 
@@ -937,6 +943,8 @@ mod tests {
                 log_scale: false,
                 step: None,
                 format: None,
+                parent: None,
+                parent_values: None,
             }],
         };
 
@@ -1101,6 +1109,8 @@ mod tests {
                 log_scale: false,
                 step: None,
                 format: None,
+                parent: None,
+                parent_values: None,
             }],
         };
 
@@ -1188,6 +1198,8 @@ mod tests {
                 log_scale: false,
                 step: None,
                 format: None,
+                parent: None,
+                parent_values: None,
             }],
         };
 
@@ -1262,6 +1274,8 @@ mod tests {
                 log_scale: false,
                 step: None,
                 format: None,
+                parent: None,
+                parent_values: None,
             }],
         };
         let store = crate::TrialStore::new(&path, template.clone());

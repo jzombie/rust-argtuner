@@ -21,6 +21,7 @@ pub fn validate_project_config(
     }
 
     space.validate_specs()?;
+    validate_conditional_flags(space, template)?;
 
     let space_params: Vec<_> = space.params.iter().map(|p| p.name()).collect();
     let scheduler_binding = SchedulerBinding::new(config);
@@ -82,6 +83,32 @@ fn template_has_checkpoint_dir(template: &CommandTemplate, checkpoint_arg: &str)
     has_flag && text.contains("{trial_dir}")
 }
 
+/// Conditional params (those with a `parent`) must be bound to a named `--flag`
+/// in the template; there is no flag token to strip for a positional
+/// placeholder.
+fn validate_conditional_flags(space: &SearchSpace, template: &CommandTemplate) -> Result<(), String> {
+    let tokens = shell_words::split(template.as_str())
+        .map_err(|err| format!("template tokenize failed: {err}"))?;
+    for spec in space.params.iter().filter(|s| s.is_conditional()) {
+        let name = spec.name();
+        let ph = format!("{{{name}}}");
+        let bound = tokens.iter().enumerate().any(|(i, token)| {
+            if !token.contains(&ph) {
+                return false;
+            }
+            token.starts_with('-') || (i > 0 && tokens[i - 1].starts_with('-'))
+        });
+        if !bound {
+            return Err(format!(
+                "conditional parameter '{name}' must be bound to a named --flag \
+                 in the template (e.g. --{name} {{{name}}} or --{name}={{{name}}}); \
+                 positional placeholders are not supported"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn tokens_have_checkpoint_dir(tokens: &[String], checkpoint_arg: &str) -> bool {
     for (idx, token) in tokens.iter().enumerate() {
         let arg_eq = format!("{checkpoint_arg}=");
@@ -102,7 +129,7 @@ fn tokens_have_checkpoint_dir(tokens: &[String], checkpoint_arg: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{template_has_checkpoint_dir, tokens_have_checkpoint_dir};
+    use super::{template_has_checkpoint_dir, tokens_have_checkpoint_dir, validate_conditional_flags};
     use crate::command::CommandTemplate;
 
     #[test]
@@ -127,5 +154,58 @@ mod tests {
         assert!(template_has_checkpoint_dir(&template, "--checkpoint-dir"));
         let template = CommandTemplate::new("train --checkpoint-dir /tmp".to_string());
         assert!(!template_has_checkpoint_dir(&template, "--checkpoint-dir"));
+    }
+
+    #[test]
+    fn rejects_positional_conditional_param() {
+        let template = CommandTemplate::new("run {momentum}".to_string());
+        let space = crate::SearchSpace {
+            params: vec![
+                crate::ParamSpec::Bool {
+                    name: "use".to_string(),
+                    parent: None,
+                    parent_values: None,
+                },
+                crate::ParamSpec::Float {
+                    name: "momentum".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                    log_scale: false,
+                    step: None,
+                    format: None,
+                    parent: Some("use".to_string()),
+                    parent_values: Some(vec!["true".to_string()]),
+                },
+            ],
+        };
+        let err =
+            validate_conditional_flags(&space, &template).expect_err("positional placeholder");
+        assert!(err.contains("must be bound"));
+    }
+
+    #[test]
+    fn accepts_flag_bound_conditional_params() {
+        let template =
+            CommandTemplate::new("run --use {use} --momentum={momentum}".to_string());
+        let space = crate::SearchSpace {
+            params: vec![
+                crate::ParamSpec::Bool {
+                    name: "use".to_string(),
+                    parent: None,
+                    parent_values: None,
+                },
+                crate::ParamSpec::Float {
+                    name: "momentum".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                    log_scale: false,
+                    step: None,
+                    format: None,
+                    parent: Some("use".to_string()),
+                    parent_values: Some(vec!["true".to_string()]),
+                },
+            ],
+        };
+        validate_conditional_flags(&space, &template).expect("flag-bound is valid");
     }
 }
