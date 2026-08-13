@@ -1,47 +1,28 @@
 # argtuner-sdk
 
-A lightweight Rust binding for [`argtuner`](https://crates.io/crates/argtuner), the
-black-box hyperparameter optimization CLI. It lets your training program declare
-its parameters once, parse its argv, and report metrics back to the tuner — all
-over plain stdio, with no dependency on the argtuner CLI/TUI crates.
+`argtuner-sdk` provides lightweight, type-safe Rust bindings for [`argtuner`](https://crates.io/crates/argtuner), a black-box hyperparameter optimization CLI. It enables training programs to define search spaces, parse CLI arguments, and emit evaluation telemetry over line-framed `stdio`.
 
-## Why a separate crate?
+## Architecture & Dependency Isolation
 
-`argtuner` (the tuner binary) pulls in a large dependency tree: a terminal UI,
-PTY process supervision, SQLite logging, and optimization algorithms. When the
-SDK lived inside that crate, every machine-learning workload that only wanted to
-*talk to* argtuner had to compile all of it. `argtuner-sdk` is the split: the
-SDK is its own crate so training apps link only what they need.
+The main `argtuner` package houses the complete orchestration engine: terminal UI components, process supervision, SQLite persistence, and optimization algorithms.
 
-## Overhead
+`argtuner-sdk` decouples target training workloads from that execution engine. Target binaries link exclusively to standard serialization and argument parsing primitives (`clap`, `serde`), completely omitting heavy UI and database crates (`ratatui`, `rusqlite`, `argmin`, `portable-pty`).
 
-The per-project overhead of depending on `argtuner-sdk` is **extremely low**:
+## Runtime Design & Performance
 
-- It depends only on a handful of small, ubiquitous crates (`clap`, `serde`,
-  `serde_json`, `toml_edit`, `argtuner-common`, and the `argtuner-derive`
-  proc-macro). No terminal, database, or process-supervision crates.
-- At runtime it does nothing unless argtuner actually invoked your binary. Every
-  `emit_*` helper and the whole binding no-ops when the `ARGTUNER_TUNING`
-  environment variable is absent, so a standalone run of your training CLI keeps
-  its `stdout` perfectly clean.
-
-If performance is paramount you can skip the SDK **entirely**: the talkback
-protocol is a documented, line-framed JSON schema and any language can emit
-`::ARGTUNER::`-prefixed lines directly (see the argtuner README's protocol
-section and `argtuner_common::protocol_schema_string()`). The SDK exists purely
-for convenience and type safety.
+* **Zero-Cost Standalone Execution:** Telemetry handlers remain completely inert unless the process is spawned within an active tuning session (`ARGTUNER_TUNING=1`). Standard invocation generates zero output overhead and preserves clean stdout streams.
+* **Minimal Footprint:** Transitive dependencies are strictly scoped to ubiquitous serialization and utility crates (`clap`, `serde`, `serde_json`, `toml_edit`, `argtuner-common`, and `argtuner-derive`).
+* **Direct Protocol Autonomy:** The SDK wraps `argtuner`'s line-framed JSON stdio protocol. Workloads requiring zero external dependencies can omit the SDK entirely and write `::ARGTUNER::`-prefixed wire frames directly (documented in `argtuner-common`).
 
 ## Usage
 
-Declare your algorithm's parameters once as a plain struct with
-`#[talkback_args]`; the derive generates a production `clap` CLI, the argtuner
-command template, and a real search space:
+Annotate hyperparameter definitions with `#[talkback_args]`. The macro derives the CLI parser, command template generator, and search space AST:
 
 ```rust,no_run
 use argtuner_sdk::{emit_metrics, init, talkback_args};
 
 fn train(lr: f64, steps: usize) -> f64 {
-    0.0 // your training logic
+    0.0 // Training loop logic
 }
 
 #[talkback_args]
@@ -60,17 +41,17 @@ fn main() {
     let val_loss = train(params.lr, params.steps);
     let _ = emit_metrics!("val_loss" => val_loss, "epoch" => params.steps);
 }
+
 ```
 
-Run it with `--print-template-toml` to generate a starter `argtuner.toml`
-(`--print-template` prints the command template, `--print-protocol-schema` the
-protocol JSON Schema). Without argtuner, the same binary is a normal CLI:
-emission no-ops and `stdout` stays clean.
+### Built-in Introspection
 
-## Protocol
+Target binaries expose self-inspection flags for automated setup:
 
-The SDK writes JSON lines to stdout, each prefixed with the literal
-`::ARGTUNER::` marker. The tuner spawns your binary with `ARGTUNER_TUNING` set,
-parses those lines, and uses the last `model.epoch_end` event for scoring. The
-wire format is versioned by a handshake event and self-describes via a JSON
-Schema; see `argtuner_common` for the canonical message types.
+* `--print-template-toml`: Generates a fully configured `argtuner.toml` project manifest.
+* `--print-template`: Outputs the CLI command invocation template.
+* `--print-protocol-schema`: Exports the talkback protocol JSON Schema.
+
+## Wire Protocol
+
+The SDK emits line-delimited JSON frames to `stdout`, identified by the literal `::ARGTUNER::` marker prefix. During an active session, `argtuner` ingests these events to track evaluation scoring via `model.epoch_end` payloads. Protocol contracts are versioned via initial handshake frames and formally defined in `argtuner-common`. 
