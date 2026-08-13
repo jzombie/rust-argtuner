@@ -1,4 +1,4 @@
 **/target/
 **/artifacts/
 *.csv
-*.sqlite
+*.sqlite*
