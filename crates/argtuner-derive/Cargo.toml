@@ -22,3 +22,9 @@ syn = { workspace = true, features = ["full"] }
 # the packaged manifest, so the compilable doctest below doesn't block publishing
 # this crate before `argtuner-sdk`.
 argtuner-sdk = { path = "../argtuner-sdk" }
+
+# The dev-dependency is used only by the crate's doctest (rustdoc compiles
+# doctests as separate crates, which cargo-udeps does not account for), so udeps
+# flags it as unused.
+[package.metadata.cargo-udeps.ignore]
+development = ["argtuner-sdk"]
