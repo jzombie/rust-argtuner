@@ -28,3 +28,4 @@ syn = { workspace = true, features = ["full"] }
 # the packaged manifest, so the compilable doctest below doesn't block publishing
 # this crate before `argtuner-sdk`.
 argtuner-sdk = { path = "../argtuner-sdk" }
+argtuner-common = { path = "../common" }

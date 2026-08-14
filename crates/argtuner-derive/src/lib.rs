@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse_macro_input;
@@ -14,11 +16,11 @@ use syn::{Fields, GenericArgument, ItemStruct, Lit, PathArguments, Token};
 /// #[talkback_args]
 /// struct ModelParams {
 ///     /// Learning rate
-///     #[param(default = 0.001, min = 0.0001, max = 0.1, log = true)]
+///     #[param(role = "tune", default = 0.001, min = 0.0001, max = 0.1, log = true)]
 ///     lr: f64,
-///     #[param(choices = ["adam", "adamw", "sgd"])]
+///     #[param(role = "tune", choices = ["adam", "adamw", "sgd"])]
 ///     optimizer: String,
-///     #[param(value_name = "trial_dir")]
+///     #[param(role = "injected", value_name = "trial_dir")]
 ///     checkpoint_dir: Option<String>,
 /// }
 ///
@@ -32,9 +34,14 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Capture `#[param(...)]` metadata first, then strip the helper attribute
     // from the re-emitted struct so the compiler doesn't see an unknown
-    // attribute after expansion.
+    // attribute after expansion. Validation errors abort expansion.
     let param_attrs: Vec<ParamAttrs> = match &input.fields {
-        Fields::Named(fields) => fields.named.iter().map(parse_param_attrs).collect(),
+        Fields::Named(fields) => {
+            match fields.named.iter().map(parse_param_attrs).collect::<Result<Vec<_>, _>>() {
+                Ok(attrs) => attrs,
+                Err(err) => return err.to_compile_error().into(),
+            }
+        }
         _ => Vec::new(),
     };
     if let Fields::Named(fields) = &mut input.fields {
@@ -72,10 +79,12 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         let name = ident.to_string();
         let ty = &field.ty;
         let (is_option, inner_ty) = unwrap_option(ty);
-        let is_bool = !is_option && type_is_ident(ty, "bool");
-        let is_float = !is_option && type_is_float(ty);
-        let is_int = !is_option && type_is_int(ty);
-        let is_string = !is_option && type_is_ident(ty, "String");
+        // Kind is classified on the unwrapped inner type so `Option<f64>` is a
+        // `Float`, `Option<usize>` an `Int`, `Option<bool>` a `Bool`, etc.
+        let is_bool = type_is_ident(&inner_ty, "bool");
+        let is_float = type_is_float(&inner_ty);
+        let is_int = type_is_int(&inner_ty);
+        let is_string = type_is_ident(&inner_ty, "String");
         let help = doc_comment(field);
 
         let long = attrs
@@ -86,17 +95,90 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         let long_lit = lit_str(&long);
         let name_lit = lit_str(&name);
 
-        let kind = if is_bool {
-            quote!(::argtuner_sdk::ParamKind::Bool)
+        let kind_tag = if is_bool {
+            "Bool"
         } else if is_float {
-            quote!(::argtuner_sdk::ParamKind::Float)
+            "Float"
         } else if is_int {
-            quote!(::argtuner_sdk::ParamKind::Int)
+            "Int"
         } else if !attrs.choices.is_empty() {
-            quote!(::argtuner_sdk::ParamKind::Choice)
+            "Choice"
         } else {
-            quote!(::argtuner_sdk::ParamKind::Other)
+            "Other"
         };
+        let kind = match kind_tag {
+            "Bool" => quote!(::argtuner_sdk::ParamKind::Bool),
+            "Float" => quote!(::argtuner_sdk::ParamKind::Float),
+            "Int" => quote!(::argtuner_sdk::ParamKind::Int),
+            "Choice" => quote!(::argtuner_sdk::ParamKind::Choice),
+            _ => quote!(::argtuner_sdk::ParamKind::Other),
+        };
+
+        let role_name = attrs.role.as_deref().unwrap_or("fixed");
+        let role = match role_name {
+            "tune" => quote!(::argtuner_sdk::ParamRole::Tune),
+            "injected" => quote!(::argtuner_sdk::ParamRole::Injected),
+            "cli" => quote!(::argtuner_sdk::ParamRole::Cli),
+            _ => quote!(::argtuner_sdk::ParamRole::Fixed),
+        };
+
+        // Kind-dependent validation: `role = "tune"` must carry the constraints
+        // its kind requires, and bools reject numeric/categorical constraints.
+        if role_name == "tune" {
+            match kind_tag {
+                "Bool" => {
+                    for key in ["min", "max", "step", "log", "choices"] {
+                        if attrs.present.contains(key) {
+                            return syn::Error::new_spanned(
+                                field,
+                                format!(
+                                    "`role = \"tune\"` on a bool parameter does not take `{key}`; \
+                                     a tuned bool is a bare on/off toggle"
+                                ),
+                            )
+                            .to_compile_error()
+                            .into();
+                        }
+                    }
+                }
+                "Float" | "Int" => {
+                    if attrs.min.is_none() || attrs.max.is_none() {
+                        return syn::Error::new_spanned(
+                            field,
+                            format!(
+                                "`role = \"tune\"` on a {kind_tag} parameter requires both \
+                                 `min` and `max` (bounds define the sampled range)"
+                            ),
+                        )
+                        .to_compile_error()
+                        .into();
+                    }
+                }
+                _ => {
+                    // Choice has `choices` by construction; `Other` needs them too.
+                    if attrs.choices.is_empty() {
+                        return syn::Error::new_spanned(
+                            field,
+                            "`role = \"tune\"` on a string/other parameter requires \
+                             `choices = [...]`",
+                        )
+                        .to_compile_error()
+                        .into();
+                    }
+                }
+            }
+        }
+        // Operational `cli` flags must be optional or carry a default, otherwise
+        // `from_matches` would panic on an absent flag during standalone runs.
+        if role_name == "cli" && !is_option && attrs.default.is_none() {
+            return syn::Error::new_spanned(
+                field,
+                "`role = \"cli\"` operational flags must be `Option<T>` or carry a \
+                 `default` so standalone runs without the flag do not panic",
+            )
+            .to_compile_error()
+            .into();
+        }
 
         let value_name = match attrs.value_name.as_deref() {
             Some(vn) => quote!(Some(#vn)),
@@ -120,7 +202,6 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let cs = attrs.choices.iter().map(|c| lit_str(c));
             quote!(&[#(#cs),*])
         };
-        let skip = attrs.skip;
         let parent = match attrs.parent.as_deref() {
             Some(p) => quote!(Some(#p)),
             None => quote!(None),
@@ -140,7 +221,7 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 default: #default_tok,
                 help: #help_tok,
                 kind: #kind,
-                skip: #skip,
+                role: #role,
                 min: #min,
                 max: #max,
                 log: #log,
@@ -250,6 +331,7 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 struct ParamAttrs {
+    role: Option<String>,
     default: Option<String>,
     long: Option<String>,
     value_name: Option<String>,
@@ -258,12 +340,60 @@ struct ParamAttrs {
     log: bool,
     step: Option<f64>,
     choices: Vec<String>,
-    skip: bool,
     parent: Option<String>,
     parent_values: Vec<String>,
+    /// Keys that appeared in `#[param(...)]`, for presence-aware validation
+    /// (e.g. `log = false` vs. absent, `choices = []` vs. absent).
+    present: BTreeSet<&'static str>,
 }
-fn parse_param_attrs(field: &syn::Field) -> ParamAttrs {
+
+/// The reserved placeholders argtuner can inject. Kept in sync with
+/// `argtuner_common::{PLACEHOLDER_TRIAL_DIR, PLACEHOLDER_TRIAL_ID}`.
+const INJECTED_PLACEHOLDERS: [&str; 2] = ["trial_dir", "trial_id"];
+
+/// Attribute keys permitted per `role` (in addition to `role` itself and
+/// `long`, which are allowed on every role). The lookup uses a static array
+/// returned by index, then filters out any key that is allowed.
+fn prohibited_for_role(role: &str) -> &'static [&'static str] {
+    match role {
+        "fixed" => &[
+            "min",
+            "max",
+            "step",
+            "log",
+            "choices",
+            "parent",
+            "parent_values",
+            "value_name",
+        ],
+        "tune" => &["value_name"],
+        "injected" => &[
+            "default",
+            "min",
+            "max",
+            "step",
+            "log",
+            "choices",
+            "parent",
+            "parent_values",
+        ],
+        "cli" => &[
+            "min",
+            "max",
+            "step",
+            "log",
+            "choices",
+            "parent",
+            "parent_values",
+            "value_name",
+        ],
+        _ => &[],
+    }
+}
+
+fn parse_param_attrs(field: &syn::Field) -> Result<ParamAttrs, syn::Error> {
     let mut out = ParamAttrs {
+        role: None,
         default: None,
         long: None,
         value_name: None,
@@ -272,9 +402,9 @@ fn parse_param_attrs(field: &syn::Field) -> ParamAttrs {
         log: false,
         step: None,
         choices: Vec::new(),
-        skip: false,
         parent: None,
         parent_values: Vec::new(),
+        present: BTreeSet::new(),
     };
     for attr in &field.attrs {
         if !attr.path().is_ident("param") {
@@ -289,22 +419,108 @@ fn parse_param_attrs(field: &syn::Field) -> ParamAttrs {
             };
             let value = &nv.value;
             match key.as_str() {
-                "default" => out.default = expr_string(value),
-                "long" => out.long = expr_string(value),
-                "value_name" => out.value_name = expr_string(value),
-                "min" => out.min = expr_f64(value),
-                "max" => out.max = expr_f64(value),
-                "step" => out.step = expr_f64(value),
-                "log" => out.log = expr_bool(value),
-                "choices" => out.choices = expr_string_array(value),
-                "skip" => out.skip = expr_bool(value),
-                "parent" => out.parent = expr_string(value),
-                "parent_values" => out.parent_values = expr_string_array(value),
+                "role" => {
+                    out.role = expr_string(value);
+                    out.present.insert("role");
+                }
+                "default" => {
+                    out.default = expr_string(value);
+                    out.present.insert("default");
+                }
+                "long" => {
+                    out.long = expr_string(value);
+                    out.present.insert("long");
+                }
+                "value_name" => {
+                    out.value_name = expr_string(value);
+                    out.present.insert("value_name");
+                }
+                "min" => {
+                    out.min = expr_f64(value);
+                    out.present.insert("min");
+                }
+                "max" => {
+                    out.max = expr_f64(value);
+                    out.present.insert("max");
+                }
+                "step" => {
+                    out.step = expr_f64(value);
+                    out.present.insert("step");
+                }
+                "log" => {
+                    out.log = expr_bool(value);
+                    out.present.insert("log");
+                }
+                "choices" => {
+                    out.choices = expr_string_array(value);
+                    out.present.insert("choices");
+                }
+                "parent" => {
+                    out.parent = expr_string(value);
+                    out.present.insert("parent");
+                }
+                "parent_values" => {
+                    out.parent_values = expr_string_array(value);
+                    out.present.insert("parent_values");
+                }
+                "skip" => {
+                    return Err(syn::Error::new_spanned(
+                        field,
+                        "`skip = true` was removed; use `role = \"cli\"` for an operational \
+                         flag excluded from the template and search space, or omit it for a \
+                         fixed argument",
+                    ));
+                }
                 _ => {}
             }
         }
     }
-    out
+
+    let role = out.role.as_deref().unwrap_or("fixed");
+    if !["fixed", "tune", "injected", "cli"].contains(&role) {
+        return Err(syn::Error::new_spanned(
+            field,
+            format!(
+                "unknown `role` {role:?}; expected \"fixed\", \"tune\", \"injected\", or \"cli\""
+            ),
+        ));
+    }
+
+    for key in prohibited_for_role(role) {
+        if out.present.contains(key) {
+            return Err(syn::Error::new_spanned(
+                field,
+                format!(
+                    "`{key}` is not valid on a `role = {role:?}` parameter; it would be \
+                     silently ignored"
+                ),
+            ));
+        }
+    }
+
+    if role == "injected" {
+        match out.value_name.as_deref() {
+            Some(vn) if INJECTED_PLACEHOLDERS.contains(&vn) => {}
+            Some(vn) => {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    format!(
+                        "`role = \"injected\"` value_name {vn:?} is not a placeholder argtuner \
+                         can inject; use \"trial_dir\" or \"trial_id\""
+                    ),
+                ));
+            }
+            None => {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "`role = \"injected\"` requires `value_name = \"trial_dir\"` or \
+                     `value_name = \"trial_id\"`",
+                ));
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 fn unwrap_option(ty: &syn::Type) -> (bool, syn::Type) {
@@ -419,5 +635,21 @@ fn f64_tok(v: Option<f64>) -> proc_macro2::TokenStream {
             quote!(Some(#lit))
         }
         None => quote!(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::INJECTED_PLACEHOLDERS;
+
+    #[test]
+    fn injected_whitelist_stays_in_sync_with_common() {
+        assert_eq!(
+            INJECTED_PLACEHOLDERS,
+            [
+                argtuner_common::PLACEHOLDER_TRIAL_DIR,
+                argtuner_common::PLACEHOLDER_TRIAL_ID
+            ]
+        );
     }
 }

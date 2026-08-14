@@ -220,6 +220,7 @@ dependencies = [
 name = "argtuner-derive"
 version = "0.1.2-alpha"
 dependencies = [
+ "argtuner-common",
  "argtuner-sdk",
  "proc-macro2",
  "quote",

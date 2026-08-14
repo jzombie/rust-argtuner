@@ -5,13 +5,13 @@ use argtuner_sdk::talkback_args;
 #[allow(dead_code)] // template-only definition: fields are read by the derive, not this test
 #[talkback_args]
 struct TemplateArgs {
-    #[param(default = 0.001, min = 0.0001, max = 0.1, log = true)]
+    #[param(role = "tune", default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
-    #[param(default = 100, min = 10, max = 1000)]
+    #[param(role = "tune", default = 100, min = 10, max = 1000)]
     steps: usize,
-    #[param(choices = ["adam", "adamw"])]
+    #[param(role = "tune", choices = ["adam", "adamw"])]
     optimizer: String,
-    #[param(value_name = "trial_dir")]
+    #[param(role = "injected", value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 
@@ -60,9 +60,9 @@ fn talkback_template_renders_placeholders() {
 #[allow(dead_code)]
 #[talkback_args]
 struct TrickyArgs {
-    #[param(default = 0.001, min = 0.0001, max = 0.1, step = 0.001)]
+    #[param(role = "tune", default = 0.001, min = 0.0001, max = 0.1, step = 0.001)]
     lr: f64,
-    #[param(choices = ["a\"b", "c\\d", "plain"])]
+    #[param(role = "tune", choices = ["a\"b", "c\\d", "plain"])]
     kernel: String,
 }
 
@@ -108,9 +108,9 @@ fn talkback_template_round_trips_tricky_values() {
 #[allow(dead_code)]
 #[talkback_args]
 struct BoolParamArgs {
-    #[param(default = true)]
+    #[param(role = "tune", default = true)]
     use_dropout: bool,
-    #[param(skip = true, default = false)]
+    #[param(role = "cli", default = false)]
     verbose: bool,
 }
 
@@ -127,7 +127,7 @@ fn talkback_template_renders_bool() {
     );
     assert!(
         !names.contains(&"verbose"),
-        "skipped bool must be excluded from the space: {names:?}"
+        "cli bool must be excluded from the space: {names:?}"
     );
     match parsed
         .space
@@ -149,7 +149,7 @@ fn talkback_template_renders_bool() {
 }
 
 #[test]
-fn talkback_template_skipped_bool_parses_on_cli() {
+fn talkback_template_cli_bool_parses_on_cli() {
     let command = BoolParamArgs::command();
 
     // `--verbose` (missing value) parses as true.
@@ -179,5 +179,75 @@ fn talkback_template_skipped_bool_parses_on_cli() {
     assert!(
         !*matches.get_one::<bool>("verbose").expect("verbose"),
         "absent verbose should use the default (false)"
+    );
+}
+
+#[allow(dead_code)]
+#[talkback_args]
+struct OptionalArgs {
+    #[param(role = "tune", default = 0.1, min = 0.01, max = 0.5)]
+    eval_split: Option<f64>,
+    #[param(role = "fixed", default = true)]
+    use_lora: bool,
+    #[param(role = "fixed", default = true)]
+    resume: Option<bool>,
+}
+
+#[test]
+fn talkback_template_option_tune_and_fixed_bools() {
+    let cmd = argtuner_sdk::render_template_command::<OptionalArgs>();
+
+    // Option<f64> with role=tune renders a placeholder, like a plain f64.
+    assert!(cmd.contains("--eval-split {eval_split}"), "template: {cmd}");
+    // Fixed bools render bare flags — never `--flag true` / `--flag false`.
+    assert!(cmd.contains("--use-lora"), "template: {cmd}");
+    assert!(!cmd.contains("--use-lora true"), "template: {cmd}");
+    assert!(cmd.contains("--resume"), "template: {cmd}");
+    assert!(!cmd.contains("--resume true"), "template: {cmd}");
+
+    // Only the tune param lands in [space].
+    let toml_text = argtuner_sdk::render_template_toml::<OptionalArgs>();
+    let parsed: UnifiedConfig =
+        toml::from_str(&toml_text).expect("template must parse as UnifiedConfig");
+    let names = space_names(&parsed);
+    assert!(
+        names.contains(&"eval_split"),
+        "Option<f64> tune param missing from space: {names:?}"
+    );
+    assert!(
+        !names.contains(&"use_lora") && !names.contains(&"resume"),
+        "fixed bools must not be in the space: {names:?}"
+    );
+
+    // Bare `--flag` parses as true for both bool and Option<bool> (uniform
+    // flag-style), and an explicit value still parses for the Option<bool>.
+    let command = OptionalArgs::command();
+    let matches = command
+        .clone()
+        .try_get_matches_from(["app", "--use-lora", "--resume"])
+        .expect("bare fixed-bool flags must parse");
+    assert!(
+        *matches.get_one::<bool>("use_lora").expect("use_lora"),
+        "bare --use-lora should parse as true"
+    );
+    assert!(
+        *matches.get_one::<bool>("resume").expect("resume"),
+        "bare --resume should parse as Some(true)"
+    );
+
+    let matches = command
+        .clone()
+        .try_get_matches_from(["app", "--resume", "false"])
+        .expect("--resume false must parse");
+    assert!(
+        !*matches.get_one::<bool>("resume").expect("resume"),
+        "--resume false should parse as Some(false)"
+    );
+
+    // Absent uses the clap default (true), matching the baked `--resume` flag.
+    let matches = command.try_get_matches_from(["app"]).expect("no flags must parse");
+    assert!(
+        *matches.get_one::<bool>("resume").expect("resume"),
+        "absent optional bool should use its default (true)"
     );
 }

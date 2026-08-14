@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 
 pub use argtuner_common::EventKind;
 
-use argtuner_common::{PLACEHOLDER_TRIAL_DIR, PLACEHOLDER_TRIAL_ID, TalkbackMessage};
+use argtuner_common::TalkbackMessage;
 /// Re-export of the `#[talkback_args]` attribute macro so consumers only need
 /// `argtuner-sdk`.
 pub use argtuner_derive::talkback_args;
@@ -207,18 +207,38 @@ pub fn parse_args<T: DeserializeOwned>() -> Result<T, String> {
     parse_args_from_map(&args_map())
 }
 
-/// How a declared parameter maps onto the generated CLI and search space.
+/// Who supplies the value of a declared parameter — orthogonal to its
+/// structural [`ParamKind`]. Decided by `#[param(role = ...)]`; defaults to
+/// [`ParamRole::Fixed`] for every type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamRole {
+    /// Constant value, baked into the generated template as its literal default
+    /// (or a standalone-only CLI arg when it has no default). Not sampled.
+    Fixed,
+    /// Sampled by argtuner from the search space (`--flag {name}` placeholder).
+    Tune,
+    /// Supplied per-trial by argtuner via a reserved `value_name`
+    /// (`trial_dir`/`trial_id`); rendered as `--flag {value_name}`.
+    Injected,
+    /// Operational CLI-only flag: excluded from the search space *and* the
+    /// generated template, but still a normal CLI argument for standalone runs.
+    Cli,
+}
+
+/// The structural type of a declared parameter: how it maps onto the search
+/// space and CLI parsing. Tunability is a separate concern, carried by
+/// [`ParamRole`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamKind {
-    /// A float hyperparameter (tunable when `min`/`max` are set).
+    /// A float hyperparameter.
     Float,
-    /// An integer hyperparameter (tunable when `min`/`max` are set).
+    /// An integer hyperparameter.
     Int,
-    /// A categorical hyperparameter (tunable when `choices` are set).
+    /// A categorical hyperparameter.
     Choice,
-    /// A boolean hyperparameter (tunable unless skipped).
+    /// A boolean hyperparameter.
     Bool,
-    /// Any other scalar/string CLI argument (fixed unless it carries hints).
+    /// Any other scalar/string CLI argument.
     Other,
 }
 
@@ -237,9 +257,8 @@ pub struct ParamHint {
     /// `--help` text (from the field's doc comment).
     pub help: Option<&'static str>,
     pub kind: ParamKind,
-    /// Excluded from the search space via `#[param(skip = true)]` (e.g. an
-    /// operational flag that must stay a fixed CLI arg).
-    pub skip: bool,
+    /// Who supplies this parameter's value (`#[param(role = ...)]`).
+    pub role: ParamRole,
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub log: bool,
@@ -253,26 +272,16 @@ pub struct ParamHint {
 }
 
 impl ParamHint {
-    /// True for the reserved placeholders (`trial_dir`/`trial_id`) that argtuner
-    /// injects automatically rather than samples from the search space.
+    /// Whether argtuner injects this parameter's value at runtime (role
+    /// `injected` with a reserved `trial_dir`/`trial_id` placeholder).
     pub fn is_reserved(&self) -> bool {
-        matches!(
-            self.value_name,
-            Some(PLACEHOLDER_TRIAL_DIR | PLACEHOLDER_TRIAL_ID)
-        )
+        matches!(self.role, ParamRole::Injected)
     }
 
-    /// Whether this parameter belongs in the generated `[space]`.
+    /// Whether this parameter belongs in the generated `[space]`: only
+    /// `role = "tune"` parameters are sampled.
     pub fn is_tunable(&self) -> bool {
-        if self.skip || self.is_reserved() {
-            return false;
-        }
-        match self.kind {
-            ParamKind::Float | ParamKind::Int => self.min.is_some() && self.max.is_some(),
-            ParamKind::Choice => !self.choices.is_empty(),
-            ParamKind::Bool => true,
-            ParamKind::Other => false,
-        }
+        matches!(self.role, ParamRole::Tune)
     }
 }
 
@@ -322,17 +331,34 @@ pub fn render_template_command<T: Params>() -> String {
     let bin = quote_bin_path(&resolve_bin_path());
     let mut parts = vec![bin];
     for p in T::params() {
-        if p.is_tunable() || p.is_reserved() {
-            // Tunable params become placeholders filled from the search space;
-            // reserved value_names are injected by argtuner.
-            let placeholder = p.value_name.unwrap_or(p.name);
-            parts.push(format!("--{} {{{placeholder}}}", p.long));
-        } else if let Some(default) = p.default {
-            // Fixed CLI arg with a default: bake the literal default in.
-            parts.push(format!("--{} {}", p.long, default));
+        match p.role {
+            // Sampled params become placeholders filled from the search space;
+            // injected params use their reserved value_name, supplied by argtuner.
+            ParamRole::Tune => parts.push(format!("--{} {{{}}}", p.long, p.name)),
+            ParamRole::Injected => {
+                let placeholder = p.value_name.unwrap_or(p.name);
+                parts.push(format!("--{} {{{placeholder}}}", p.long));
+            }
+            // Fixed CLI arg with a default: bake the literal default in. Bools
+            // render as a bare `--flag` for `true` (all bools parse flag-style)
+            // and are omitted for `false`, so no `--flag true/false` tokens.
+            ParamRole::Fixed => match p.kind {
+                ParamKind::Bool => {
+                    if p.default == Some("true") {
+                        parts.push(format!("--{}", p.long));
+                    }
+                }
+                _ => {
+                    if let Some(default) = p.default {
+                        parts.push(format!("--{} {}", p.long, default));
+                    }
+                }
+            },
+            // Operational CLI-only flag: excluded from the template.
+            ParamRole::Cli => {}
         }
-        // Non-tunable args without a default are standalone-only: excluded so
-        // the generated template stays renderable by argtuner.
+        // Fixed/standalone args without a default are excluded so the generated
+        // template stays renderable by argtuner.
     }
     parts.join(" ")
 }

@@ -3,13 +3,13 @@ use argtuner_sdk::talkback_args;
 #[talkback_args]
 struct ExampleArgs {
     /// Learning rate for gradient descent
-    #[param(default = 0.01, min = 0.001, max = 0.1, log = true)]
+    #[param(role = "tune", default = 0.01, min = 0.001, max = 0.1, log = true)]
     lr: f64,
     /// Number of gradient steps
-    #[param(default = 100, min = 5, max = 200)]
+    #[param(role = "tune", default = 100, min = 5, max = 200)]
     steps: usize,
-    /// Checkpoint directory (reserved: trial_dir)
-    #[param(value_name = "trial_dir")]
+    /// Checkpoint directory (injected: trial_dir)
+    #[param(role = "injected", value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 

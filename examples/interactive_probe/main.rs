@@ -7,8 +7,8 @@ use argtuner_sdk::talkback_args;
 struct ProbeArgs {
     /// Metric key to emit under
     metric_key: Option<String>,
-    /// Checkpoint directory (reserved: trial_dir)
-    #[param(value_name = "trial_dir")]
+    /// Checkpoint directory (injected: trial_dir)
+    #[param(role = "injected", value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 

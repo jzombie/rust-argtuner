@@ -28,10 +28,10 @@ fn train(lr: f64, steps: usize) -> f64 {
 #[talkback_args]
 struct Params {
     /// Learning rate
-    #[param(default = 0.001, min = 0.0001, max = 0.1, log = true)]
+    #[param(role = "tune", default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
     /// Training steps
-    #[param(default = 100, min = 10, max = 1000)]
+    #[param(role = "tune", default = 100, min = 10, max = 1000)]
     steps: usize,
 }
 

@@ -32,13 +32,13 @@ fn train(lr: f64, steps: usize) -> f64 {
 #[talkback_args]
 struct Params {
     /// Learning rate
-    #[param(default = 0.001, min = 0.0001, max = 0.1, log = true)]
+    #[param(role = "tune", default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
     /// Training steps
-    #[param(default = 100, min = 10, max = 1000)]
+    #[param(role = "tune", default = 100, min = 10, max = 1000)]
     steps: usize,
-    /// Checkpoint directory (reserved: trial_dir)
-    #[param(value_name = "trial_dir")]
+    /// Checkpoint directory (injected: trial_dir)
+    #[param(role = "injected", value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 
@@ -82,25 +82,67 @@ running under argtuner, so `stdout` stays clean.
 ## Declaring parameters
 
 Each field of your `#[talkback_args]` struct becomes a `--flag <name>` CLI
-argument and a template placeholder; its doc comment becomes the `--help` text.
-`#[param(...)]` hints control the rest:
+argument; its doc comment becomes the `--help` text. `#[param(role = ...)]`
+declares **who supplies the value**, and the other hints are constraints that
+only apply to `role = "tune"`:
 
-- `default = 0.001` — CLI default; fields without one are required (unless `Option<T>`).
-- `min = …` / `max = …` — search-space bounds → `Float`/`Int` `[space]` entry.
-- `log = true` — log-scale range (floats).
-- `step = …` — stepped (linear) range.
-- `choices = ["a", "b"]` — categorical → `Choice` `[space]` entry + CLI validation.
-- `skip = true` — exclude the parameter from the search space while keeping its
-  CLI argument (e.g. an operational `--verbose` bool you don't want tuned).
-- `value_name = "trial_dir"` — reserved placeholder, injected by argtuner.
-- `long = "checkpoint-dir"` — override the `--flag` name.
+| `role` | Who supplies the value | Requires | Template / `[space]` |
+|---|---|---|---|
+| `fixed` (**default**) | you — a constant baked into the template | nothing | `[space]`: no; template: `--flag <default>` if a default exists, else a standalone-only CLI arg |
+| `tune` | argtuner, sampled from `[space]` | `min` + `max` (float/int) or `choices` (string); bools need neither | `[space]`: yes; template: `--flag {name}` |
+| `injected` | argtuner, per trial | `value_name = "trial_dir"` or `"trial_id"` | `[space]`: no; template: `--flag {value_name}` |
+| `cli` | nobody — an operational flag, excluded from tuning entirely | nothing (non-`Option` fields need a `default`) | `[space]`: no; template: excluded |
+
+Constraint hints — `min`/`max`/`step`/`log`/`choices`/`parent`/`parent_values`
+— are only valid on `role = "tune"`; putting one on another role is a compile
+error rather than a silently ignored attribute. The macro rejects `role =
+"tune"` without the bounds its kind requires, rejects numeric bounds on `bool`,
+rejects `value_name` outside the two reserved placeholders, and reports a
+helpful error for the removed `skip = true` hint (use `role = "cli"`).
+
+Example:
+
+```rust,no_run
+use argtuner_sdk::talkback_args;
+
+#[talkback_args]
+struct Params {
+    /// tunable float, log scale
+    #[param(role = "tune", default = 0.001, min = 0.0001, max = 0.1, log = true)]
+    lr: f64,
+    /// tunable int
+    #[param(role = "tune", default = 100, min = 10, max = 1000)]
+    steps: usize,
+    /// tunable categorical string
+    #[param(role = "tune", choices = ["adam", "adamw"])]
+    optimizer: String,
+    /// tunable bool
+    #[param(role = "tune")]
+    use_dropout: bool,
+    /// fixed (non-tunable) string baked into the template
+    #[param(default = "val_loss")]
+    metric_key: String,
+    /// operational flag, excluded from the template and space
+    #[param(role = "cli", default = false)]
+    verbose: bool,
+    /// injected by argtuner per trial
+    #[param(role = "injected", value_name = "trial_dir")]
+    checkpoint_dir: Option<String>,
+    /// conditional on parent value
+    #[param(role = "tune", parent = "optimizer", parent_values = ["sgd"], default = 0.9, min = 0.0, max = 1.0)]
+    momentum: f64,
+}
+```
+
+Other supported hints: `default = 0.001` (the CLI default; fields without one
+are required unless `Option<T>`), `long = "checkpoint-dir"` (override the
+`--flag` name).
 
 Supported field types: `f64`/`f32`, integers (`usize`, `i64`, …), `String`,
 `bool` (a tunable `Bool` `[space]` entry, parsed flag-style: `--use-dropout`
-means `true`, `--use-dropout false` means `false`), and `Option<T>` (optional);
-other `FromStr` types work too. Fields with no `min`/`max`/`choices` are fixed
-CLI args — baked into the generated template as their default and excluded from
-`[space]`.
+means `true`, `--use-dropout false` means `false`), and `Option<T>` (optional;
+`Option<f64>` etc. classify by their inner type); other `FromStr` types work
+too.
 
 - **TUI & progress bars:** if your application uses interactive terminal
   loggers (e.g. `burn-rs` or `indicatif`), gate them on

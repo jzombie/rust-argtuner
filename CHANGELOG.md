@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/) and this project adheres to
 (or is loosely based on) Semantic Versioning.
 
+## Unreleased
+
+### Changed
+
+- **`#[talkback_args]` parameters now use an explicit `role` (breaking):** each
+  field declares who supplies its value via `#[param(role = ...)]` instead of
+  relying on type- and bounds-inference. `role = "fixed"` is the uniform default
+  for every type (a bare `bool` is no longer silently tunable). Roles:
+  `fixed` (constant baked into the template), `tune` (sampled from `[space]`;
+  requires `min`/`max` or `choices`, or a bool), `injected` (argtuner supplies
+  the value; `value_name` must be `trial_dir`/`trial_id`), and `cli`
+  (operational flag, excluded from template and space). The derive now rejects
+  constraint hints on non-`tune` roles, `role = "tune"` without the bounds its
+  kind requires, numeric bounds on bools, and arbitrary `value_name`s at compile
+  time. `Option<T>` fields classify by their inner type (`Option<f64>` is a
+  `Float`), and all bools — plain and `Option` — parse flag-style. The
+  `skip = true` hint was removed in favor of `role = "cli"`; old hints produce a
+  compile error pointing at the migration.
+
 ## [0.1.2-alpha] - 2026-08-13
 
 ### Added
