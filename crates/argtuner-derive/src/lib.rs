@@ -12,15 +12,16 @@ use syn::{Fields, GenericArgument, ItemStruct, Lit, PathArguments, Token};
 ///
 /// ```rust
 /// use argtuner_derive::talkback_args;
+/// use argtuner_sdk::ParamRole;
 ///
 /// #[talkback_args]
 /// struct ModelParams {
 ///     /// Learning rate
-///     #[param(role = "tune", default = 0.001, min = 0.0001, max = 0.1, log = true)]
+///     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
 ///     lr: f64,
-///     #[param(role = "tune", choices = ["adam", "adamw", "sgd"])]
+///     #[param(role = ParamRole::Tune, choices = ["adam", "adamw", "sgd"])]
 ///     optimizer: String,
-///     #[param(role = "injected", value_name = "trial_dir")]
+///     #[param(role = ParamRole::Injected, value_name = "trial_dir")]
 ///     checkpoint_dir: Option<String>,
 /// }
 ///
@@ -122,7 +123,7 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
             _ => quote!(::argtuner_sdk::ParamRole::Fixed),
         };
 
-        // Kind-dependent validation: `role = "tune"` must carry the constraints
+        // Kind-dependent validation: `role = ParamRole::Tune` must carry the constraints
         // its kind requires, and bools reject numeric/categorical constraints.
         if role_name == "tune" {
             match kind_tag {
@@ -420,7 +421,7 @@ fn parse_param_attrs(field: &syn::Field) -> Result<ParamAttrs, syn::Error> {
             let value = &nv.value;
             match key.as_str() {
                 "role" => {
-                    out.role = expr_string(value);
+                    out.role = parse_role(value)?;
                     out.present.insert("role");
                 }
                 "default" => {
@@ -478,10 +479,13 @@ fn parse_param_attrs(field: &syn::Field) -> Result<ParamAttrs, syn::Error> {
 
     let role = out.role.as_deref().unwrap_or("fixed");
     if !["fixed", "tune", "injected", "cli"].contains(&role) {
+        // Unreachable: parse_role validates the canonical variant up front.
         return Err(syn::Error::new_spanned(
             field,
             format!(
-                "unknown `role` {role:?}; expected \"fixed\", \"tune\", \"injected\", or \"cli\""
+                "unknown `role` {role:?}; expected `role = ParamRole::Fixed`, \
+                 `role = ParamRole::Tune`, `role = ParamRole::Injected`, or \
+                 `role = ParamRole::Cli`"
             ),
         ));
     }
@@ -593,6 +597,57 @@ fn expr_string(e: &syn::Expr) -> Option<String> {
         }
     }
     Some(quote!(#e).to_string())
+}
+
+/// Parse `role = <expr>` as an enum identifier/path and return the canonical
+/// variant name. Accepts bare idents (`tune`), enum paths (`ParamRole::Tune`),
+/// and fully qualified paths (`argtuner_sdk::ParamRole::Tune`), matched
+/// case-insensitively on the terminal segment. String literals and other
+/// non-path expressions are rejected. All errors are spanned on `expr` so the
+/// diagnostic underlines exactly the invalid `role` value token.
+fn parse_role(expr: &syn::Expr) -> Result<Option<String>, syn::Error> {
+    let terminal = match expr {
+        syn::Expr::Path(p) => p
+            .path
+            .segments
+            .last()
+            .map(|s| s.ident.to_string())
+            .ok_or_else(|| syn::Error::new_spanned(expr, "empty path provided for `role`"))?,
+        syn::Expr::Lit(syn::ExprLit {
+            lit: Lit::Str(_), ..
+        }) => {
+            return Err(syn::Error::new_spanned(
+                expr,
+                "string literals are no longer accepted for `role`; use \
+                 `role = ParamRole::Tune` (or bare `role = tune`)",
+            ));
+        }
+        _ => {
+            return Err(syn::Error::new_spanned(
+                expr,
+                "`role` must be an enum variant path like `role = ParamRole::Tune` \
+                 (bare `role = tune` also works)",
+            ));
+        }
+    };
+
+    let canonical = match terminal.as_str() {
+        s if s.eq_ignore_ascii_case("fixed") => "fixed",
+        s if s.eq_ignore_ascii_case("tune") => "tune",
+        s if s.eq_ignore_ascii_case("injected") => "injected",
+        s if s.eq_ignore_ascii_case("cli") => "cli",
+        _ => {
+            return Err(syn::Error::new_spanned(
+                expr,
+                format!(
+                    "unknown `role` `{terminal}`; expected `ParamRole::Fixed`, \
+                     `ParamRole::Tune`, `ParamRole::Injected`, or `ParamRole::Cli`"
+                ),
+            ));
+        }
+    };
+
+    Ok(Some(canonical.to_string()))
 }
 
 fn expr_f64(e: &syn::Expr) -> Option<f64> {

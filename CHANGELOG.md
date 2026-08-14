@@ -10,18 +10,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 
 - **`#[talkback_args]` parameters now use an explicit `role` (breaking):** each
   field declares who supplies its value via `#[param(role = ...)]` instead of
-  relying on type- and bounds-inference. `role = "fixed"` is the uniform default
-  for every type (a bare `bool` is no longer silently tunable). Roles:
-  `fixed` (constant baked into the template), `tune` (sampled from `[space]`;
-  requires `min`/`max` or `choices`, or a bool), `injected` (argtuner supplies
-  the value; `value_name` must be `trial_dir`/`trial_id`), and `cli`
+  relying on type- and bounds-inference. `role = ParamRole::Fixed` is the
+  uniform default for every type (a bare `bool` is no longer silently tunable).
+  Roles: `Fixed` (constant baked into the template), `Tune` (sampled from
+  `[space]`; requires `min`/`max` or `choices`, or a bool), `Injected` (argtuner
+  supplies the value; `value_name` must be `trial_dir`/`trial_id`), and `Cli`
   (operational flag, excluded from template and space). The derive now rejects
-  constraint hints on non-`tune` roles, `role = "tune"` without the bounds its
-  kind requires, numeric bounds on bools, and arbitrary `value_name`s at compile
-  time. `Option<T>` fields classify by their inner type (`Option<f64>` is a
-  `Float`), and all bools — plain and `Option` — parse flag-style. The
-  `skip = true` hint was removed in favor of `role = "cli"`; old hints produce a
-  compile error pointing at the migration.
+  constraint hints on non-`tune` roles, `role = ParamRole::Tune` without the
+  bounds its kind requires, numeric bounds on bools, and arbitrary `value_name`s
+  at compile time. `Option<T>` fields classify by their inner type
+  (`Option<f64>` is a `Float`), and all bools — plain and `Option` — parse
+  flag-style. The `skip = true` hint was removed in favor of
+  `role = ParamRole::Cli`; old hints produce a compile error pointing at the
+  migration. `role` takes an **enum variant path** — the canonical
+  `role = ParamRole::Tune`, or a fully-qualified
+  `role = argtuner_sdk::ParamRole::Tune` — not a string literal (bare
+  `role = tune` still parses as a fallback, but the string form `role = "tune"`
+  is rejected with a pointer to the migration).
+- **`argtuner_sdk::prelude` — single import surface for training binaries:**
+  `use argtuner_sdk::prelude::*;` brings in `talkback_args`, `init`,
+  `init_with_args`, `is_tuning_active`, `emit_metrics`, `Params`, `ParamRole`,
+  `ParamKind`, `ParamHint`, `Talkback`, `MetricsBuilder`, and `EventKind`, so
+  `#[param(role = ParamRole::Tune)]` resolves in the IDE with autocompletion and
+  hover docs. The SDK/tuner boundary is unchanged: `argtuner` (the CLI crate)
+  does **not** depend on `argtuner-sdk`, so training binaries never pull in the
+  tuner package.
 
 ## [0.1.2-alpha] - 2026-08-13
 

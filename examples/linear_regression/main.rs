@@ -1,15 +1,15 @@
-use argtuner_sdk::talkback_args;
+use argtuner_sdk::prelude::*;
 
 #[talkback_args]
 struct ExampleArgs {
     /// Learning rate for gradient descent
-    #[param(role = "tune", default = 0.01, min = 0.001, max = 0.1, log = true)]
+    #[param(role = ParamRole::Tune, default = 0.01, min = 0.001, max = 0.1, log = true)]
     lr: f64,
     /// Number of gradient steps
-    #[param(role = "tune", default = 100, min = 5, max = 200)]
+    #[param(role = ParamRole::Tune, default = 100, min = 5, max = 200)]
     steps: usize,
     /// Checkpoint directory (injected: trial_dir)
-    #[param(role = "injected", value_name = "trial_dir")]
+    #[param(role = ParamRole::Injected, value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 

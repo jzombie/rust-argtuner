@@ -1,17 +1,17 @@
 use std::collections::BTreeMap;
 
-use argtuner_sdk::talkback_args;
+use argtuner_sdk::prelude::*;
 
 #[talkback_args]
 struct ParetoArgs {
     /// Learning rate
-    #[param(role = "tune", default = 0.01, min = 0.001, max = 0.1, log = true)]
+    #[param(role = ParamRole::Tune, default = 0.01, min = 0.001, max = 0.1, log = true)]
     learning_rate: f64,
     /// Batch size
-    #[param(role = "tune", choices = ["16", "32", "64"])]
+    #[param(role = ParamRole::Tune, choices = ["16", "32", "64"])]
     batch_size: String,
     /// Checkpoint directory (injected: trial_dir)
-    #[param(role = "injected", value_name = "trial_dir")]
+    #[param(role = ParamRole::Injected, value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 

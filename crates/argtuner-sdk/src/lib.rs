@@ -21,6 +21,35 @@ pub use clap;
 /// direct dependency.
 pub use serde;
 
+/// Single import surface for training binaries: brings the derive macro, the
+/// [`Params`] contract, the [`ParamRole`]/[`ParamKind`] enums, initialization,
+/// telemetry emission, and the [`Talkback`] handle into scope together.
+///
+/// ```rust,no_run
+/// use argtuner_sdk::prelude::*;
+///
+/// #[talkback_args]
+/// struct Params {
+///     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1)]
+///     lr: f64,
+/// }
+///
+/// fn main() {
+///     let (_talkback, params) = init::<Params>();
+///     let _ = params.lr;
+/// }
+/// ```
+pub mod prelude {
+    pub use crate::emit_metrics;
+    pub use crate::init;
+    pub use crate::init_with_args;
+    pub use crate::is_tuning_active;
+    pub use crate::{
+        talkback_args, EventKind, MetricsBuilder, ParamHint, ParamKind, ParamRole, Params,
+        Talkback,
+    };
+}
+
 pub const PREFIX: &str = argtuner_common::RESULT_PREFIX;
 pub const BINDING_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PRINT_TEMPLATE_FLAG: &str = "--print-template";
@@ -208,20 +237,54 @@ pub fn parse_args<T: DeserializeOwned>() -> Result<T, String> {
 }
 
 /// Who supplies the value of a declared parameter — orthogonal to its
-/// structural [`ParamKind`]. Decided by `#[param(role = ...)]`; defaults to
-/// [`ParamRole::Fixed`] for every type.
+/// structural [`ParamKind`]. Declared per field with
+/// `#[param(role = ParamRole::Tune)]` (a bare `role = tune` also parses);
+/// defaults to [`ParamRole::Fixed`] for every type.
+///
+/// # Usage
+///
+/// ```
+/// use argtuner_sdk::prelude::*;
+///
+/// #[talkback_args]
+/// struct Params {
+///     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1)]
+///     lr: f64,
+///     #[param(role = ParamRole::Injected, value_name = "trial_dir")]
+///     checkpoint_dir: Option<String>,
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamRole {
-    /// Constant value, baked into the generated template as its literal default
-    /// (or a standalone-only CLI arg when it has no default). Not sampled.
+    /// Constant value: **you** supply it.
+    ///
+    /// - `#[param(...)]` attributes: `default` (optional).
+    /// - Template: `--flag <default>` baked as a literal (a fixed field with no
+    ///   default is a standalone-only CLI arg, excluded from the template).
+    /// - `[space]`: excluded.
     Fixed,
-    /// Sampled by argtuner from the search space (`--flag {name}` placeholder).
+    /// Sampled hyperparameter: **argtuner** supplies it from the search space.
+    ///
+    /// - `#[param(...)]` attributes: `min` + `max` (float/int), `choices`
+    ///   (string), or a bare bool; `default`, `log`, `step`, `parent`,
+    ///   `parent_values` also allowed. The derive rejects this role without the
+    ///   bounds its kind requires, and rejects numeric bounds on bools.
+    /// - Template: `--flag {name}` placeholder.
+    /// - `[space]`: included.
     Tune,
-    /// Supplied per-trial by argtuner via a reserved `value_name`
-    /// (`trial_dir`/`trial_id`); rendered as `--flag {value_name}`.
+    /// Runtime value: **argtuner** injects it per trial.
+    ///
+    /// - `#[param(...)]` attributes: `value_name` must be `"trial_dir"` or
+    ///   `"trial_id"` (anything else is a compile error). No `default`.
+    /// - Template: `--flag {value_name}` placeholder.
+    /// - `[space]`: excluded.
     Injected,
-    /// Operational CLI-only flag: excluded from the search space *and* the
-    /// generated template, but still a normal CLI argument for standalone runs.
+    /// Operational CLI-only flag: excluded from tuning entirely.
+    ///
+    /// - `#[param(...)]` attributes: `default` (required for non-`Option`
+    ///   fields, so absent flags don't panic standalone). No constraints.
+    /// - Template: excluded.
+    /// - `[space]`: excluded.
     Cli,
 }
 
@@ -279,7 +342,7 @@ impl ParamHint {
     }
 
     /// Whether this parameter belongs in the generated `[space]`: only
-    /// `role = "tune"` parameters are sampled.
+    /// `role = ParamRole::Tune` parameters are sampled.
     pub fn is_tunable(&self) -> bool {
         matches!(self.role, ParamRole::Tune)
     }

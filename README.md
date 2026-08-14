@@ -23,7 +23,7 @@ Use argtuner when:
 proc-macro, so you only need to name one crate):
 
 ```rust,no_run
-use argtuner_sdk::{emit_metrics, init, talkback_args};
+use argtuner_sdk::prelude::*;
 
 fn train(lr: f64, steps: usize) -> f64 {
     0.0 // your training logic
@@ -32,13 +32,13 @@ fn train(lr: f64, steps: usize) -> f64 {
 #[talkback_args]
 struct Params {
     /// Learning rate
-    #[param(role = "tune", default = 0.001, min = 0.0001, max = 0.1, log = true)]
+    #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
     /// Training steps
-    #[param(role = "tune", default = 100, min = 10, max = 1000)]
+    #[param(role = ParamRole::Tune, default = 100, min = 10, max = 1000)]
     steps: usize,
     /// Checkpoint directory (injected: trial_dir)
-    #[param(role = "injected", value_name = "trial_dir")]
+    #[param(role = ParamRole::Injected, value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 
@@ -84,52 +84,55 @@ running under argtuner, so `stdout` stays clean.
 Each field of your `#[talkback_args]` struct becomes a `--flag <name>` CLI
 argument; its doc comment becomes the `--help` text. `#[param(role = ...)]`
 declares **who supplies the value**, and the other hints are constraints that
-only apply to `role = "tune"`:
+only apply to `role = ParamRole::Tune`:
 
 | `role` | Who supplies the value | Requires | Template / `[space]` |
 |---|---|---|---|
-| `fixed` (**default**) | you — a constant baked into the template | nothing | `[space]`: no; template: `--flag <default>` if a default exists, else a standalone-only CLI arg |
-| `tune` | argtuner, sampled from `[space]` | `min` + `max` (float/int) or `choices` (string); bools need neither | `[space]`: yes; template: `--flag {name}` |
-| `injected` | argtuner, per trial | `value_name = "trial_dir"` or `"trial_id"` | `[space]`: no; template: `--flag {value_name}` |
-| `cli` | nobody — an operational flag, excluded from tuning entirely | nothing (non-`Option` fields need a `default`) | `[space]`: no; template: excluded |
+| `ParamRole::Fixed` (**default**) | you — a constant baked into the template | nothing | `[space]`: no; template: `--flag <default>` if a default exists, else a standalone-only CLI arg |
+| `ParamRole::Tune` | argtuner, sampled from `[space]` | `min` + `max` (float/int) or `choices` (string); bools need neither | `[space]`: yes; template: `--flag {name}` |
+| `ParamRole::Injected` | argtuner, per trial | `value_name = "trial_dir"` or `"trial_id"` | `[space]`: no; template: `--flag {value_name}` |
+| `ParamRole::Cli` | nobody — an operational flag, excluded from tuning entirely | nothing (non-`Option` fields need a `default`) | `[space]`: no; template: excluded |
 
-Constraint hints — `min`/`max`/`step`/`log`/`choices`/`parent`/`parent_values`
-— are only valid on `role = "tune"`; putting one on another role is a compile
-error rather than a silently ignored attribute. The macro rejects `role =
-"tune"` without the bounds its kind requires, rejects numeric bounds on `bool`,
-rejects `value_name` outside the two reserved placeholders, and reports a
-helpful error for the removed `skip = true` hint (use `role = "cli"`).
+`ParamRole` comes into scope via `use argtuner_sdk::prelude::*;` (a bare
+`role = tune` also parses, but the qualified form keeps IDE autocompletion and
+hover docs working). Constraint hints — `min`/`max`/`step`/`log`/`choices`/
+`parent`/`parent_values` — are only valid on `role = ParamRole::Tune`; putting
+one on another role is a compile error rather than a silently ignored
+attribute. The macro rejects `role = ParamRole::Tune` without the bounds its
+kind requires, rejects numeric bounds on `bool`, rejects `value_name` outside
+the two reserved placeholders, and reports a helpful error for the removed
+`skip = true` hint (use `role = ParamRole::Cli`).
 
 Example:
 
 ```rust,no_run
-use argtuner_sdk::talkback_args;
+use argtuner_sdk::prelude::*;
 
 #[talkback_args]
 struct Params {
     /// tunable float, log scale
-    #[param(role = "tune", default = 0.001, min = 0.0001, max = 0.1, log = true)]
+    #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
     /// tunable int
-    #[param(role = "tune", default = 100, min = 10, max = 1000)]
+    #[param(role = ParamRole::Tune, default = 100, min = 10, max = 1000)]
     steps: usize,
     /// tunable categorical string
-    #[param(role = "tune", choices = ["adam", "adamw"])]
+    #[param(role = ParamRole::Tune, choices = ["adam", "adamw"])]
     optimizer: String,
     /// tunable bool
-    #[param(role = "tune")]
+    #[param(role = ParamRole::Tune)]
     use_dropout: bool,
     /// fixed (non-tunable) string baked into the template
     #[param(default = "val_loss")]
     metric_key: String,
     /// operational flag, excluded from the template and space
-    #[param(role = "cli", default = false)]
+    #[param(role = ParamRole::Cli, default = false)]
     verbose: bool,
     /// injected by argtuner per trial
-    #[param(role = "injected", value_name = "trial_dir")]
+    #[param(role = ParamRole::Injected, value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
     /// conditional on parent value
-    #[param(role = "tune", parent = "optimizer", parent_values = ["sgd"], default = 0.9, min = 0.0, max = 1.0)]
+    #[param(role = ParamRole::Tune, parent = "optimizer", parent_values = ["sgd"], default = 0.9, min = 0.0, max = 1.0)]
     momentum: f64,
 }
 ```

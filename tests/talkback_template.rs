@@ -1,17 +1,16 @@
 use argtuner::UnifiedConfig;
-use argtuner_sdk::Params;
-use argtuner_sdk::talkback_args;
+use argtuner_sdk::prelude::*;
 
 #[allow(dead_code)] // template-only definition: fields are read by the derive, not this test
 #[talkback_args]
 struct TemplateArgs {
-    #[param(role = "tune", default = 0.001, min = 0.0001, max = 0.1, log = true)]
+    #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
-    #[param(role = "tune", default = 100, min = 10, max = 1000)]
+    #[param(role = ParamRole::Tune, default = 100, min = 10, max = 1000)]
     steps: usize,
-    #[param(role = "tune", choices = ["adam", "adamw"])]
+    #[param(role = ParamRole::Tune, choices = ["adam", "adamw"])]
     optimizer: String,
-    #[param(role = "injected", value_name = "trial_dir")]
+    #[param(role = ParamRole::Injected, value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 
@@ -60,9 +59,9 @@ fn talkback_template_renders_placeholders() {
 #[allow(dead_code)]
 #[talkback_args]
 struct TrickyArgs {
-    #[param(role = "tune", default = 0.001, min = 0.0001, max = 0.1, step = 0.001)]
+    #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, step = 0.001)]
     lr: f64,
-    #[param(role = "tune", choices = ["a\"b", "c\\d", "plain"])]
+    #[param(role = ParamRole::Tune, choices = ["a\"b", "c\\d", "plain"])]
     kernel: String,
 }
 
@@ -108,9 +107,9 @@ fn talkback_template_round_trips_tricky_values() {
 #[allow(dead_code)]
 #[talkback_args]
 struct BoolParamArgs {
-    #[param(role = "tune", default = true)]
+    #[param(role = ParamRole::Tune, default = true)]
     use_dropout: bool,
-    #[param(role = "cli", default = false)]
+    #[param(role = ParamRole::Cli, default = false)]
     verbose: bool,
 }
 
@@ -185,11 +184,11 @@ fn talkback_template_cli_bool_parses_on_cli() {
 #[allow(dead_code)]
 #[talkback_args]
 struct OptionalArgs {
-    #[param(role = "tune", default = 0.1, min = 0.01, max = 0.5)]
+    #[param(role = ParamRole::Tune, default = 0.1, min = 0.01, max = 0.5)]
     eval_split: Option<f64>,
-    #[param(role = "fixed", default = true)]
+    #[param(role = ParamRole::Fixed, default = true)]
     use_lora: bool,
-    #[param(role = "fixed", default = true)]
+    #[param(role = ParamRole::Fixed, default = true)]
     resume: Option<bool>,
 }
 

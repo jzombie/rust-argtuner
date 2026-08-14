@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 
-use argtuner_sdk::talkback_args;
+use argtuner_sdk::prelude::*;
 
 #[talkback_args]
 struct ProbeArgs {
     /// Metric key to emit under
     metric_key: Option<String>,
     /// Checkpoint directory (injected: trial_dir)
-    #[param(role = "injected", value_name = "trial_dir")]
+    #[param(role = ParamRole::Injected, value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 

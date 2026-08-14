@@ -19,7 +19,7 @@ The main `argtuner` package houses the complete orchestration engine: terminal U
 Annotate hyperparameter definitions with `#[talkback_args]`. The macro derives the CLI parser, command template generator, and search space AST:
 
 ```rust,no_run
-use argtuner_sdk::{emit_metrics, init, talkback_args};
+use argtuner_sdk::prelude::*;
 
 fn train(lr: f64, steps: usize) -> f64 {
     0.0 // Training loop logic
@@ -28,10 +28,10 @@ fn train(lr: f64, steps: usize) -> f64 {
 #[talkback_args]
 struct Params {
     /// Learning rate
-    #[param(role = "tune", default = 0.001, min = 0.0001, max = 0.1, log = true)]
+    #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
     /// Training steps
-    #[param(role = "tune", default = 100, min = 10, max = 1000)]
+    #[param(role = ParamRole::Tune, default = 100, min = 10, max = 1000)]
     steps: usize,
 }
 

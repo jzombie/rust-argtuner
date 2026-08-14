@@ -1,6 +1,6 @@
 mod patterns;
 
-use argtuner_sdk::talkback_args;
+use argtuner_sdk::prelude::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use patterns::{LossPattern, Noisy, Overfitting, SmoothDecay, Spikes, Underfitting};
 use std::thread;
@@ -10,34 +10,34 @@ use std::time::Duration;
 struct Args {
     /// The pattern to generate
     #[param(
-        role = "tune",
+        role = ParamRole::Tune,
         default = "smooth",
         choices = ["smooth", "overfitting", "underfitting", "spikes", "noisy-smooth"]
     )]
     pattern: String,
 
     /// Number of steps to generate
-    #[param(role = "fixed", default = 100)]
+    #[param(role = ParamRole::Fixed, default = 100)]
     steps: usize,
 
     /// Noise level (for noisy patterns)
-    #[param(role = "fixed", default = 0.1)]
+    #[param(role = ParamRole::Fixed, default = 0.1)]
     noise: f64,
 
     /// Spike probability (for spike patterns)
-    #[param(role = "fixed", default = 0.05)]
+    #[param(role = ParamRole::Fixed, default = 0.05)]
     spike_prob: f64,
 
     /// Metric key name (defaults to val_loss)
-    #[param(role = "fixed", default = "val_loss")]
+    #[param(role = ParamRole::Fixed, default = "val_loss")]
     metric_key: String,
 
     /// Checkpoint directory (injected: trial_dir)
-    #[param(role = "injected", value_name = "trial_dir")]
+    #[param(role = ParamRole::Injected, value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 
     /// Simulated epoch time in milliseconds
-    #[param(role = "fixed", default = 0.0)]
+    #[param(role = ParamRole::Fixed, default = 0.0)]
     epoch_time: f64,
 }
 
