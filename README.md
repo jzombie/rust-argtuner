@@ -30,7 +30,7 @@ fn train(lr: f64, steps: usize) -> f64 {
 }
 
 #[tuner_params]
-struct TunerParams {
+struct TrainParams {
     /// Learning rate
     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
@@ -43,12 +43,12 @@ struct TunerParams {
 }
 
 fn main() {
-    let (_channel, args) = init::<TunerParams>();
+    let (_channel, params) = init::<TrainParams>();
 
-    // ... your training logic using args.lr, args.steps ...
-    let val_loss = train(args.lr, args.steps);
+    // ... your training logic using params.lr, params.steps ...
+    let val_loss = train(params.lr, params.steps);
 
-    let _ = emit_metrics!("val_loss" => val_loss, "epoch" => args.steps);
+    let _ = emit_metrics!("val_loss" => val_loss, "epoch" => params.steps);
 }
 ```
 The derive generates the full CLI (`--help`, defaults, validation) and the
@@ -109,7 +109,7 @@ Example:
 use argtuner_sdk::prelude::*;
 
 #[tuner_params]
-struct TunerParams {
+struct TrainParams {
     /// tunable float, log scale
     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
@@ -169,7 +169,7 @@ use argtuner_sdk::{init, is_tuning_active};
 use burn::train::LearnerBuilder;
 
 fn main() {
-    let (_channel, params) = init::<TunerParams>();
+    let (_channel, params) = init::<TrainParams>();
 
     let mut builder = LearnerBuilder::new(&params.checkpoint_dir);
 

@@ -26,7 +26,7 @@ fn train(lr: f64, steps: usize) -> f64 {
 }
 
 #[tuner_params]
-struct TunerParams {
+struct TrainParams {
     /// Learning rate
     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
@@ -36,7 +36,7 @@ struct TunerParams {
 }
 
 fn main() {
-    let (_channel, params) = init::<TunerParams>();
+    let (_channel, params) = init::<TrainParams>();
 
     let val_loss = train(params.lr, params.steps);
     let _ = emit_metrics!("val_loss" => val_loss, "epoch" => params.steps);
