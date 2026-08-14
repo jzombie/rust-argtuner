@@ -6,16 +6,16 @@ use syn::parse_macro_input;
 use syn::punctuated::Punctuated;
 use syn::{Fields, GenericArgument, ItemStruct, Lit, PathArguments, Token};
 
-/// Generate the `argtuner_sdk::Params` implementation for a plain struct,
+/// Generate the `argtuner_sdk::TunerParams` implementation for a plain struct,
 /// turning it into both a production `clap` CLI and an argtuner
 /// template/search-space definition.
 ///
 /// ```rust
-/// use argtuner_derive::tuner_args;
+/// use argtuner_derive::tuner_params;
 /// use argtuner_sdk::ParamRole;
 ///
-/// #[tuner_args]
-/// struct ModelParams {
+/// #[tuner_params]
+/// struct ModelTunerParams {
 ///     /// Learning rate
 ///     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
 ///     lr: f64,
@@ -26,11 +26,11 @@ use syn::{Fields, GenericArgument, ItemStruct, Lit, PathArguments, Token};
 /// }
 ///
 /// fn main() {
-///     assert_eq!(<ModelParams as argtuner_sdk::Params>::params().len(), 3);
+///     assert_eq!(<ModelTunerParams as argtuner_sdk::TunerParams>::tuner_params().len(), 3);
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn tuner_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(item as ItemStruct);
 
     // Capture `#[param(...)]` metadata first, then strip the helper attribute
@@ -38,7 +38,12 @@ pub fn tuner_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // attribute after expansion. Validation errors abort expansion.
     let param_attrs: Vec<ParamAttrs> = match &input.fields {
         Fields::Named(fields) => {
-            match fields.named.iter().map(parse_param_attrs).collect::<Result<Vec<_>, _>>() {
+            match fields
+                .named
+                .iter()
+                .map(parse_param_attrs)
+                .collect::<Result<Vec<_>, _>>()
+            {
                 Ok(attrs) => attrs,
                 Err(err) => return err.to_compile_error().into(),
             }
@@ -52,7 +57,7 @@ pub fn tuner_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     if !input.generics.params.is_empty() {
-        return syn::Error::new_spanned(&input, "tuner_args does not support generic structs")
+        return syn::Error::new_spanned(&input, "tuner_params does not support generic structs")
             .to_compile_error()
             .into();
     }
@@ -63,7 +68,7 @@ pub fn tuner_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         _ => {
             return syn::Error::new_spanned(
                 &input,
-                "tuner_args only supports structs with named fields",
+                "tuner_params only supports structs with named fields",
             )
             .to_compile_error()
             .into();
@@ -215,7 +220,7 @@ pub fn tuner_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         };
 
         param_specs.push(quote! {
-            ::argtuner_sdk::ParamHint {
+            ::argtuner_sdk::TunerParam {
                 name: #name_lit,
                 long: #long_lit,
                 value_name: #value_name,
@@ -303,13 +308,13 @@ pub fn tuner_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input
 
-        impl ::argtuner_sdk::Params for #struct_ident {
+        impl ::argtuner_sdk::TunerParams for #struct_ident {
             fn app_name() -> &'static str {
                 env!("CARGO_PKG_NAME")
             }
 
-            fn params() -> &'static [::argtuner_sdk::ParamHint] {
-                static PARAMS: [::argtuner_sdk::ParamHint; #field_count] = [
+            fn tuner_params() -> &'static [::argtuner_sdk::TunerParam] {
+                static PARAMS: [::argtuner_sdk::TunerParam; #field_count] = [
                     #(#param_specs),*
                 ];
                 &PARAMS

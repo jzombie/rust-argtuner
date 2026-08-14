@@ -6,8 +6,8 @@ use patterns::{LossPattern, Noisy, Overfitting, SmoothDecay, Spikes, Underfittin
 use std::thread;
 use std::time::Duration;
 
-#[tuner_args]
-struct Args {
+#[tuner_params]
+struct Params {
     /// The pattern to generate
     #[param(
         role = ParamRole::Tune,
@@ -71,46 +71,46 @@ fn pattern_label(pattern: PatternType) -> &'static str {
 }
 
 fn main() {
-    let (channel, args) = argtuner_sdk::init::<Args>();
-    let _ = args.checkpoint_dir;
-    let pattern = pattern_from_label(&args.pattern);
+    let (channel, params) = argtuner_sdk::init::<Params>();
+    let _ = params.checkpoint_dir;
+    let pattern = pattern_from_label(&params.pattern);
     let pattern_name = pattern_label(pattern).to_string();
 
     let mut train_pattern: Box<dyn LossPattern> = match pattern {
         PatternType::Smooth => Box::new(SmoothDecay::new(2.0, 0.1, 3.0)),
         PatternType::Overfitting => Box::new(SmoothDecay::new(2.0, 0.1, 3.0)),
-        PatternType::Underfitting => Box::new(Underfitting::new(1.5, args.noise)),
+        PatternType::Underfitting => Box::new(Underfitting::new(1.5, params.noise)),
         PatternType::Spikes => Box::new(Spikes::new(
             Box::new(SmoothDecay::new(2.0, 0.1, 3.0)),
-            args.spike_prob,
+            params.spike_prob,
             1.0,
         )),
         PatternType::NoisySmooth => Box::new(Noisy::new(
             Box::new(SmoothDecay::new(2.0, 0.1, 3.0)),
-            args.noise,
+            params.noise,
         )),
     };
 
     let mut val_pattern: Box<dyn LossPattern> = match pattern {
         PatternType::Smooth => Box::new(SmoothDecay::new(2.1, 0.15, 3.0)),
-        PatternType::Overfitting => Box::new(Overfitting::new(2.0, 0.1, args.steps / 2, 20.0)),
-        PatternType::Underfitting => Box::new(Underfitting::new(1.7, args.noise * 1.2)),
+        PatternType::Overfitting => Box::new(Overfitting::new(2.0, 0.1, params.steps / 2, 20.0)),
+        PatternType::Underfitting => Box::new(Underfitting::new(1.7, params.noise * 1.2)),
         PatternType::Spikes => Box::new(Spikes::new(
             Box::new(SmoothDecay::new(2.0, 0.12, 3.0)),
-            (args.spike_prob * 1.5).min(1.0),
+            (params.spike_prob * 1.5).min(1.0),
             1.2,
         )),
         PatternType::NoisySmooth => Box::new(Noisy::new(
             Box::new(SmoothDecay::new(2.0, 0.12, 3.0)),
-            args.noise * 1.5,
+            params.noise * 1.5,
         )),
     };
 
     eprintln!("Generating pattern: {}", val_pattern.name());
     println!("step,loss,val_loss");
 
-    let pb = if args.epoch_time > 0.0 {
-        let pb = ProgressBar::new(args.steps as u64);
+    let pb = if params.epoch_time > 0.0 {
+        let pb = ProgressBar::new(params.steps as u64);
         pb.set_style(
             ProgressStyle::default_bar()
                 .template(
@@ -127,13 +127,13 @@ fn main() {
     let mut final_train_loss = 0.0;
     let mut final_val_loss = 0.0;
     let epoch_every = 10;
-    for step in 0..args.steps {
+    for step in 0..params.steps {
         if let Some(pb) = &pb {
             pb.set_position(step as u64);
-            thread::sleep(Duration::from_millis(args.epoch_time as u64));
+            thread::sleep(Duration::from_millis(params.epoch_time as u64));
         }
-        let train_loss = train_pattern.generate(step, args.steps);
-        let val_loss = val_pattern.generate(step, args.steps);
+        let train_loss = train_pattern.generate(step, params.steps);
+        let val_loss = val_pattern.generate(step, params.steps);
         println!("{},{:.6},{:.6}", step, train_loss, val_loss);
         let _ = channel
             .metrics()
@@ -144,7 +144,7 @@ fn main() {
             .record("pattern", pattern_name.clone())
             .emit_step();
         // Emit epoch event every `epoch_every` steps
-        if (step + 1) % epoch_every == 0 || step == args.steps - 1 {
+        if (step + 1) % epoch_every == 0 || step == params.steps - 1 {
             let _ = channel
                 .metrics()
                 .record("loss", train_loss)
@@ -162,7 +162,7 @@ fn main() {
         pb.finish_with_message("done");
     }
 
-    let primary = if args.metric_key == "loss" {
+    let primary = if params.metric_key == "loss" {
         final_train_loss
     } else {
         final_val_loss
@@ -173,8 +173,8 @@ fn main() {
         .record("train_loss", final_train_loss)
         .record("val_loss", final_val_loss)
         .record("pattern", &pattern_name);
-    if args.metric_key != "loss" && args.metric_key != "val_loss" {
-        metrics.record(args.metric_key.clone(), primary);
+    if params.metric_key != "loss" && params.metric_key != "val_loss" {
+        metrics.record(params.metric_key.clone(), primary);
     }
     metrics.emit_result().expect("Failed to emit result");
 }

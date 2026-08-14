@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 
 ### Changed
 
-- **`#[tuner_args]` parameters now use an explicit `role` (breaking):** each
+- **`#[tuner_params]` parameters now use an explicit `role` (breaking):** each
   field declares who supplies its value via `#[param(role = ...)]` instead of
   relying on type- and bounds-inference. `role = ParamRole::Fixed` is the
   uniform default for every type (a bare `bool` is no longer silently tunable).
@@ -28,9 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
   `role = tune` still parses as a fallback, but the string form `role = "tune"`
   is rejected with a pointer to the migration).
 - **`argtuner_sdk::prelude` — single import surface for training binaries:**
-  `use argtuner_sdk::prelude::*;` brings in `tuner_args`, `init`,
-  `init_with_args`, `is_tuning_active`, `emit_metrics`, `Params`, `ParamRole`,
-  `ParamKind`, `ParamHint`, `IpcChannel`, `MetricsBuilder`, and `EventKind`, so
+  `use argtuner_sdk::prelude::*;` brings in `tuner_params`, `init`,
+  `init_with_args`, `is_tuning_active`, `emit_metrics`, `TunerParams`, `ParamRole`,
+  `ParamKind`, `TunerParam`, `IpcChannel`, `MetricsBuilder`, and `EventKind`, so
   `#[param(role = ParamRole::Tune)]` resolves in the IDE with autocompletion and
   hover docs. The SDK/tuner boundary is unchanged: `argtuner` (the CLI crate)
   does **not** depend on `argtuner-sdk`, so training binaries never pull in the
@@ -41,7 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 ### Added
 
 - **`argtuner-sdk` — the training-side binding extracted into its own lightweight crate:** the SDK that training programs link (declare parameters, parse argv, emit `::ARGTUNER::` telemetry) moved out of the `argtuner` crate root into `crates/argtuner-sdk`. It depends only on a handful of small, ubiquitous crates (`clap`, `serde`, `serde_json`, `toml_edit`, `argtuner-common`, `argtuner-derive`) — no terminal, database, or process-supervision crates — so ML workloads never compile the CLI/TUI. Every `emit_*` helper no-ops unless the `ARGTUNER_TUNING` environment variable is set, so the same binary stays a clean standalone CLI. (`bindings/rust` → `crates/argtuner-sdk`.)
-- **`argtuner-derive` — the `#[tuner_args]` proc-macro crate:** a plain struct becomes both a production `clap` CLI, the argtuner command template, and a real search space. `#[param(...)]` hints cover `min`/`max`, `log`, `step`, `choices`, `skip`, `value_name` (reserved `trial_dir`/`trial_id`), and conditional `parent`/`parent_values`. Re-exported as `argtuner_sdk::tuner_args`. (`bindings/` → `crates/argtuner-derive`.)
+- **`argtuner-derive` — the `#[tuner_params]` proc-macro crate:** a plain struct becomes both a production `clap` CLI, the argtuner command template, and a real search space. `#[param(...)]` hints cover `min`/`max`, `log`, `step`, `choices`, `skip`, `value_name` (reserved `trial_dir`/`trial_id`), and conditional `parent`/`parent_values`. Re-exported as `argtuner_sdk::tuner_params`. (`bindings/` → `crates/argtuner-derive`.)
 - **`argtuner-common` — shared protocol types:** the canonical `IpcMessage` wire types, event names, and constants shared by the SDK and the tuner, plus the self-describing ipc protocol JSON Schema.
 - **Conditional hyperparameters (`#[param(parent = "...", parent_values = [...])]`):** a parameter is active only when its parent samples an allowed value. `validate_specs` enforces the dependency DAG (parent exists, declared before its child, yields a finite value set, no permanently unreachable children); sampling and rendering omit inactive parameters (no value, no `hp.*` field); and `CommandTemplate::strip_inactive_flags` removes both `--flag {value}` and `--flag={value}` segments from the rendered command. The random sampler's `DiscreteConfigPool` enumerates only parent-valid combinations so duplicate detection stays correct.
 - **Multi-objective optimization (Pareto frontier):** declare `[[project.objectives]]` (name / goal / primary) to optimize several objectives at once. A new Pareto engine (`src/sampler/pareto.rs`: `fast_nondominated_sort`, zero-variance-guarded `crowding_distance`, capacity-bounded `ParetoFront`) drives `run_pareto`; per-objective scores persist as `score.<name>` so the frontier is reconstructable on resume/rebuild; `argtuner run` prints the end-of-run frontier table. PSO remains single-objective (configs with objectives reject `Sampler::Pso`).
@@ -57,7 +57,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 ### Changed
 
 - **`argtuner` no longer re-exports the SDK (clean break):** the CLI crate is now just the tuner; `argtuner::init` / `argtuner::emit_*` users migrate to `argtuner-sdk`. The deprecated shims for the old `bindings/` SDK now re-export from `argtuner-sdk` (removed in a later release).
-- **`#[tuner_args]` expansion targets `argtuner_sdk`:** the derive now generates `::argtuner_sdk::` paths so SDK-only consumers compile without the CLI crate.
+- **`#[tuner_params]` expansion targets `argtuner_sdk`:** the derive now generates `::argtuner_sdk::` paths so SDK-only consumers compile without the CLI crate.
 - **CLI restructured into `src/cli/`:** the binary is a thin shim; `src/cli/mod.rs` dispatches subcommands and `src/cli/tui/mod.rs` hosts the Watch TUI (moved from `src/tui/`).
 - **term-wm bumped to 0.9.25-alpha:** the Watch TUI uses the `impl_view_component!` `child:` delegation form — the component lifecycle forwards to a per-frame `view()`, while `desired_height`/selection/hitbox delegate to the window's child field — so the copy-on-release pipeline reads selection off the focused window root.
 - **Removed `examples/guitar_tuning`** and the old `bindings/` tree in favor of the `crates/` layout.

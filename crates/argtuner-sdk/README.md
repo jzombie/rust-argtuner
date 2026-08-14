@@ -16,7 +16,7 @@ The main `argtuner` package houses the complete orchestration engine: terminal U
 
 ## Usage
 
-Annotate hyperparameter definitions with `#[tuner_args]`. The macro derives the CLI parser, command template generator, and search space AST:
+Annotate hyperparameter definitions with `#[tuner_params]`. The macro derives the CLI parser, command template generator, and search space AST:
 
 ```rust,no_run
 use argtuner_sdk::prelude::*;
@@ -25,8 +25,8 @@ fn train(lr: f64, steps: usize) -> f64 {
     0.0 // Training loop logic
 }
 
-#[tuner_args]
-struct Params {
+#[tuner_params]
+struct TunerParams {
     /// Learning rate
     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
@@ -36,7 +36,7 @@ struct Params {
 }
 
 fn main() {
-    let (_channel, params) = init::<Params>();
+    let (_channel, params) = init::<TunerParams>();
 
     let val_loss = train(params.lr, params.steps);
     let _ = emit_metrics!("val_loss" => val_loss, "epoch" => params.steps);
@@ -54,4 +54,4 @@ Target binaries expose self-inspection flags for automated setup:
 
 ## Wire Protocol
 
-The SDK emits line-delimited JSON frames to `stdout`, identified by the literal `::ARGTUNER::` marker prefix. During an active session, `argtuner` ingests these events to track evaluation scoring via `model.epoch_end` payloads. Protocol contracts are versioned via initial handshake frames and formally defined in `argtuner-common`. 
+The SDK emits line-delimited JSON frames to `stdout`, identified by the literal `::ARGTUNER::` marker prefix. During an active session, `argtuner` ingests these events to track evaluation scoring via `model.epoch_end` payloads. Protocol contracts are versioned via initial handshake frames and formally defined in `argtuner-common`.

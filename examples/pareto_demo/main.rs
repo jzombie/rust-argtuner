@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use argtuner_sdk::prelude::*;
 
-#[tuner_args]
-struct ParetoArgs {
+#[tuner_params]
+struct ParetoParams {
     /// Learning rate
     #[param(role = ParamRole::Tune, default = 0.01, min = 0.001, max = 0.1, log = true)]
     learning_rate: f64,
@@ -16,13 +16,13 @@ struct ParetoArgs {
 }
 
 fn main() {
-    let (_channel, args) = argtuner_sdk::init::<ParetoArgs>();
-    let _ = args.checkpoint_dir;
+    let (_channel, params) = argtuner_sdk::init::<ParetoParams>();
+    let _ = params.checkpoint_dir;
 
-    let batch_size: f64 = args.batch_size.parse().unwrap_or(32.0);
+    let batch_size: f64 = params.batch_size.parse().unwrap_or(32.0);
     // Simulate conflicting objectives: smaller batches lower loss but raise
     // per-trial latency (larger batches are cheaper to serve but train worse).
-    let final_loss = 0.05 + batch_size * 0.001 + args.learning_rate * 0.5;
+    let final_loss = 0.05 + batch_size * 0.001 + params.learning_rate * 0.5;
     let latency_ms = 1200.0 / batch_size;
 
     // Simulate a short training run so each trial renders a real curve in the

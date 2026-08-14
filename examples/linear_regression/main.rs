@@ -1,7 +1,7 @@
 use argtuner_sdk::prelude::*;
 
-#[tuner_args]
-struct ExampleArgs {
+#[tuner_params]
+struct ExampleParams {
     /// Learning rate for gradient descent
     #[param(role = ParamRole::Tune, default = 0.01, min = 0.001, max = 0.1, log = true)]
     lr: f64,
@@ -14,8 +14,8 @@ struct ExampleArgs {
 }
 
 fn main() {
-    let (_channel, args) = argtuner_sdk::init::<ExampleArgs>();
-    let _ = args.checkpoint_dir;
+    let (_channel, params) = argtuner_sdk::init::<ExampleParams>();
+    let _ = params.checkpoint_dir;
 
     let data = (0..10)
         .map(|x| {
@@ -26,7 +26,7 @@ fn main() {
         .collect::<Vec<_>>();
     let mut weight = 0.0_f64;
     let mut bias = 0.0_f64;
-    for _ in 0..args.steps {
+    for _ in 0..params.steps {
         let mut grad_w = 0.0_f64;
         let mut grad_b = 0.0_f64;
         for (x, y) in &data {
@@ -38,8 +38,8 @@ fn main() {
         let n = data.len() as f64;
         grad_w /= n;
         grad_b /= n;
-        weight -= args.lr * grad_w;
-        bias -= args.lr * grad_b;
+        weight -= params.lr * grad_w;
+        bias -= params.lr * grad_b;
     }
     let mut mse = 0.0_f64;
     for (x, y) in &data {
@@ -48,5 +48,5 @@ fn main() {
         mse += err * err;
     }
     mse /= data.len() as f64;
-    let _ = argtuner_sdk::emit_metrics! { "loss" => mse, "epoch" => args.steps };
+    let _ = argtuner_sdk::emit_metrics! { "loss" => mse, "epoch" => params.steps };
 }

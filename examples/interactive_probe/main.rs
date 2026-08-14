@@ -3,8 +3,8 @@ use std::io::{self, BufRead, Write};
 
 use argtuner_sdk::prelude::*;
 
-#[tuner_args]
-struct ProbeArgs {
+#[tuner_params]
+struct ProbeParams {
     /// Metric key to emit under
     metric_key: Option<String>,
     /// Checkpoint directory (injected: trial_dir)
@@ -13,7 +13,7 @@ struct ProbeArgs {
 }
 
 fn main() -> io::Result<()> {
-    let (channel, parsed) = argtuner_sdk::init::<ProbeArgs>();
+    let (channel, parsed) = argtuner_sdk::init::<ProbeParams>();
     let metric_key = parsed.metric_key.as_deref().unwrap_or("metric");
     let checkpoint_dir = parsed.checkpoint_dir.as_deref();
     let mut reader = input_reader();

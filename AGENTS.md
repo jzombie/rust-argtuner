@@ -13,8 +13,8 @@ This is a Rust workspace split along a deliberate dependency boundary:
 - `crates/argtuner-sdk/` — the **lightweight training-side binding** that
   training/model binaries link: declaring parameters, parsing argv, emitting
   `::ARGTUNER::` telemetry, and generating the argtuner command template and
-  search space via `#[tuner_args]`.
-- `crates/argtuner-derive/` — the `#[tuner_args]` proc-macro.
+  search space via `#[tuner_params]`.
+- `crates/argtuner-derive/` — the `#[tuner_params]` proc-macro.
 - `crates/argtuner-common/` — shared wire types, constants, protocol schema.
 - `crates/mock-bin/`, `crates/deprecated/` — test binaries and migration shims.
 
@@ -23,7 +23,7 @@ This is a Rust workspace split along a deliberate dependency boundary:
 - **Never add `argtuner-sdk` as a dependency of the `argtuner` crate.**
 - **Never move SDK code into `argtuner`** and never re-export SDK items from it
   (no `argtuner::init`, `argtuner::emit_*`, `argtuner::ParamRole`,
-  `argtuner::tuner_args`, `argtuner::IpcChannel`, etc.).
+  `argtuner::tuner_params`, `argtuner::IpcChannel`, etc.).
 - **Never add heavy dependencies to `argtuner-sdk`** (term-wm/ratatui,
   rusqlite, argmin, portable-pty, or anything from the tuner side). The SDK
   stays limited to small, ubiquitous crates: `clap`, `serde`, `serde_json`,
