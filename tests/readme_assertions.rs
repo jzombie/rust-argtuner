@@ -92,8 +92,10 @@ fn readme_example_extracts_payload() {
 #[test]
 fn config_example_matches_committed_file() {
     let echoed = readme_block("<!-- config.example -->", "toml");
-    let file = std::fs::read_to_string(manifest_dir().join(SHOWCASE).join("argtuner.toml"))
-        .expect("showcase config exists");
+    let file = line_ending::LineEnding::normalize(
+        &std::fs::read_to_string(manifest_dir().join(SHOWCASE).join("argtuner.toml"))
+            .expect("showcase config exists"),
+    );
     assert_eq!(
         echoed,
         file.trim(),
