@@ -3309,6 +3309,8 @@ dependencies = [
 [[package]]
 name = "term-clipboard"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da99a200a1c7164b8087921710deabc91e62d0b24716378b64f01a89d6829ad7"
 dependencies = [
  "arboard",
  "base64 0.23.1",
@@ -3321,6 +3323,8 @@ dependencies = [
 [[package]]
 name = "term-sys-io"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f05fc0e3cf5789ccd864f87b9416ac8a82f159ef1c5cc9bf9a42beb01e35986"
 dependencies = [
  "libc",
  "tracing",
@@ -3329,6 +3333,8 @@ dependencies = [
 [[package]]
 name = "term-wm"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05489b8fbfce5731b54923ff38f9f49f9e465413bcd6d913ffb83e09b0b04366"
 dependencies = [
  "clap",
  "crossbeam-channel",
@@ -3357,6 +3363,8 @@ dependencies = [
 [[package]]
 name = "term-wm-console"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a46b6207f47ced3b786fa62552e91a0666ab7dd149a9b536826c24dd69da276"
 dependencies = [
  "crossbeam-channel",
  "crossterm",
@@ -3372,6 +3380,8 @@ dependencies = [
 [[package]]
 name = "term-wm-core"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1886b01d83e09cd06e1b53ea9a6803e79bcbd71189c7ba7727cfebc22b599872"
 dependencies = [
  "bitflags 2.13.1",
  "console",
@@ -3395,6 +3405,8 @@ dependencies = [
 [[package]]
 name = "term-wm-crossterm-adapter"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "714d8a7aff23633b49caaa68876dec021c0cc888eb1549c8d1374b0d505808ea"
 dependencies = [
  "crossterm",
  "term-wm-events",
@@ -3403,6 +3415,8 @@ dependencies = [
 [[package]]
 name = "term-wm-events"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e6c1d64921f8fbe6f7a0057969eaddb69374489ef13f071530c5fb3ee4f30a7"
 dependencies = [
  "term-wm-layout-engine",
 ]
@@ -3410,10 +3424,14 @@ dependencies = [
 [[package]]
 name = "term-wm-layout-engine"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6968d954a49f70f7a9fc781fe1998870ac9a2efec85fdef54f53bedea9867e8f"
 
 [[package]]
 name = "term-wm-pty-engine"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b160e2bf9c4c4cf5a6a61bb21a7e53be4efb126feec1a31f95fc289c53e1580"
 dependencies = [
  "ctrlc",
  "libc",
@@ -3432,10 +3450,14 @@ dependencies = [
 [[package]]
 name = "term-wm-render"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00574c0771b3823d7d27d95c2fae0a88c5863dfacdb9caf9de857c1a760ca26a"
 
 [[package]]
 name = "term-wm-sys-ui-components"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7f55154ce91bb71ad18ccb798febee7af82c4c063aa2637285c6cf19f720976"
 dependencies = [
  "crossterm",
  "ratatui",
@@ -3452,6 +3474,8 @@ dependencies = [
 [[package]]
 name = "term-wm-ui-components"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "162e504e0d08603e8bbec70eaa773867e7af0c86e8bb1fc97ecb94c757aca924"
 dependencies = [
  "crossterm",
  "indoc",
@@ -3477,6 +3501,8 @@ dependencies = [
 [[package]]
 name = "term-wm-ui-facade"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e38cc1710b8b8ae5facfd781b5ebebb367e69c921a0f51e78ebb34ec443ed86"
 dependencies = [
  "term-wm-core",
  "term-wm-render",
@@ -3487,6 +3513,8 @@ dependencies = [
 [[package]]
 name = "term-wm-view"
 version = "0.9.25-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ba2540770fab5e6b5cd9d8c14331876eb7a68d7a7b38bc116960e1d1b7274a8"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

@@ -339,9 +339,8 @@ impl ChartsView {
     }
 }
 
-// Per-window views: each pane is a thin struct owning its stateful component
-// and exposing it through a `view()` that returns the child directly (the
-// window manager's header already frames the pane — no nested card border).
+// Per-window views: each pane is a thin struct owning its stateful component,
+// exposing it through a `view()` that returns the child directly.
 // `impl_view_component!`'s `child:` form forwards the component lifecycle to
 // the per-frame view and delegates `desired_height` + selection/hitbox to the
 // child field, so variable-height content keeps its layout contract and the

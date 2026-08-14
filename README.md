@@ -370,7 +370,7 @@ argtuner watch --project ./argtuner/my-project --poll-ms 5000
 - `--poll-ms` controls how often the dashboard re-reads the database
   (default **5000 ms**). The first poll fires immediately on launch; later
   polls re-run on that interval.
-- The dashboard has five windows:
+- The dashboard has seven windows:
   - **Trials** — the trial list (id, status, metric). Title is `Trials`.
   - **Charts** — metric curves for the selected trial. Title is
     `Trial {id} - Metric Curves` (`Trial {id} - Metric Curve {n}/{total}` while
@@ -380,6 +380,10 @@ argtuner watch --project ./argtuner/my-project --poll-ms 5000
     Text is selectable/copyable: drag to select, release to copy.
   - **Hyperparameters** / **Metrics** — toggled in hyperparameter mode (see
     `h` below).
+  - **Project Info** — project paths, poll interval, and live trial count.
+  - **Pareto Frontier** — the non-dominated frontier for multi-objective runs,
+    or the best trials by score for single-objective runs (titled
+    `Pareto Frontier` / `Best Trials`), with a live run-status header.
 - Keybindings:
   - `q` — quit.
   - `h` — toggle between Metric-curves mode and Hyperparameter-space mode.
