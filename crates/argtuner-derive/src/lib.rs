@@ -211,9 +211,9 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
             lazy_default_fns.push(quote! {
                 #[doc(hidden)]
                 fn #f() -> &'static str {
-                    static VALUE: ::std::sync::OnceLock<&'static str> =
+                    static VALUE: ::std::sync::OnceLock<::std::string::String> =
                         ::std::sync::OnceLock::new();
-                    *VALUE.get_or_init(|| ::std::format!("{}", #expr).leak())
+                    VALUE.get_or_init(|| ::std::format!("{}", #expr)).as_str()
                 }
             });
         }
