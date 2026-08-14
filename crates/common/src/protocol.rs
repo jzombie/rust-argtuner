@@ -3,7 +3,7 @@
 //! Training subprocesses emit JSON lines on stdout, each prefixed with the
 //! literal [`RESULT_PREFIX`] (`::ARGTUNER::`). This module is the single source
 //! of truth for the wire shapes: the emitter
-//! (`argtuner-talkback`) and the tuner parser
+//! (`argtuner`) and the tuner parser
 //! (`crate::command::subprocess::talkback`) both (de)serialize the same
 //! [`TalkbackMessage`] type.
 //!

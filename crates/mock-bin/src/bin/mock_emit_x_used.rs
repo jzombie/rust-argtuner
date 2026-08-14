@@ -22,5 +22,5 @@ fn main() {
     fields.insert("metric".to_string(), "0.0".to_string());
     fields.insert("x_used".to_string(), x_value);
     fields.insert("epoch".to_string(), "1".to_string());
-    let _ = argtuner_talkback::emit_event(argtuner_common::EventKind::EpochEnd, &fields);
+    let _ = argtuner_sdk::emit_event(argtuner_common::EventKind::EpochEnd, &fields);
 }

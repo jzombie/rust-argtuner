@@ -56,6 +56,7 @@ pub fn render_trial_command_with_overrides(
 ) -> Result<RenderedTrial, TemplateError> {
     let mut values = space.values_from_unit(coords);
     let mut fields = space.fields_from_unit(coords);
+    let inactive = space.inactive_params(coords);
     let mut env = BTreeMap::new();
     for (key, value) in overrides.values.iter() {
         values.insert(key.clone(), value.clone());
@@ -86,7 +87,20 @@ pub fn render_trial_command_with_overrides(
             .or_insert_with(|| dir.to_string_lossy().to_string());
         trial_dir = Some(dir);
     }
-    let command = template.render(&values)?;
+    // Always mark this subprocess as an argtuner-managed trial so the talkback
+    // binding can suppress stdout emission for standalone (non-argtuner) runs.
+    env.insert(
+        argtuner_common::TUNING_MARKER_ENV.to_string(),
+        argtuner_common::TUNING_MARKER_VALUE.to_string(),
+    );
+    let command = if inactive.is_empty() {
+        template.render(&values)?
+    } else {
+        // Omit inactive params' flags (their values are not in `values`, so the
+        // placeholders must be stripped before rendering).
+        let stripped = template.strip_inactive_flags(&inactive)?;
+        CommandTemplate::new(stripped).render(&values)?
+    };
     Ok(RenderedTrial {
         command,
         fields,
@@ -188,6 +202,13 @@ mod tests {
             rendered.env.get(ENV_TRIAL_DIR).map(String::as_str),
             Some(expected.as_str())
         );
+        assert_eq!(
+            rendered
+                .env
+                .get(argtuner_common::TUNING_MARKER_ENV)
+                .map(String::as_str),
+            Some(argtuner_common::TUNING_MARKER_VALUE)
+        );
         assert!(rendered.command.contains(&expected));
     }
 
@@ -266,5 +287,55 @@ mod tests {
         assert_eq!(merged.get("hp.lr").map(String::as_str), Some("0.01"));
         assert_eq!(merged.get("hp.steps").map(String::as_str), Some("5"));
         assert_eq!(merged.get("metric.error").map(String::as_str), Some("bad"));
+    }
+
+    #[test]
+    fn render_omits_inactive_conditional_flags() {
+        let template = CommandTemplate::new("run --opt {optimizer} --momentum {momentum}");
+        let space = SearchSpace {
+            params: vec![
+                crate::ParamSpec::Choice {
+                    name: "optimizer".to_string(),
+                    values: vec!["sgd".to_string(), "adam".to_string()],
+                    parent: None,
+                    parent_values: None,
+                },
+                crate::ParamSpec::Float {
+                    name: "momentum".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                    log_scale: false,
+                    step: None,
+                    format: None,
+                    parent: Some("optimizer".to_string()),
+                    parent_values: Some(vec!["sgd".to_string()]),
+                },
+            ],
+        };
+        // optimizer = adam -> momentum flag stripped from the command.
+        let rendered = render_trial_command(
+            &template,
+            &space,
+            &[1.0, 0.5],
+            0,
+            &PathBuf::from("artifacts"),
+            false,
+        )
+        .expect("render");
+        assert_eq!(rendered.command, "run --opt adam");
+        assert!(!rendered.fields.contains_key("hp.momentum"));
+        assert!(rendered.fields.contains_key("hp.optimizer"));
+        // optimizer = sgd -> momentum present.
+        let rendered = render_trial_command(
+            &template,
+            &space,
+            &[0.0, 0.5],
+            0,
+            &PathBuf::from("artifacts"),
+            false,
+        )
+        .expect("render");
+        assert!(rendered.command.contains("--momentum"));
+        assert!(rendered.fields.contains_key("hp.momentum"));
     }
 }

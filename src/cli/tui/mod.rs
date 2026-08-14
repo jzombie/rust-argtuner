@@ -3,9 +3,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use argtuner::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
-use argtuner::project::Project;
-use argtuner::trial::store::StepSubscriber;
+use crate::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
+use crate::project::Project;
+use crate::trial::store::StepSubscriber;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
@@ -36,6 +36,7 @@ use term_wm_console::console_event_source::ConsoleEventSource;
 use term_wm_console::console_render_target::ConsoleRenderTarget;
 use term_wm_core::hitbox_registry::HitboxRegistry;
 use term_wm_core::impl_component_delegate;
+use term_wm_core::impl_view_component;
 use term_wm_core::task_scheduler::{AppTask, TaskHandle};
 use term_wm_ui_facade::{LayerComponent, OverlayComponent};
 
@@ -57,22 +58,25 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
     );
 
     let trials_key = inner.open_window(AppRootComponent::Custom(AppComponent::Trials(
-        mk_trials_sv(),
+        mk_trials_window(),
     )));
     let charts_key = inner.open_window(AppRootComponent::Custom(AppComponent::Charts(
-        mk_charts_sv(),
+        mk_charts_window(),
     )));
     let details_key = inner.open_window(AppRootComponent::Custom(AppComponent::Details(
-        mk_details_sv(),
+        mk_text_window(),
     )));
     let params_key = inner.open_window(AppRootComponent::Custom(AppComponent::Params(
-        ToggleListComponent::new("Hyperparameters"),
+        mk_toggle_window("Hyperparameters"),
     )));
     let metrics_key = inner.open_window(AppRootComponent::Custom(AppComponent::Metrics(
-        ToggleListComponent::new("Metrics"),
+        mk_toggle_window("Metrics"),
     )));
     let project_info_key = inner.open_window(AppRootComponent::Custom(AppComponent::ProjectInfo(
-        mk_project_info_sv(),
+        mk_text_window(),
+    )));
+    let frontier_key = inner.open_window(AppRootComponent::Custom(AppComponent::Frontier(
+        mk_text_window(),
     )));
 
     let mut step_subscriber = StepSubscriber::new();
@@ -97,6 +101,8 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         params_key,
         metrics_key,
         project_info_key,
+        frontier_key,
+        last_activity: None,
         project_info_static,
         project_info_count: usize::MAX,
     };
@@ -109,6 +115,7 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         (app.params_key, "Hyperparameters"),
         (app.metrics_key, "Metrics"),
         (app.project_info_key, "Project Info"),
+        (app.frontier_key, "Pareto Frontier"),
     ] {
         wm.set_window_title(k, t);
         // The Watch TUI's panes are fixed views — never closable via the
@@ -124,6 +131,11 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
     output.exit()?;
     result
 }
+
+/// How long of silence (no step frames, no `running` rows) before the run is
+/// declared complete in the frontier/best-trials header. Also the hysteresis
+/// that bridges inter-trial scheduling gaps.
+const IN_PROGRESS_HOLD: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 struct TrialRow {
@@ -327,13 +339,70 @@ impl ChartsView {
     }
 }
 
+// Per-window views: each pane is a thin struct owning its stateful component,
+// exposing it through a `view()` that returns the child directly.
+// `impl_view_component!`'s `child:` form forwards the component lifecycle to
+// the per-frame view and delegates `desired_height` + selection/hitbox to the
+// child field, so variable-height content keeps its layout contract and the
+// copy pipeline (which reads selection off the focused window root) keeps
+// working.
+
+struct TrialsWindow {
+    sv: ScrollViewComponent<ListComponent>,
+}
+
+impl TrialsWindow {
+    fn view(&mut self) -> impl Component<TermWmAction> + '_ {
+        &mut self.sv
+    }
+}
+
+impl_view_component!(TrialsWindow, child: sv);
+
+struct ChartsWindow {
+    sv: ScrollViewComponent<ChartsView>,
+}
+
+impl ChartsWindow {
+    fn view(&mut self) -> impl Component<TermWmAction> + '_ {
+        &mut self.sv
+    }
+}
+
+impl_view_component!(ChartsWindow, child: sv);
+
+struct TextWindow {
+    sv: ScrollViewComponent<TextRendererComponent>,
+}
+
+impl TextWindow {
+    fn view(&mut self) -> impl Component<TermWmAction> + '_ {
+        &mut self.sv
+    }
+}
+
+impl_view_component!(TextWindow, child: sv);
+
+struct ToggleWindow {
+    list: ToggleListComponent,
+}
+
+impl ToggleWindow {
+    fn view(&mut self) -> impl Component<TermWmAction> + '_ {
+        &mut self.list
+    }
+}
+
+impl_view_component!(ToggleWindow, child: list);
+
 enum AppComponent {
-    Trials(ScrollViewComponent<ListComponent>),
-    Charts(ScrollViewComponent<ChartsView>),
-    Details(ScrollViewComponent<TextRendererComponent>),
-    Params(ToggleListComponent),
-    Metrics(ToggleListComponent),
-    ProjectInfo(ScrollViewComponent<TextRendererComponent>),
+    Trials(TrialsWindow),
+    Charts(ChartsWindow),
+    Details(TextWindow),
+    Params(ToggleWindow),
+    Metrics(ToggleWindow),
+    ProjectInfo(TextWindow),
+    Frontier(TextWindow),
 }
 
 impl_component_delegate!(AppComponent {
@@ -342,7 +411,8 @@ impl_component_delegate!(AppComponent {
     Details,
     Params,
     Metrics,
-    ProjectInfo
+    ProjectInfo,
+    Frontier
 });
 
 struct AppState {
@@ -362,6 +432,10 @@ struct AppState {
     params_key: WindowKey,
     metrics_key: WindowKey,
     project_info_key: WindowKey,
+    frontier_key: WindowKey,
+    /// Last time live activity (step frames or `running` rows) was observed;
+    /// drives the run-in-progress header with [`IN_PROGRESS_HOLD`] hysteresis.
+    last_activity: Option<std::time::Instant>,
     /// Static Project Info lines (paths + poll) built once at startup.
     project_info_static: Vec<Line<'static>>,
     /// Last trial count rendered into the Project Info window.
@@ -371,44 +445,59 @@ struct AppState {
 impl AppState {
     fn trials_sv(&mut self) -> Option<&mut ScrollViewComponent<ListComponent>> {
         match self.inner.wm().component_for_key_mut(self.trials_key) {
-            Some(AppRootComponent::Custom(AppComponent::Trials(sv))) => Some(sv),
+            Some(AppRootComponent::Custom(AppComponent::Trials(win))) => Some(&mut win.sv),
             _ => None,
         }
     }
 
     fn charts_sv(&mut self) -> Option<&mut ScrollViewComponent<ChartsView>> {
         match self.inner.wm().component_for_key_mut(self.charts_key) {
-            Some(AppRootComponent::Custom(AppComponent::Charts(sv))) => Some(sv),
+            Some(AppRootComponent::Custom(AppComponent::Charts(win))) => Some(&mut win.sv),
             _ => None,
         }
     }
 
     fn details_sv(&mut self) -> Option<&mut ScrollViewComponent<TextRendererComponent>> {
         match self.inner.wm().component_for_key_mut(self.details_key) {
-            Some(AppRootComponent::Custom(AppComponent::Details(sv))) => Some(sv),
+            Some(AppRootComponent::Custom(AppComponent::Details(win))) => Some(&mut win.sv),
             _ => None,
         }
     }
 
     fn params_list(&mut self) -> Option<&mut ToggleListComponent> {
         match self.inner.wm().component_for_key_mut(self.params_key) {
-            Some(AppRootComponent::Custom(AppComponent::Params(l))) => Some(l),
+            Some(AppRootComponent::Custom(AppComponent::Params(win))) => Some(&mut win.list),
             _ => None,
         }
     }
 
     fn metrics_list(&mut self) -> Option<&mut ToggleListComponent> {
         match self.inner.wm().component_for_key_mut(self.metrics_key) {
-            Some(AppRootComponent::Custom(AppComponent::Metrics(l))) => Some(l),
+            Some(AppRootComponent::Custom(AppComponent::Metrics(win))) => Some(&mut win.list),
             _ => None,
         }
     }
 
     fn project_info_sv(&mut self) -> Option<&mut ScrollViewComponent<TextRendererComponent>> {
         match self.inner.wm().component_for_key_mut(self.project_info_key) {
-            Some(AppRootComponent::Custom(AppComponent::ProjectInfo(sv))) => Some(sv),
+            Some(AppRootComponent::Custom(AppComponent::ProjectInfo(win))) => Some(&mut win.sv),
             _ => None,
         }
+    }
+
+    fn frontier_sv(&mut self) -> Option<&mut ScrollViewComponent<TextRendererComponent>> {
+        match self.inner.wm().component_for_key_mut(self.frontier_key) {
+            Some(AppRootComponent::Custom(AppComponent::Frontier(win))) => Some(&mut win.sv),
+            _ => None,
+        }
+    }
+
+    /// Whether a tuner run appears active: live activity was observed and the
+    /// last observation is within [`IN_PROGRESS_HOLD`]. The hold doubles as
+    /// hysteresis so inter-trial gaps don't flicker the header.
+    fn run_in_progress(&self) -> bool {
+        self.last_activity
+            .is_some_and(|last| last.elapsed() < IN_PROGRESS_HOLD)
     }
 
     fn apply_chart_mode(&mut self) {
@@ -534,10 +623,20 @@ impl AppState {
             self.charts_key,
             charts_window_title(mode, cv, cs, ml, charts_focused, trial_id),
         );
+        wm.set_window_title(
+            self.frontier_key,
+            if is_multi_objective(&self.trials) {
+                "Pareto Frontier"
+            } else {
+                "Best Trials"
+            },
+        );
     }
 
     fn refresh_trials(&mut self) {
+        let mut saw_activity = false;
         while let Some(line) = self.step_subscriber.try_recv() {
+            saw_activity = true;
             if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line)
                 && let (Some(trial_id), Some(steps)) = (
                     msg.get("trial_id").and_then(|v| v.as_i64()),
@@ -576,9 +675,31 @@ impl AppState {
                 for (trial_id, rows) in step_rows {
                     self.step_rows.entry(trial_id).or_default().extend(rows);
                 }
+                if self.trials.iter().any(|t| t.status == "running")
+                    || self
+                        .epoch_rows
+                        .values()
+                        .flatten()
+                        .any(|r| r.status == "running")
+                    || self
+                        .step_rows
+                        .values()
+                        .flatten()
+                        .any(|r| r.status == "running")
+                {
+                    saw_activity = true;
+                }
+                if saw_activity {
+                    self.last_activity = Some(std::time::Instant::now());
+                }
+                let in_progress = self.run_in_progress();
                 let items = build_trial_items(&self.trials);
                 if let Some(sv) = self.trials_sv() {
                     sv.content.borrow_mut().update_items(items);
+                }
+                let frontier = frontier_lines(&self.trials, in_progress);
+                if let Some(sv) = self.frontier_sv() {
+                    sv.content.borrow_mut().set_text(Text::from(frontier));
                 }
                 if let Some(tid) = prev_trial_id
                     && let Some(pos) = self.trials.iter().position(|t| t.trial_id == tid)
@@ -836,13 +957,13 @@ fn argtuner_keybindings() -> KeyBindings {
     kb
 }
 
-fn mk_trials_sv() -> ScrollViewComponent<ListComponent> {
+fn mk_trials_window() -> TrialsWindow {
     let mut sv = ScrollViewComponent::new(ListComponent::new("Trials"));
     sv.set_keyboard_mode(ScrollKeyMode::None);
-    sv
+    TrialsWindow { sv }
 }
 
-fn mk_charts_sv() -> ScrollViewComponent<ChartsView> {
+fn mk_charts_window() -> ChartsWindow {
     let mut sv = ScrollViewComponent::new(ChartsView {
         trials: Vec::new(),
         epoch_rows: BTreeMap::new(),
@@ -860,10 +981,10 @@ fn mk_charts_sv() -> ScrollViewComponent<ChartsView> {
     // PageUp/PageDown/Home/End scroll the chart list (the wrapper owns the
     // viewport). Up/Down fall through to ChartsView for selection moves.
     sv.set_keyboard_mode(ScrollKeyMode::PaginationOnly);
-    sv
+    ChartsWindow { sv }
 }
 
-fn mk_details_sv() -> ScrollViewComponent<TextRendererComponent> {
+fn mk_text_window() -> TextWindow {
     let mut sv = ScrollViewComponent::new(TextRendererComponent::new());
     // Keep one field per line (no reflow) so the key = value layout is preserved;
     // long values scroll horizontally if wider than the window.
@@ -873,17 +994,13 @@ fn mk_details_sv() -> ScrollViewComponent<TextRendererComponent> {
     // Full keyboard scroll: Up/Down/PageUp/PageDown/Home/End all scroll the
     // details viewport. TextRendererComponent has no key handling of its own.
     sv.set_keyboard_mode(ScrollKeyMode::Full);
-    sv
+    TextWindow { sv }
 }
 
-fn mk_project_info_sv() -> ScrollViewComponent<TextRendererComponent> {
-    let mut sv = ScrollViewComponent::new(TextRendererComponent::new());
-    // Same presentation as Trial Details: one `key = value` line each, no
-    // reflow, full keyboard scroll.
-    sv.content.borrow_mut().set_wrap(false);
-    sv.content.borrow_mut().set_selection_enabled(true);
-    sv.set_keyboard_mode(ScrollKeyMode::Full);
-    sv
+fn mk_toggle_window(title: &str) -> ToggleWindow {
+    ToggleWindow {
+        list: ToggleListComponent::new(title),
+    }
 }
 
 fn sync_param_toggles(app: &mut AppState) {
@@ -963,6 +1080,7 @@ fn load_trials(path: &Path) -> TrialLoadResult {
     Ok((trials, epoch_rows, step_rows))
 }
 
+// TODO: SQL queries should not be here
 fn load_trial_rows(conn: &Connection, table: &str) -> Result<Vec<TrialRow>, String> {
     let mut stmt = conn
         .prepare(&format!(
@@ -1001,6 +1119,7 @@ fn load_trial_rows(conn: &Connection, table: &str) -> Result<Vec<TrialRow>, Stri
     Ok(trials)
 }
 
+// TODO: SQL queries should not be here
 fn load_epoch_rows(conn: &Connection) -> Result<BTreeMap<i64, Vec<TrialRow>>, String> {
     let mut stmt = match conn.prepare(
         r#"
@@ -1049,6 +1168,7 @@ fn load_epoch_rows(conn: &Connection) -> Result<BTreeMap<i64, Vec<TrialRow>>, St
     Ok(by_trial)
 }
 
+// TODO: SQL queries should not be here
 fn load_step_rows(conn: &Connection) -> Result<TrialStepRows, String> {
     let mut stmt = match conn.prepare(
         r#"
@@ -1097,6 +1217,7 @@ fn load_step_rows(conn: &Connection) -> Result<TrialStepRows, String> {
     Ok(by_trial)
 }
 
+// TODO: SQL queries should not be here
 fn open_connection(path: &Path) -> Result<Connection, String> {
     if !path.exists() {
         return Err(format!("missing db: {}", path.display()));
@@ -1130,20 +1251,234 @@ fn metric_for_trial(trial: &TrialRow) -> Option<(String, f64)> {
 }
 
 fn metric_value_text(trial: &TrialRow) -> Option<String> {
+    // Multi-objective: show every numeric metric.* value; otherwise the
+    // resolved primary metric.
+    let mut metrics: Vec<(String, f64)> = trial
+        .fields
+        .iter()
+        .filter(|(k, _)| k.starts_with("metric.") && k.as_str() != "metric")
+        .filter_map(|(k, v)| v.parse::<f64>().ok().map(|value| (k.clone(), value)))
+        .collect();
+    metrics.sort_by(|a, b| a.0.cmp(&b.0));
+    if !metrics.is_empty() {
+        return Some(
+            metrics
+                .iter()
+                .map(|(label, value)| format!("{label}={value:.4}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
     metric_for_trial(trial).map(|(label, value)| format!("{label}={value:.4}"))
 }
 
+/// Whether any trial carries per-objective `score.<name>` fields, i.e. this is
+/// a multi-objective run (single-objective runs persist only `score`).
+fn is_multi_objective(trials: &[TrialRow]) -> bool {
+    trials
+        .iter()
+        .any(|t| t.fields.keys().any(|k| k.starts_with("score.")))
+}
+
 fn build_trial_items(trials: &[TrialRow]) -> Vec<String> {
+    let multi = is_multi_objective(trials);
+    let nd: std::collections::HashSet<i64> = if multi {
+        nondominated_trial_ids(trials)
+    } else {
+        std::collections::HashSet::new()
+    };
     trials
         .iter()
         .map(|trial| {
             let metric_text = metric_value_text(trial).unwrap_or_else(|| "-".to_string());
+            let tag = if nd.contains(&trial.trial_id) {
+                "[nd]"
+            } else {
+                ""
+            };
             format!(
-                "trial {:>3}  {:<7}  {}",
-                trial.trial_id, trial.status, metric_text
+                "trial {:>3}  {:<7}  {:<5}  {}",
+                trial.trial_id, trial.status, tag, metric_text
             )
         })
         .collect()
+}
+
+/// Trial ids on the non-dominated front, computed from the signed `score.<name>`
+/// fields. Only completed `ok` trials are eligible. Meaningful for
+/// multi-objective runs only.
+fn nondominated_trial_ids(trials: &[TrialRow]) -> std::collections::HashSet<i64> {
+    let mut vectors: Vec<(i64, Vec<f64>)> = Vec::new();
+    for trial in trials {
+        if trial.status != "ok" {
+            continue;
+        }
+        if let Some(scores) = trial_signed_scores(trial) {
+            vectors.push((trial.trial_id, scores));
+        }
+    }
+    if vectors.is_empty() {
+        return std::collections::HashSet::new();
+    }
+    let normalized: Vec<Vec<f64>> = vectors.iter().map(|(_, s)| s.clone()).collect();
+    let fronts = crate::sampler::pareto::fast_nondominated_sort(&normalized);
+    fronts
+        .first()
+        .map(|front| front.iter().map(|&i| vectors[i].0).collect())
+        .unwrap_or_default()
+}
+
+/// Signed score vector for a trial, in a deterministic (sorted) objective
+/// order derived from `score.<name>` fields; falls back to the single `score`
+/// column.
+fn trial_signed_scores(trial: &TrialRow) -> Option<Vec<f64>> {
+    let mut keys: Vec<String> = trial
+        .fields
+        .keys()
+        .filter(|k| k.starts_with("score."))
+        .cloned()
+        .collect();
+    keys.sort();
+    if keys.is_empty() {
+        return trial
+            .fields
+            .get("score")
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|score| vec![score]);
+    }
+    Some(
+        keys.iter()
+            .map(|key| {
+                trial
+                    .fields
+                    .get(key)
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(f64::INFINITY)
+            })
+            .collect(),
+    )
+}
+
+fn hparam_lines(trial: &TrialRow) -> Vec<String> {
+    let mut hparams: Vec<String> = trial
+        .fields
+        .iter()
+        .filter(|(k, _)| k.starts_with("hp."))
+        .map(|(k, v)| format!("    {:<20} {}", k.trim_start_matches("hp."), v))
+        .collect();
+    if hparams.is_empty() {
+        return hparams;
+    }
+    let mut out = vec!["  Hyperparameters:".to_string()];
+    out.append(&mut hparams);
+    out
+}
+
+/// Lines for the adaptive frontier/best-trials panel: a run-state header, then
+/// the non-dominated frontier (multi-objective) or the top trials by score
+/// (single-objective), mirroring the end-of-run summary live.
+fn frontier_lines(trials: &[TrialRow], in_progress: bool) -> Vec<Line<'static>> {
+    let status = if in_progress {
+        "Run in progress — results are live"
+    } else {
+        "Run complete — final results"
+    };
+    let mut lines = vec![Line::from(status)];
+    let ok: Vec<&TrialRow> = trials.iter().filter(|t| t.status == "ok").collect();
+    if ok.is_empty() {
+        lines.push(Line::from("(no completed trials yet)"));
+        return lines;
+    }
+    if !is_multi_objective(trials) {
+        // Single-objective: top trials by the stored score (lower is better),
+        // matching the CLI's end-of-run `print_top_trials` table.
+        let mut ranked: Vec<(&TrialRow, f64)> = ok
+            .iter()
+            .filter_map(|t| {
+                t.fields
+                    .get("score")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .map(|score| (*t, score))
+            })
+            .collect();
+        ranked.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let top = ranked.len().min(5);
+        lines.push(Line::from(format!(
+            "Best trials (top {top} of {}):",
+            ok.len()
+        )));
+        for (trial, score) in ranked.into_iter().take(top) {
+            let metric = trial
+                .fields
+                .get("metric")
+                .and_then(|name| trial.fields.get(&format!("metric.{name}")))
+                .and_then(|v| v.parse::<f64>().ok());
+            let metric_part = metric
+                .map(|m| format!("  metric={m:.4}"))
+                .unwrap_or_default();
+            lines.push(Line::from(format!(
+                "Trial {}  score={score:.4}{metric_part}",
+                trial.trial_id
+            )));
+            for line in hparam_lines(trial) {
+                lines.push(Line::from(line));
+            }
+            lines.push(Line::from(""));
+        }
+        return lines;
+    }
+    let vectors: Vec<(&TrialRow, Vec<f64>)> = ok
+        .iter()
+        .filter_map(|t| trial_signed_scores(t).map(|s| (*t, s)))
+        .collect();
+    if vectors.is_empty() {
+        lines.push(Line::from("Pareto frontier: none"));
+        return lines;
+    }
+    let normalized: Vec<Vec<f64>> = vectors.iter().map(|(_, s)| s.clone()).collect();
+    let fronts = crate::sampler::pareto::fast_nondominated_sort(&normalized);
+    let front = fronts.first().cloned().unwrap_or_default();
+    // Objective labels from the first trial's sorted score.* keys.
+    let labels: Vec<String> = {
+        let mut keys: Vec<String> = vectors[0]
+            .0
+            .fields
+            .keys()
+            .filter(|k| k.starts_with("score."))
+            .map(|k| k.trim_start_matches("score.").to_string())
+            .collect();
+        keys.sort();
+        keys
+    };
+    lines.push(Line::from(format!(
+        "Pareto frontier ({} of {} trials):",
+        front.len(),
+        vectors.len()
+    )));
+    for idx in front {
+        let (trial, signed) = &vectors[idx];
+        let parts: Vec<String> = labels
+            .iter()
+            .zip(signed.iter())
+            .map(|(name, value)| {
+                let raw = trial
+                    .fields
+                    .get(&format!("metric.{name}"))
+                    .and_then(|v| v.parse::<f64>().ok());
+                format!("{name}={:.4}", raw.unwrap_or(*value))
+            })
+            .collect();
+        lines.push(Line::from(format!(
+            "Trial {}  {}",
+            trial.trial_id,
+            parts.join(" ")
+        )));
+        for line in hparam_lines(trial) {
+            lines.push(Line::from(line));
+        }
+        lines.push(Line::from(""));
+    }
+    lines
 }
 
 fn render_charts_content(
@@ -1895,5 +2230,207 @@ mod key_tests {
             modifiers: KeyModifiers::NONE,
         });
         assert!(pressed_key(&mouse).is_none());
+    }
+}
+
+#[cfg(test)]
+mod frontier_tests {
+    use super::*;
+
+    fn trial(id: i64, loss: &str, latency: &str) -> TrialRow {
+        TrialRow {
+            trial_id: id,
+            status: "ok".to_string(),
+            elapsed_ms: 0,
+            error: None,
+            fields: BTreeMap::from([
+                ("hp.dummy".to_string(), id.to_string()),
+                ("metric.loss".to_string(), loss.to_string()),
+                ("metric.latency_ms".to_string(), latency.to_string()),
+                ("score.loss".to_string(), loss.to_string()),
+                ("score.latency_ms".to_string(), latency.to_string()),
+            ]),
+        }
+    }
+
+    #[test]
+    fn nondominated_ids_exclude_dominated_trials() {
+        // trial 2 (loss=3, latency=4) is dominated by trial 0 (1, 3).
+        let trials = vec![trial(0, "1", "3"), trial(1, "2", "1"), trial(2, "3", "4")];
+        let nd = nondominated_trial_ids(&trials);
+        assert!(nd.contains(&0));
+        assert!(nd.contains(&1));
+        assert!(!nd.contains(&2));
+    }
+
+    #[test]
+    fn frontier_lines_list_only_non_dominated() {
+        let trials = vec![trial(0, "1", "3"), trial(1, "2", "1"), trial(2, "3", "4")];
+        let lines = frontier_lines(&trials, false);
+        let text = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Run complete — final results"), "{text}");
+        assert!(text.contains("Pareto frontier (2 of 3 trials)"), "{text}");
+        assert!(text.contains("Trial 0"), "{text}");
+        assert!(text.contains("Trial 1"), "{text}");
+        assert!(!text.contains("Trial 2"), "{text}");
+        assert!(text.contains("loss="), "{text}");
+    }
+
+    #[test]
+    fn frontier_lines_marks_run_in_progress() {
+        let mut trials = vec![trial(0, "1", "3"), trial(1, "2", "1")];
+        trials[1].status = "running".to_string();
+        let lines = frontier_lines(&trials, true);
+        let text = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Run in progress"), "{text}");
+        assert!(text.contains("Pareto frontier (1 of 1 trials)"), "{text}");
+    }
+
+    #[test]
+    fn frontier_lines_single_objective_lists_best_trials() {
+        let mk = |id: i64, score: &str, metric: &str| TrialRow {
+            trial_id: id,
+            status: "ok".to_string(),
+            elapsed_ms: 0,
+            error: None,
+            fields: BTreeMap::from([
+                ("hp.x".to_string(), id.to_string()),
+                ("metric".to_string(), "loss".to_string()),
+                ("metric.loss".to_string(), metric.to_string()),
+                ("score".to_string(), score.to_string()),
+            ]),
+        };
+        let trials = vec![
+            mk(0, "0.5", "0.5"),
+            mk(1, "0.9", "0.9"),
+            mk(2, "0.2", "0.2"),
+        ];
+        let lines = frontier_lines(&trials, false);
+        let text = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Best trials (top 3 of 3)"), "{text}");
+        // Trial 2 has the best (lowest) score -> listed first.
+        assert!(text.starts_with("Run complete"), "{text}");
+        let first_trial_idx = text.find("Trial").expect("has a trial line");
+        assert!(
+            text[first_trial_idx..].starts_with("Trial 2"),
+            "best trial first: {text}"
+        );
+        assert!(text.contains("score=0.2000"), "{text}");
+        assert!(text.contains("Hyperparameters"), "{text}");
+    }
+
+    #[test]
+    fn build_trial_items_tags_non_dominated_only_in_multi_objective() {
+        let multi = vec![trial(0, "1", "3"), trial(1, "2", "1"), trial(2, "3", "4")];
+        let items = build_trial_items(&multi);
+        assert!(items[0].contains("[nd]"), "{}", items[0]);
+        assert!(items[1].contains("[nd]"), "{}", items[1]);
+        assert!(!items[2].contains("[nd]"), "{}", items[2]);
+
+        // Single-objective rows (only `score`) must not be tagged `[nd]`.
+        let single = vec![TrialRow {
+            trial_id: 0,
+            status: "ok".to_string(),
+            elapsed_ms: 0,
+            error: None,
+            fields: BTreeMap::from([("score".to_string(), "0.5".to_string())]),
+        }];
+        let items = build_trial_items(&single);
+        assert!(!items[0].contains("[nd]"), "{}", items[0]);
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+
+    /// Render a window component into an in-memory buffer and return its text.
+    fn render_content<C: Component<TermWmAction>>(
+        window: &mut C,
+        width: u16,
+        height: u16,
+    ) -> String {
+        let area = WmRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        let buffer =
+            ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, width, height));
+        let mut backend =
+            RatatuiBackend::new_simple(buffer, ratatui::layout::Rect::new(0, 0, width, height));
+        let ctx = ComponentContext::new(true).with_screen_area(area);
+        let mut registry = HitboxRegistry::new();
+        window.render(&mut backend, area, &ctx, &mut registry);
+        backend
+            .buffer
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn window_roots_delegate_child_height() {
+        // Every child reports 0 (stretch); the window roots must delegate that
+        // contract to the child rather than hardcoding their own scalar.
+        assert_eq!(mk_trials_window().desired_height(30), 0);
+        assert_eq!(mk_charts_window().desired_height(30), 0);
+        assert_eq!(mk_text_window().desired_height(30), 0);
+        assert_eq!(mk_toggle_window("Params").desired_height(30), 0);
+    }
+
+    #[test]
+    fn view_windows_render_injected_children() {
+        let mut trials = mk_trials_window();
+        trials
+            .sv
+            .content
+            .borrow_mut()
+            .update_items(vec!["trial 7".to_string()]);
+        let out = render_content(&mut trials, 30, 8);
+        assert!(out.contains("trial 7"), "list item rendered: {out:?}");
+
+        let mut charts = mk_charts_window();
+        let out = render_content(&mut charts, 40, 15);
+        assert!(
+            out.contains("No trials loaded."),
+            "charts placeholder: {out:?}"
+        );
+
+        let mut toggle = mk_toggle_window("Hyperparameters");
+        toggle.list.set_items(vec![ToggleItem {
+            id: "lr".into(),
+            label: "lr".into(),
+            checked: true,
+        }]);
+        let out = render_content(&mut toggle, 30, 8);
+        assert!(out.contains("lr"), "toggle item rendered: {out:?}");
+    }
+
+    #[test]
+    fn view_window_forwards_selection_metadata() {
+        // The copy pipeline reads selection state off the focused window root;
+        // the window bridge must forward it to the scroll view content.
+        let text = mk_text_window();
+        text.sv.content.borrow_mut().set_selection_enabled(true);
+        let root = text.selection_status();
+        let child = text.sv.selection_status();
+        assert_eq!(root.active, child.active);
+        assert_eq!(root.dragging, child.dragging);
+        assert_eq!(text.selection_text(), text.sv.selection_text());
     }
 }

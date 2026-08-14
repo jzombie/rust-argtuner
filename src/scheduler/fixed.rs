@@ -117,7 +117,7 @@ impl TrialScheduler for FixedScheduler {
         })
     }
 
-    fn record_result(&mut self, _token: TrialToken, _score: Option<f64>) {}
+    fn record_result(&mut self, _token: TrialToken, _scores: Vec<f64>) {}
 
     fn is_done(&self) -> bool {
         self.remaining == 0
@@ -147,7 +147,7 @@ mod tests {
                 trial.overrides.values.get("epochs").map(String::as_str),
                 Some("5")
             );
-            scheduler.record_result(trial.token, Some(1.0));
+            scheduler.record_result(trial.token, vec![1.0]);
         }
         assert_eq!(seen, vec![5, 5, 5]);
         assert!(scheduler.is_done());
@@ -206,7 +206,7 @@ mod tests {
             Some("20") // Should be back to 20, not 10
         );
 
-        scheduler.record_result(t1_retry.token, Some(1.0));
+        scheduler.record_result(t1_retry.token, vec![1.0]);
 
         // 4. Second trial
         let t2 = scheduler.next_trial().expect("t2");

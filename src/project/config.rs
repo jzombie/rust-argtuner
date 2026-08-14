@@ -25,6 +25,22 @@ pub struct ProjectSettings {
     pub inject_trial_placeholders: bool,
     #[serde(default)]
     pub checkpoint_arg: Option<String>,
+    #[serde(default)]
+    pub objectives: Vec<Objective>,
+}
+
+/// One objective of a multi-objective run. `primary` selects the deterministic
+/// objective used for scalar fallback columns (`score`/`metric`) and for
+/// successive-halving rung truncation; exactly one objective must be primary
+/// whenever `objectives` is non-empty.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Objective {
+    pub name: String,
+    #[serde(default = "default_goal")] // TODO: Is a hardcoded "default_goal" the best approach?
+    pub goal: Goal,
+    #[serde(default)]
+    pub primary: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +52,7 @@ pub struct ProjectConfig {
     pub pruner: Pruner,
     pub inject_trial_placeholders: bool,
     pub checkpoint_arg: Option<String>,
+    pub objectives: Vec<Objective>,
 }
 
 impl ProjectConfig {
@@ -52,7 +69,18 @@ impl ProjectConfig {
             pruner: project.pruner,
             inject_trial_placeholders: project.inject_trial_placeholders,
             checkpoint_arg: project.checkpoint_arg,
+            objectives: project.objectives,
         }
+    }
+
+    /// Index of the primary objective, or `0` when none is configured.
+    pub fn primary_objective_index(&self) -> usize {
+        self.objectives.iter().position(|o| o.primary).unwrap_or(0)
+    }
+
+    /// Whether this run is multi-objective (more than one declared objective).
+    pub fn is_multi_objective(&self) -> bool {
+        self.objectives.len() > 1
     }
 }
 
@@ -108,6 +136,10 @@ fn default_n_trials() -> usize {
 
 fn default_seed() -> u64 {
     42
+}
+
+fn default_trial_timeout_s() -> u64 {
+    0
 }
 
 fn default_pso_iters() -> usize {
@@ -242,6 +274,8 @@ pub struct SchedulerConfig {
     pub n_trials: usize,
     #[serde(default = "default_seed")]
     pub seed: u64,
+    #[serde(default = "default_trial_timeout_s")]
+    pub trial_timeout_s: u64,
     #[serde(default, skip_serializing_if = "FixedSchedulerConfig::is_empty")]
     pub fixed: FixedSchedulerConfig,
     #[serde(
@@ -258,8 +292,39 @@ impl Default for SchedulerConfig {
             kind: default_scheduler(),
             n_trials: default_n_trials(),
             seed: default_seed(),
+            trial_timeout_s: default_trial_timeout_s(),
             fixed: FixedSchedulerConfig::default(),
             successive_halving: SuccessiveHalvingSchedulerConfig::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheduler_config_defaults_trial_timeout_to_zero() {
+        assert_eq!(SchedulerConfig::default().trial_timeout_s, 0);
+    }
+
+    #[test]
+    fn scheduler_config_deserializes_trial_timeout() {
+        let toml_text = r#"
+            type = "fixed"
+            trial_timeout_s = 90
+        "#;
+        let config: SchedulerConfig = toml::from_str(toml_text).expect("parse");
+        assert_eq!(config.trial_timeout_s, 90);
+    }
+
+    #[test]
+    fn scheduler_config_serializes_trial_timeout() {
+        let config = SchedulerConfig {
+            trial_timeout_s: 30,
+            ..SchedulerConfig::default()
+        };
+        let text = toml::to_string(&config).expect("serialize");
+        assert!(text.contains("trial_timeout_s = 30"));
     }
 }

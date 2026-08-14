@@ -2,18 +2,12 @@
 name = "argtuner-talkback"
 version.workspace = true
 edition.workspace = true
-description = "Rust bindings for emitting argtuner talkback JSON events."
+description = "DEPRECATED: use the `argtuner-sdk` crate instead."
 repository.workspace = true
 license.workspace = true
 publish.workspace = true
 keywords = ["hyperparameter", "optimization", "machine-learning", "cli", "protocol"]
 categories = ["command-line-interface", "development-tools"]
 
-[features]
-clap = ["dep:clap"]
-
 [dependencies]
-argtuner-common.workspace = true
-clap = { workspace = true, optional = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+argtuner-sdk.workspace = true

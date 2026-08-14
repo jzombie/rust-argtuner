@@ -11,6 +11,20 @@ pub const RESULT_PREFIX: &str = "::ARGTUNER::";
 /// `CommandRunner` uses piped stdio instead of a PTY (test-only).
 pub const FORCE_PIPES_ENV: &str = "ARGTUNER_FORCE_PIPES";
 
+/// Env var the tuner always exports to trial subprocesses. The talkback binding
+/// checks it to detect "running under argtuner" and suppresses stdout emission
+/// when absent, so standalone runs of the same binary stay clean.
+pub const TUNING_MARKER_ENV: &str = "ARGTUNER_TUNING";
+
+/// Value set for [`TUNING_MARKER_ENV`] on every trial subprocess.
+pub const TUNING_MARKER_VALUE: &str = "1";
+
+/// Reserved template placeholder for the auto-injected per-trial id.
+pub const PLACEHOLDER_TRIAL_ID: &str = "trial_id";
+
+/// Reserved template placeholder for the auto-injected per-trial directory.
+pub const PLACEHOLDER_TRIAL_DIR: &str = "trial_dir";
+
 /// Namespaces for payload keys.
 pub const METRIC_NAMESPACE: &str = "metric";
 pub const MODEL_NAMESPACE: &str = "model";

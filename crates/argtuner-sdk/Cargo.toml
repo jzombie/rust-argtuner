@@ -1,0 +1,18 @@
+[package]
+name = "argtuner-sdk"
+version.workspace = true
+edition.workspace = true
+description = "Lightweight stdio SDK for argtuner: declare parameters once, parse argv, and emit ::ARGTUNER:: talkback protocol events from ML training workloads."
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+keywords = ["hyperparameter", "optimization", "machine-learning", "cli", "protocol"]
+categories = ["command-line-interface", "development-tools"]
+
+[dependencies]
+argtuner-common.workspace = true
+argtuner-derive.workspace = true
+clap.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+toml_edit = { workspace = true, features = ["serde"] }

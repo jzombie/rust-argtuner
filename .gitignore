@@ -1,4 +1,5 @@
 **/target/
 **/artifacts/
 *.csv
-*.sqlite
+*.sqlite*
+.cargo/config.toml

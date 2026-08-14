@@ -16,6 +16,7 @@ use crate::constants::{
 };
 use crate::trial::db::TrialDb;
 use chrono::Utc;
+use line_ending::LineEnding;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TrialStatus {
@@ -105,7 +106,7 @@ impl StepPublisher {
                                     "catchup": true,
                                 })) {
                                     let mut line = json;
-                                    line.push('\n');
+                                    line.push(LineEnding::LF.as_char());
                                     let _ = stream.write_all(line.as_bytes());
                                 }
                             }
@@ -131,7 +132,7 @@ impl StepPublisher {
         let mut clients = self.clients.lock().unwrap();
         clients.retain(|mut stream| {
             let mut line = message.to_string();
-            line.push('\n'); // TODO: Use line-ending crate
+            line.push(LineEnding::LF.as_char());
             stream.write_all(line.as_bytes()).is_ok()
         });
     }
@@ -343,8 +344,9 @@ impl TrialStore {
                     return self.db.save_project_config(config_text);
                 }
                 let diff = diff_lines(&existing, config_text);
+                let lf = LineEnding::from_current_platform().as_str();
                 let message = format!(
-                    "{CONFIG_FILENAME} changed since the last run; refusing to resume.\n{diff}"
+                    "{CONFIG_FILENAME} changed since the last run; refusing to resume.{lf}{diff}"
                 );
                 Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,

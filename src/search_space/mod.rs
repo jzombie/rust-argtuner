@@ -16,25 +16,100 @@ impl SearchSpace {
         for spec in &self.params {
             spec.validate_spec()?;
         }
+        let index: HashMap<&str, usize> = self
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, spec)| (spec.name(), i))
+            .collect();
+        for (idx, spec) in self.params.iter().enumerate() {
+            let Some(parent_name) = spec.parent() else {
+                continue;
+            };
+            let Some(&parent_idx) = index.get(parent_name) else {
+                return Err(format!(
+                    "parameter '{}' declares unknown parent '{}'",
+                    spec.name(),
+                    parent_name
+                ));
+            };
+            if parent_idx >= idx {
+                return Err(format!(
+                    "parameter '{}' parent '{}' must be declared before it in [space.params]",
+                    spec.name(),
+                    parent_name
+                ));
+            }
+            let parent = &self.params[parent_idx];
+            if parent.discrete_value_count().is_none() {
+                return Err(format!(
+                    "parameter '{}' parent '{}' must yield a finite set of string \
+                     values (Choice, Bool, or a stepped numeric)",
+                    spec.name(),
+                    parent_name
+                ));
+            }
+            for value in spec.parent_values().unwrap_or_default() {
+                if !parent.validate(value) {
+                    return Err(format!(
+                        "parameter '{}' parent_values entry '{value}' is not a \
+                         permitted value of parent '{}'",
+                        spec.name(),
+                        parent_name
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
-    pub fn values_from_unit(&self, coords: &[f64]) -> HashMap<String, String> {
+    /// Sample every param in dependency order (parents before children),
+    /// omitting params whose parent sampled a disallowed value.
+    fn sampled_values(&self, coords: &[f64]) -> HashMap<String, String> {
         let mut out = HashMap::new();
         for (spec, coord) in self.params.iter().zip(coords.iter().cloned()) {
-            let value = spec.value_from_unit(coord);
-            out.insert(spec.name().to_string(), value);
+            if !self.param_active(spec, &out) {
+                continue;
+            }
+            out.insert(spec.name().to_string(), spec.value_from_unit(coord));
         }
         out
+    }
+
+    pub fn values_from_unit(&self, coords: &[f64]) -> HashMap<String, String> {
+        self.sampled_values(coords)
     }
 
     pub fn fields_from_unit(&self, coords: &[f64]) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
-        for (spec, coord) in self.params.iter().zip(coords.iter().cloned()) {
-            let value = spec.value_from_unit(coord);
-            out.insert(format!("{}{}", HP_PREFIX, spec.name()), value);
+        for (name, value) in self.sampled_values(coords) {
+            out.insert(format!("{}{}", HP_PREFIX, name), value);
         }
         out
+    }
+
+    /// Whether `spec` is sampled for the given `coords` (its parent, if any,
+    /// sampled an allowed value). `sampled` holds already-resolved param names
+    /// -> values; validation guarantees parents precede children.
+    pub fn param_active(&self, spec: &ParamSpec, sampled: &HashMap<String, String>) -> bool {
+        let Some(parent) = spec.parent() else {
+            return true;
+        };
+        let Some(parent_value) = sampled.get(parent) else {
+            return false;
+        };
+        spec.parent_values()
+            .is_none_or(|values| values.iter().any(|v| v == parent_value))
+    }
+
+    /// Names of params that are inactive for the given `coords`.
+    pub fn inactive_params(&self, coords: &[f64]) -> Vec<String> {
+        let sampled = self.sampled_values(coords);
+        self.params
+            .iter()
+            .filter(|spec| spec.parent().is_some() && !self.param_active(spec, &sampled))
+            .map(|spec| spec.name().to_string())
+            .collect()
     }
 
     pub fn validate_value(&self, name: &str, value: &str) -> bool {
@@ -61,6 +136,10 @@ pub enum ParamSpec {
         step: Option<f64>,
         #[serde(default)]
         format: Option<String>,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        parent_values: Option<Vec<String>>,
     },
     Int {
         name: String,
@@ -68,10 +147,25 @@ pub enum ParamSpec {
         max: i64,
         #[serde(default)]
         step: Option<i64>,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        parent_values: Option<Vec<String>>,
     },
     Choice {
         name: String,
         values: Vec<String>,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        parent_values: Option<Vec<String>>,
+    },
+    Bool {
+        name: String,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        parent_values: Option<Vec<String>>,
     },
 }
 
@@ -85,6 +179,10 @@ enum ParamSpecPre {
         max: i64,
         #[serde(default)]
         step: Option<i64>,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        parent_values: Option<Vec<String>>,
     },
     Float {
         name: String,
@@ -96,6 +194,10 @@ enum ParamSpecPre {
         step: Option<f64>,
         #[serde(default)]
         format: Option<String>,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        parent_values: Option<Vec<String>>,
     },
     Choice {
         name: String,
@@ -103,6 +205,17 @@ enum ParamSpecPre {
         values: Vec<serde_json::Value>,
         #[serde(default)]
         value: Option<serde_json::Value>,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        parent_values: Option<Vec<String>>,
+    },
+    Bool {
+        name: String,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        parent_values: Option<Vec<String>>,
     },
 }
 
@@ -119,6 +232,10 @@ enum TaggedParamSpec {
         step: Option<f64>,
         #[serde(default)]
         format: Option<String>,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        parent_values: Option<Vec<String>>,
     },
     Int {
         name: String,
@@ -126,6 +243,10 @@ enum TaggedParamSpec {
         max: i64,
         #[serde(default)]
         step: Option<i64>,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        parent_values: Option<Vec<String>>,
     },
     Choice {
         name: String,
@@ -133,6 +254,17 @@ enum TaggedParamSpec {
         values: Vec<serde_json::Value>,
         #[serde(default)]
         value: Option<serde_json::Value>,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        parent_values: Option<Vec<String>>,
+    },
+    Bool {
+        name: String,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        parent_values: Option<Vec<String>>,
     },
 }
 
@@ -147,6 +279,8 @@ impl From<ParamSpecPre> for ParamSpec {
                     log_scale,
                     step,
                     format,
+                    parent,
+                    parent_values,
                 } => ParamSpec::Float {
                     name,
                     min,
@@ -154,45 +288,72 @@ impl From<ParamSpecPre> for ParamSpec {
                     log_scale,
                     step,
                     format,
+                    parent,
+                    parent_values,
                 },
                 TaggedParamSpec::Int {
                     name,
                     min,
                     max,
                     step,
+                    parent,
+                    parent_values,
                 } => ParamSpec::Int {
                     name,
                     min,
                     max,
                     step,
+                    parent,
+                    parent_values,
                 },
                 TaggedParamSpec::Choice {
                     name,
                     values,
                     value,
+                    parent,
+                    parent_values,
                 } => ParamSpec::Choice {
                     name,
                     values: resolve_values(values, value),
+                    parent,
+                    parent_values,
+                },
+                TaggedParamSpec::Bool {
+                    name,
+                    parent,
+                    parent_values,
+                } => ParamSpec::Bool {
+                    name,
+                    parent,
+                    parent_values,
                 },
             },
             ParamSpecPre::Choice {
                 name,
                 values,
                 value,
+                parent,
+                parent_values,
             } => ParamSpec::Choice {
                 name,
                 values: resolve_values(values, value),
+                parent,
+                parent_values,
             },
             ParamSpecPre::Int {
                 name,
                 min,
                 max,
                 step,
+                parent,
+                parent_values,
             } => ParamSpec::Int {
                 name,
                 min,
                 max,
                 step,
+                parent,
+                parent_values,
             },
             ParamSpecPre::Float {
                 name,
@@ -201,6 +362,8 @@ impl From<ParamSpecPre> for ParamSpec {
                 log_scale,
                 step,
                 format,
+                parent,
+                parent_values,
             } => ParamSpec::Float {
                 name,
                 min,
@@ -208,6 +371,17 @@ impl From<ParamSpecPre> for ParamSpec {
                 log_scale,
                 step,
                 format,
+                parent,
+                parent_values,
+            },
+            ParamSpecPre::Bool {
+                name,
+                parent,
+                parent_values,
+            } => ParamSpec::Bool {
+                name,
+                parent,
+                parent_values,
             },
         }
     }
@@ -241,16 +415,53 @@ impl ParamSpec {
             ParamSpec::Float { name, .. } => name,
             ParamSpec::Int { name, .. } => name,
             ParamSpec::Choice { name, .. } => name,
+            ParamSpec::Bool { name, .. } => name,
         }
     }
 
+    pub fn parent(&self) -> Option<&str> {
+        match self {
+            ParamSpec::Float { parent, .. } => parent.as_deref(),
+            ParamSpec::Int { parent, .. } => parent.as_deref(),
+            ParamSpec::Choice { parent, .. } => parent.as_deref(),
+            ParamSpec::Bool { parent, .. } => parent.as_deref(),
+        }
+    }
+
+    pub fn parent_values(&self) -> Option<&[String]> {
+        match self {
+            ParamSpec::Float { parent_values, .. } => parent_values.as_deref(),
+            ParamSpec::Int { parent_values, .. } => parent_values.as_deref(),
+            ParamSpec::Choice { parent_values, .. } => parent_values.as_deref(),
+            ParamSpec::Bool { parent_values, .. } => parent_values.as_deref(),
+        }
+    }
+
+    /// Whether this param is conditional on a parent's sampled value.
+    pub fn is_conditional(&self) -> bool {
+        self.parent().is_some()
+    }
+
     pub fn validate_spec(&self) -> Result<(), String> {
+        let name = self.name();
+        // `parent` and `parent_values` are paired and non-empty.
+        match (self.parent(), self.parent_values()) {
+            (None, None) => {}
+            (Some(_), Some(values)) if !values.is_empty() => {}
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(format!(
+                    "parameter '{name}' must set both parent and parent_values (or neither)"
+                ));
+            }
+            (Some(_), Some(_)) => {
+                return Err(format!(
+                    "parameter '{name}' parent_values must be non-empty"
+                ));
+            }
+        }
         match self {
             ParamSpec::Float {
-                name,
-                log_scale,
-                step,
-                ..
+                log_scale, step, ..
             } => {
                 if *log_scale && step.is_some() {
                     return Err(format!(
@@ -265,7 +476,7 @@ impl ParamSpec {
                 }
                 Ok(())
             }
-            ParamSpec::Int { name, step, .. } => {
+            ParamSpec::Int { step, .. } => {
                 if let Some(step) = step
                     && *step <= 0
                 {
@@ -274,6 +485,7 @@ impl ParamSpec {
                 Ok(())
             }
             ParamSpec::Choice { .. } => Ok(()),
+            ParamSpec::Bool { .. } => Ok(()),
         }
     }
 
@@ -311,6 +523,7 @@ impl ParamSpec {
                 }
             }
             ParamSpec::Choice { values, .. } => values.contains(&value.to_string()),
+            ParamSpec::Bool { .. } => matches!(value, "true" | "false"),
         }
     }
 
@@ -350,6 +563,13 @@ impl ParamSpec {
                     values[idx.min(values.len() - 1)].clone()
                 }
             }
+            ParamSpec::Bool { .. } => {
+                if c < 0.5 {
+                    "false".to_string()
+                } else {
+                    "true".to_string()
+                }
+            }
         }
     }
 
@@ -383,6 +603,7 @@ impl ParamSpec {
                 usize::try_from(steps + 1).ok()
             }
             ParamSpec::Choice { values, .. } => Some(values.len()),
+            ParamSpec::Bool { .. } => Some(2),
         }
     }
 
@@ -441,6 +662,7 @@ impl ParamSpec {
                 Some(out)
             }
             ParamSpec::Choice { values, .. } => Some(values.clone()),
+            ParamSpec::Bool { .. } => Some(vec!["false".to_string(), "true".to_string()]),
         }
     }
 }
@@ -497,16 +719,22 @@ mod tests {
                     log_scale: false,
                     step: None,
                     format: None,
+                    parent: None,
+                    parent_values: None,
                 },
                 ParamSpec::Int {
                     name: "steps".to_string(),
                     min: 10,
                     max: 20,
                     step: None,
+                    parent: None,
+                    parent_values: None,
                 },
                 ParamSpec::Choice {
                     name: "mode".to_string(),
                     values: vec!["a".to_string(), "b".to_string()],
+                    parent: None,
+                    parent_values: None,
                 },
             ],
         };
@@ -527,12 +755,16 @@ mod tests {
                     log_scale: false,
                     step: Some(0.1),
                     format: Some("{:.3}".to_string()),
+                    parent: None,
+                    parent_values: None,
                 },
                 ParamSpec::Int {
                     name: "buckets".to_string(),
                     min: 0,
                     max: 10,
                     step: Some(2),
+                    parent: None,
+                    parent_values: None,
                 },
             ],
         };
@@ -555,6 +787,8 @@ mod tests {
                 log_scale: true,
                 step: Some(1e-5),
                 format: None,
+                parent: None,
+                parent_values: None,
             }],
         };
         let err = space
@@ -573,7 +807,287 @@ mod tests {
             log_scale: false,
             step: None,
             format: None,
+            parent: None,
+            parent_values: None,
         };
         assert!(spec.discrete_values().is_none());
+    }
+
+    #[test]
+    fn bool_maps_unit_to_values() {
+        let spec = ParamSpec::Bool {
+            name: "use_dropout".to_string(),
+            parent: None,
+            parent_values: None,
+        };
+        assert_eq!(spec.value_from_unit(0.0), "false");
+        assert_eq!(spec.value_from_unit(0.49), "false");
+        assert_eq!(spec.value_from_unit(0.5), "true");
+        assert_eq!(spec.value_from_unit(1.0), "true");
+    }
+
+    #[test]
+    fn bool_validates_only_true_false() {
+        let spec = ParamSpec::Bool {
+            name: "use_dropout".to_string(),
+            parent: None,
+            parent_values: None,
+        };
+        assert!(spec.validate("true"));
+        assert!(spec.validate("false"));
+        assert!(!spec.validate("yes"));
+        assert!(!spec.validate("1"));
+        assert!(!spec.validate("TRUE"));
+    }
+
+    #[test]
+    fn bool_is_discrete_with_two_values() {
+        let spec = ParamSpec::Bool {
+            name: "use_dropout".to_string(),
+            parent: None,
+            parent_values: None,
+        };
+        assert_eq!(spec.discrete_value_count(), Some(2));
+        assert_eq!(
+            spec.discrete_values(),
+            Some(vec!["false".to_string(), "true".to_string()])
+        );
+    }
+
+    #[test]
+    fn bool_serde_round_trips_type_tag() {
+        let spec = ParamSpec::Bool {
+            name: "use_dropout".to_string(),
+            parent: None,
+            parent_values: None,
+        };
+        let toml_text = toml::to_string(&spec).expect("serialize");
+        assert!(toml_text.contains("type = \"Bool\""), "toml: {toml_text}");
+        assert!(
+            toml_text.contains("name = \"use_dropout\""),
+            "toml: {toml_text}"
+        );
+        let back: ParamSpec = toml::from_str(&toml_text).expect("deserialize");
+        assert!(matches!(back, ParamSpec::Bool { .. }));
+    }
+
+    #[test]
+    fn conditional_serde_round_trips_parent_fields() {
+        let spec = ParamSpec::Choice {
+            name: "momentum".to_string(),
+            values: vec!["0.9".to_string()],
+            parent: Some("optimizer".to_string()),
+            parent_values: Some(vec!["sgd".to_string()]),
+        };
+        let toml_text = toml::to_string(&spec).expect("serialize");
+        assert!(
+            toml_text.contains("parent = \"optimizer\""),
+            "toml: {toml_text}"
+        );
+        assert!(
+            toml_text.contains("parent_values = [\"sgd\"]"),
+            "toml: {toml_text}"
+        );
+        let back: ParamSpec = toml::from_str(&toml_text).expect("deserialize");
+        assert_eq!(back.parent(), Some("optimizer"));
+        assert_eq!(
+            back.parent_values(),
+            Some(vec!["sgd".to_string()].as_slice())
+        );
+    }
+
+    fn cond_optimizer_momentum_space() -> SearchSpace {
+        SearchSpace {
+            params: vec![
+                ParamSpec::Choice {
+                    name: "optimizer".to_string(),
+                    values: vec!["sgd".to_string(), "adam".to_string()],
+                    parent: None,
+                    parent_values: None,
+                },
+                ParamSpec::Float {
+                    name: "momentum".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                    log_scale: false,
+                    step: None,
+                    format: None,
+                    parent: Some("optimizer".to_string()),
+                    parent_values: Some(vec!["sgd".to_string()]),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn conditional_params_omit_inactive_values() {
+        let space = cond_optimizer_momentum_space();
+        // optimizer = sgd (unit 0.0) -> momentum active.
+        let values = space.values_from_unit(&[0.0, 0.5]);
+        assert!(values.contains_key("optimizer"));
+        assert!(values.contains_key("momentum"));
+        let fields = space.fields_from_unit(&[0.0, 0.5]);
+        assert!(fields.contains_key("hp.momentum"));
+        assert!(space.inactive_params(&[0.0, 0.5]).is_empty());
+        // optimizer = adam (unit 1.0) -> momentum omitted everywhere.
+        let values = space.values_from_unit(&[1.0, 0.5]);
+        assert!(values.contains_key("optimizer"));
+        assert!(!values.contains_key("momentum"));
+        let fields = space.fields_from_unit(&[1.0, 0.5]);
+        assert!(!fields.contains_key("hp.momentum"));
+        assert_eq!(
+            space.inactive_params(&[1.0, 0.5]),
+            vec!["momentum".to_string()]
+        );
+    }
+
+    #[test]
+    fn grandchild_conditional_validates_and_samples() {
+        let space = SearchSpace {
+            params: vec![
+                ParamSpec::Choice {
+                    name: "opt".to_string(),
+                    values: vec!["sgd".to_string(), "adam".to_string()],
+                    parent: None,
+                    parent_values: None,
+                },
+                ParamSpec::Choice {
+                    name: "sub".to_string(),
+                    values: vec!["a".to_string(), "b".to_string()],
+                    parent: Some("opt".to_string()),
+                    parent_values: Some(vec!["sgd".to_string()]),
+                },
+                ParamSpec::Float {
+                    name: "lr".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                    log_scale: false,
+                    step: None,
+                    format: None,
+                    parent: Some("sub".to_string()),
+                    parent_values: Some(vec!["a".to_string()]),
+                },
+            ],
+        };
+        space
+            .validate_specs()
+            .expect("two-level conditional validates");
+        // opt=sgd, sub=a -> lr active.
+        assert!(space.values_from_unit(&[0.0, 0.0, 0.5]).contains_key("lr"));
+        // opt=sgd, sub=b -> lr inactive (sub active but disallows).
+        assert!(space.values_from_unit(&[0.0, 1.0, 0.5]).contains_key("sub"));
+        assert!(!space.values_from_unit(&[0.0, 1.0, 0.5]).contains_key("lr"));
+        // opt=adam -> sub and lr both inactive.
+        let values = space.values_from_unit(&[1.0, 0.0, 0.5]);
+        assert!(!values.contains_key("sub"));
+        assert!(!values.contains_key("lr"));
+    }
+
+    #[test]
+    fn rejects_unknown_parent() {
+        let space = SearchSpace {
+            params: vec![ParamSpec::Bool {
+                name: "a".to_string(),
+                parent: Some("nope".to_string()),
+                parent_values: Some(vec!["true".to_string()]),
+            }],
+        };
+        let err = space.validate_specs().expect_err("unknown parent");
+        assert!(err.contains("unknown parent"));
+    }
+
+    #[test]
+    fn rejects_parent_declared_after_child() {
+        let space = SearchSpace {
+            params: vec![
+                ParamSpec::Bool {
+                    name: "child".to_string(),
+                    parent: Some("parent".to_string()),
+                    parent_values: Some(vec!["true".to_string()]),
+                },
+                ParamSpec::Bool {
+                    name: "parent".to_string(),
+                    parent: None,
+                    parent_values: None,
+                },
+            ],
+        };
+        let err = space.validate_specs().expect_err("parent ordering");
+        assert!(err.contains("before it"));
+    }
+
+    #[test]
+    fn rejects_unpaired_parent_fields() {
+        let space = SearchSpace {
+            params: vec![
+                ParamSpec::Bool {
+                    name: "parent".to_string(),
+                    parent: None,
+                    parent_values: None,
+                },
+                ParamSpec::Bool {
+                    name: "child".to_string(),
+                    parent: Some("parent".to_string()),
+                    parent_values: None,
+                },
+            ],
+        };
+        let err = space.validate_specs().expect_err("unpaired parent");
+        assert!(err.contains("parent and parent_values"));
+    }
+
+    #[test]
+    fn rejects_parent_value_out_of_domain() {
+        let space = SearchSpace {
+            params: vec![
+                ParamSpec::Bool {
+                    name: "use_dropout".to_string(),
+                    parent: None,
+                    parent_values: None,
+                },
+                ParamSpec::Float {
+                    name: "rate".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                    log_scale: false,
+                    step: None,
+                    format: None,
+                    parent: Some("use_dropout".to_string()),
+                    parent_values: Some(vec!["maybe".to_string()]),
+                },
+            ],
+        };
+        let err = space.validate_specs().expect_err("domain containment");
+        assert!(err.contains("not a permitted value"));
+    }
+
+    #[test]
+    fn rejects_continuous_float_parent() {
+        let space = SearchSpace {
+            params: vec![
+                ParamSpec::Float {
+                    name: "x".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                    log_scale: false,
+                    step: None,
+                    format: None,
+                    parent: None,
+                    parent_values: None,
+                },
+                ParamSpec::Float {
+                    name: "y".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                    log_scale: false,
+                    step: None,
+                    format: None,
+                    parent: Some("x".to_string()),
+                    parent_values: Some(vec!["0.5".to_string()]),
+                },
+            ],
+        };
+        let err = space.validate_specs().expect_err("non-finite parent");
+        assert!(err.contains("finite set"));
     }
 }

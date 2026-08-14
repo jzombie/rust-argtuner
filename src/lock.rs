@@ -3,6 +3,8 @@ use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use line_ending::LineEnding;
+
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 #[cfg(windows)]
@@ -36,7 +38,8 @@ impl ProjectLock {
 
     fn write_metadata(&mut self, config_path: &Path) -> std::io::Result<()> {
         let pid = std::process::id();
-        let metadata = format!("pid={pid}\nconfig={}\n", config_path.display());
+        let lf = LineEnding::LF.as_str();
+        let metadata = format!("pid={pid}{lf}config={}{lf}", config_path.display());
         self.file.set_len(0)?;
         self.file.write_all(metadata.as_bytes())?;
         self.file.sync_all()?;

@@ -1,5 +1,8 @@
 // Configuration
 pub const CONFIG_FILENAME: &str = "argtuner.toml";
+// The CLI's own version, compared against the `tuner.binding_version` handshake
+// emitted by the argtuner-sdk in trial subprocesses.
+pub const BINDING_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MAX_DUPLICATE_RETRIES: usize = 50;
 pub const INVALID_CONFIG_PREFIX: &str = "invalid_config:";
 pub const DUPLICATE_CONFIG_REASON: &str = "duplicate_config";
@@ -34,7 +37,7 @@ pub const FIELD_TUNING_BUDGET_TOTAL: &str = "tuning.budget_total";
 pub const FIELD_TUNING_BUDGET_REMAINING: &str = "tuning.budget_remaining";
 
 // Project
-pub const PLACEHOLDER_TRIAL_ID: &str = "trial_id";
-pub const PLACEHOLDER_TRIAL_DIR: &str = "trial_dir";
+pub use argtuner_common::PLACEHOLDER_TRIAL_DIR;
+pub use argtuner_common::PLACEHOLDER_TRIAL_ID;
 pub const ENV_TRIAL_ID: &str = "ARGTUNER_TRIAL_ID";
 pub const ENV_TRIAL_DIR: &str = "ARGTUNER_TRIAL_DIR";
