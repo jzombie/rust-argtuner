@@ -12,7 +12,10 @@ categories = ["command-line-interface", "development-tools"]
 [dependencies]
 argtuner-common.workspace = true
 argtuner-derive.workspace = true
-clap.workspace = true
+# `string` enables clap's `From<String>` for its owned `builder::OsStr`, which
+# the derive's `.default_value(format!(...))` codegen relies on for const-path
+# defaults (avoids needing a `'static` string).
+clap = { workspace = true, features = ["string"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 toml_edit = { workspace = true, features = ["serde"] }

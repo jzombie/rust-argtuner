@@ -10,6 +10,11 @@ use syn::{Fields, GenericArgument, ItemStruct, Lit, PathArguments, Token};
 /// turning it into both a production `clap` CLI and an argtuner
 /// template/search-space definition.
 ///
+/// The macro also auto-derives `Debug`, `Clone`, and `serde::Serialize` on the
+/// struct (resolving serde through `argtuner_sdk`), so consumers write
+/// `#[tuner_params]` alone — do not add `#[derive(Debug, Clone, Serialize)]`
+/// yourself (it would conflict).
+///
 /// ```rust
 /// use argtuner_derive::tuner_params;
 /// use argtuner_sdk::ParamRole;
@@ -78,7 +83,6 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut param_specs = Vec::new();
     let mut command_args = Vec::new();
     let mut field_inits = Vec::new();
-    let mut lazy_default_fns = Vec::new();
 
     for (field, attrs) in fields.named.iter().zip(param_attrs.iter()) {
         let ident = field.ident.as_ref().expect("named field");
@@ -191,38 +195,16 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
             None => quote!(None),
         };
         let default_lit = attrs.default.as_ref().and_then(expr_literal);
-        // A non-literal `default` on a numeric/bool field needs a lazily
-        // stringified `&'static str` (the value of a `const` is unknowable at
-        // macro-expansion time), shared by both the clap default and the
-        // `TunerParam` descriptor.
-        let default_fn_ident = if default_lit.is_none()
-            && attrs.default.is_some()
-            && !is_string
-        {
-            Some(proc_macro2::Ident::new(
-                &format!("__argtuner_param_default_{name}"),
-                proc_macro2::Span::call_site(),
-            ))
-        } else {
-            None
-        };
-        if let Some(f) = &default_fn_ident {
-            let expr = attrs.default.as_ref().expect("const default");
-            lazy_default_fns.push(quote! {
-                #[doc(hidden)]
-                fn #f() -> &'static str {
-                    static VALUE: ::std::sync::OnceLock<::std::string::String> =
-                        ::std::sync::OnceLock::new();
-                    VALUE.get_or_init(|| ::std::format!("{}", #expr)).as_str()
-                }
-            });
-        }
-        let default_tok = match (&attrs.default, default_lit.as_deref(), &default_fn_ident, is_string) {
-            (None, _, _, _) => quote!(None),
-            (_, Some(lit), _, _) => quote!(Some(#lit)),
-            (Some(e), None, None, true) => quote!(Some(#e)),
-            (Some(_), None, Some(f), _) => quote!(Some(#f())),
-            _ => quote!(None),
+        // `default` is a `Cow<'static, str>`: literals and `&str` consts are
+        // `Borrowed` (zero allocation); numeric/bool consts are stringified
+        // into an `Owned` `String` at runtime — owned memory, never leaked.
+        let default_tok = match (&attrs.default, default_lit.as_deref(), is_string) {
+            (None, _, _) => quote!(None),
+            (_, Some(lit), _) => quote!(Some(::std::borrow::Cow::Borrowed(#lit))),
+            (Some(e), None, true) => quote!(Some(::std::borrow::Cow::Borrowed(#e))),
+            (Some(e), None, false) => {
+                quote!(Some(::std::borrow::Cow::Owned(::std::format!("{}", #e))))
+            }
         };
         let help_tok = match help.as_deref() {
             Some(h) => quote!(Some(#h)),
@@ -277,12 +259,15 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
             Some(h) => quote!(.help(#h)),
             None => quote!(),
         };
-        let default_arg = match (&attrs.default, default_lit.as_deref(), &default_fn_ident, is_string) {
-            (None, _, _, _) => quote!(),
-            (_, Some(lit), _, _) => quote!(.default_value(#lit)),
-            (Some(e), None, None, true) => quote!(.default_value(#e)),
-            (Some(_), None, Some(f), _) => quote!(.default_value(#f())),
-            _ => quote!(),
+        let default_arg = match (&attrs.default, default_lit.as_deref(), is_string) {
+            (None, _, _) => quote!(),
+            (_, Some(lit), _) => quote!(.default_value(#lit)),
+            (Some(e), None, true) => quote!(.default_value(#e)),
+            (Some(e), None, false) => {
+                // The owned `String` is moved into clap's `builder::OsStr`
+                // (`From<String>`), so no `'static` borrow is required.
+                quote!(.default_value(::std::format!("{}", #e)))
+            }
         };
         let required = if !is_option && attrs.default.is_none() {
             quote!(.required(true))
@@ -339,9 +324,9 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let expanded = quote! {
+        #[derive(Debug, Clone, ::argtuner_sdk::serde::Serialize)]
+        #[serde(crate = "::argtuner_sdk::serde")]
         #input
-
-        #(#lazy_default_fns)*
 
         impl ::argtuner_sdk::TunerParams for #struct_ident {
             fn app_name() -> &'static str {
