@@ -58,12 +58,21 @@ pub fn bin_path(bin: &str) -> PathBuf {
 /// Unix splits with `shell_words` (POSIX single quotes); Windows splits with
 /// `split_command_windows`, which understands `"`-delimited tokens but not the
 /// POSIX single-quote escape pattern (`'` inside a path), so double quotes are
-/// used there. Quoting is what lets paths containing spaces — and single quotes
-/// on Windows — survive as one token.
+/// used there. Quoting is applied only when the path needs it (contains
+/// whitespace or a quote character); simple paths like `C:\Users\...` stay bare
+/// so they can be embedded in a TOML basic string without escaping the
+/// delimiters.
 fn quote_command_path(path: &Path) -> String {
     #[cfg(windows)]
     {
-        format!("\"{}\"", path.to_string_lossy())
+        let s = path.to_string_lossy();
+        if s.chars()
+            .any(|c| c.is_whitespace() || c == '"' || c == '\'')
+        {
+            format!("\"{}\"", s)
+        } else {
+            s.to_string()
+        }
     }
     #[cfg(not(windows))]
     {
@@ -227,7 +236,13 @@ mod tests {
     fn self_invoking_command_round_trips_through_command_splitter() {
         let cmd = self_invoking_command();
         let parts = crate::command::subprocess::runner::split_command(&cmd).expect("split");
-        let exe = std::env::current_exe().expect("test binary path").to_string_lossy().to_string();
-        assert_eq!(parts, vec![exe, "--exact".to_string(), SELF_TEST_FILTER.to_string()]);
+        let exe = std::env::current_exe()
+            .expect("test binary path")
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(
+            parts,
+            vec![exe, "--exact".to_string(), SELF_TEST_FILTER.to_string()]
+        );
     }
 }
