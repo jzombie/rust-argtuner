@@ -9,9 +9,9 @@ use crate::search_space::SearchSpace;
 use crate::trial::store::TrialStore;
 
 pub use config::{
-    FixedSchedulerConfig, Goal, ProjectConfig, ProjectSettings, Pruner, PsoSamplerConfig,
-    RandomSamplerConfig, Sampler, SamplerConfig, SchedulerConfig, SuccessiveHalvingSchedulerConfig,
-    UnifiedConfig,
+    FixedSchedulerConfig, Goal, Objective, ProjectConfig, ProjectSettings, Pruner,
+    PsoSamplerConfig, RandomSamplerConfig, Sampler, SamplerConfig, SchedulerConfig,
+    SuccessiveHalvingSchedulerConfig, UnifiedConfig,
 };
 
 pub fn format_injected_env(trial_id: usize, trial_dir: &Path) -> String {
@@ -71,8 +71,7 @@ impl Project {
     }
 
     pub fn load_config(&self) -> std::io::Result<ProjectConfig> {
-        let data = std::fs::read_to_string(self.unified_config_path())?;
-        let config: UnifiedConfig = toml::from_str(&data).map_err(|err| {
+        let config = self.load_unified_config().map_err(|err| {
             let mut message = err.to_string();
             if message.contains("unknown field `budget_placeholder`") {
                 message.push_str(
@@ -92,6 +91,14 @@ impl Project {
         std::fs::read_to_string(self.unified_config_path())
     }
 
+    /// Parse the project's `argtuner.toml` into its full deserialized struct
+    /// form (`template` + `[project]` + `[sampler]` + `[scheduler]` + `[space]`).
+    pub fn load_unified_config(&self) -> std::io::Result<UnifiedConfig> {
+        let data = std::fs::read_to_string(self.unified_config_path())?;
+        toml::from_str(&data)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))
+    }
+
     pub fn save_unified_config(&self, config: &UnifiedConfig) -> std::io::Result<()> {
         let data = toml::to_string_pretty(config)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
@@ -100,16 +107,12 @@ impl Project {
     }
 
     pub fn read_template(&self) -> std::io::Result<CommandTemplate> {
-        let data = std::fs::read_to_string(self.unified_config_path())?;
-        let config: UnifiedConfig = toml::from_str(&data)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        let config = self.load_unified_config()?;
         Ok(CommandTemplate::new(config.template))
     }
 
     pub fn read_space(&self) -> std::io::Result<SearchSpace> {
-        let data = std::fs::read_to_string(self.unified_config_path())?;
-        let config: UnifiedConfig = toml::from_str(&data)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        let config = self.load_unified_config()?;
         Ok(config.space)
     }
 }

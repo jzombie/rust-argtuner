@@ -73,6 +73,8 @@ impl Tuner {
         }
         let store_for_summary = store.clone();
         let next_id = store.next_trial_id()?;
+        // Register Ctrl-C handler for graceful shutdown across all samplers
+        let stop_flag = StopFlag::new();
         let objective = CommandObjective::new(
             store,
             template,
@@ -88,9 +90,18 @@ impl Tuner {
             config.goal,
             config.inject_trial_placeholders,
             next_id,
+        )
+        .with_objectives(config.objectives.clone())
+        .with_runner_options(
+            if config.scheduler.trial_timeout_s > 0 {
+                Some(std::time::Duration::from_secs(
+                    config.scheduler.trial_timeout_s,
+                ))
+            } else {
+                None
+            },
+            Some(stop_flag.inner()),
         );
-        // Register Ctrl-C handler for graceful shutdown across all samplers
-        let stop_flag = StopFlag::new();
 
         // Sweep stale Running trials from a prior interrupted run so that
         // PSO's duplicate check and SHA's artifact copy behave correctly.
@@ -101,22 +112,31 @@ impl Tuner {
             eprintln!("WARN: stale trial sweep failed (continuing): {e}");
         }
 
-        match config.sampler.kind {
-            Sampler::Pso => {
-                if config.scheduler.kind != Scheduler::Fixed {
-                    return Err("scheduler must be fixed when using the pso sampler".into());
+        let multi_objective = !config.objectives.is_empty();
+        if multi_objective {
+            // Multi-objective runs require the random sampler (validated), and
+            // use the Pareto driver.
+            let scheduler: Box<dyn TrialScheduler> = scheduler_binding.build(objective.dims());
+            crate::sampler::run_pareto(objective, scheduler, Some(stop_flag.inner()))?;
+            crate::analysis::print_pareto_frontier(&store_for_summary, &config.objectives);
+        } else {
+            match config.sampler.kind {
+                Sampler::Pso => {
+                    if config.scheduler.kind != Scheduler::Fixed {
+                        return Err("scheduler must be fixed when using the pso sampler".into());
+                    }
+                    let ctrl = ControllableObjective::new(objective, stop_flag.inner());
+                    run_pso(ctrl, config.sampler.pso.iters, config.sampler.pso.particles)?;
                 }
-                let ctrl = ControllableObjective::new(objective, stop_flag.inner());
-                run_pso(ctrl, config.sampler.pso.iters, config.sampler.pso.particles)?;
+                Sampler::Random => {
+                    let scheduler: Box<dyn TrialScheduler> =
+                        scheduler_binding.build(objective.dims());
+                    run_random(objective, scheduler, Some(stop_flag.inner()))?;
+                }
             }
-            Sampler::Random => {
-                let scheduler: Box<dyn TrialScheduler> = scheduler_binding.build(objective.dims());
-                run_random(objective, scheduler, Some(stop_flag.inner()))?;
-            }
+            print_top_trials(&store_for_summary, 10);
+            print_hparam_impact(&store_for_summary, config.goal, &config.metric_key);
         }
-
-        print_top_trials(&store_for_summary, 10);
-        print_hparam_impact(&store_for_summary, config.goal, &config.metric_key);
         Ok(())
     }
 }

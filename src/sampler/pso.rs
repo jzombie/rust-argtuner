@@ -351,6 +351,8 @@ mod tests {
                     log_scale: false,
                     step: None,
                     format: None,
+                    parent: None,
+                    parent_values: None,
                 },
                 crate::ParamSpec::Float {
                     name: "x1".to_string(),
@@ -359,6 +361,8 @@ mod tests {
                     log_scale: false,
                     step: None,
                     format: None,
+                    parent: None,
+                    parent_values: None,
                 },
             ],
         }
@@ -523,6 +527,8 @@ mod tests {
                     log_scale: false,
                     step: None,
                     format: None,
+                    parent: None,
+                    parent_values: None,
                 },
                 crate::ParamSpec::Float {
                     name: "x1".to_string(),
@@ -531,6 +537,8 @@ mod tests {
                     log_scale: false,
                     step: None,
                     format: None,
+                    parent: None,
+                    parent_values: None,
                 },
             ],
         };

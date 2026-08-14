@@ -2,17 +2,12 @@
 name = "argtuner-talkback-derive"
 version.workspace = true
 edition.workspace = true
-description = "Procedural macro helpers for argtuner-talkback."
+description = "DEPRECATED: use `argtuner-sdk` and its `talkback_args` re-export instead."
 repository.workspace = true
 license.workspace = true
 publish.workspace = true
-keywords = ["derive", "proc-macro", "cli", "clap", "hyperparameter"]
+keywords = ["derive", "proc-macro", "cli", "clap", "deprecated"]
 categories = ["development-tools::procedural-macro-helpers", "command-line-interface"]
 
-[lib]
-proc-macro = true
-
 [dependencies]
-proc-macro2 = "1.0.101"
-quote = "1.0.40"
-syn = { version = "2.0.106", features = ["full"] }
+argtuner-sdk.workspace = true

@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-#[cfg(not(windows))]
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
@@ -13,17 +13,39 @@ use std::os::unix::io::AsRawFd;
 #[cfg(not(windows))]
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
+use command_group::{CommandGroup, GroupChild};
+
 use super::talkback::{ParsedItem, parse_prefix_lines};
 use crate::constants::{METRIC_NAMESPACE, MODEL_NAMESPACE, TUNER_NAMESPACE};
 
 #[cfg(not(windows))]
 static FORCE_PIPES: AtomicBool = AtomicBool::new(false);
 
+/// Grace period allowed for the process group to die after a kill is issued
+/// before the wait is abandoned and reported as an error.
+const KILL_GRACE: Duration = Duration::from_secs(10);
+
+/// Options that supervise a trial subprocess. Both fields are advisory: the
+/// runner never clears `stop`, and a `timeout` is a hard deadline enforced on
+/// the whole process group.
+#[derive(Debug, Clone, Default)]
+pub struct RunnerOptions {
+    /// Hard deadline for the command. When it elapses the process group is
+    /// killed and the result is marked `timed_out`.
+    pub timeout: Option<Duration>,
+    /// When set, the process group is killed as soon as the flag flips (e.g.
+    /// Ctrl-C). Unset means the command runs to completion.
+    pub stop: Option<Arc<AtomicBool>>,
+}
+
 #[derive(Debug)]
 pub struct CommandOutput {
     pub stdout: String,
     pub _stderr: String,
     pub exit_code: i32,
+    /// True when the process group was killed because `RunnerOptions.timeout`
+    /// elapsed (as opposed to a normal exit or cancellation).
+    pub timed_out: bool,
 }
 
 impl CommandOutput {
@@ -179,7 +201,11 @@ pub struct CommandRunner;
 
 /// Run a command with piped stdout/stderr (no PTY). POSIX pipes deliver all
 /// bytes before EOF, so there is no PTY buffer-destruction race on child exit.
-fn run_piped(command: &str, envs: &BTreeMap<String, String>) -> Result<CommandOutput, String> {
+fn run_piped(
+    command: &str,
+    envs: &BTreeMap<String, String>,
+    opts: &RunnerOptions,
+) -> Result<CommandOutput, String> {
     use std::process::Stdio;
 
     let parts = split_command(command).map_err(|err| format!("command parse failed: {err}"))?;
@@ -196,44 +222,153 @@ fn run_piped(command: &str, envs: &BTreeMap<String, String>) -> Result<CommandOu
     for (key, value) in envs {
         cmd.env(key, value);
     }
+    // Spawn into a dedicated process group so a timeout or cancellation can
+    // terminate the whole tree; the group leader is the child itself.
     let mut child = cmd
+        .group()
         .spawn()
         .map_err(|err| format!("command failed: {err}"))?;
     let child_stdout = child
+        .inner()
         .stdout
         .take()
         .ok_or_else(|| "command stdout unavailable".to_string())?;
     let child_stderr = child
+        .inner()
         .stderr
         .take()
         .ok_or_else(|| "command stderr unavailable".to_string())?;
     let stdout_handle = spawn_reader(child_stdout, false);
     let stderr_handle = spawn_reader(child_stderr, true);
-    let status = child
-        .wait()
-        .map_err(|err| format!("command wait failed: {err}"))?;
+    // Always join the reader threads first so their output has drained even
+    // when the command was killed for a timeout or cancellation.
+    let wait = wait_with_timeout(&mut child, opts);
     let stdout = stdout_handle
         .join()
         .map_err(|_| "stdout reader thread panicked".to_string())?;
     let stderr = stderr_handle
         .join()
         .map_err(|_| "stderr reader thread panicked".to_string())?;
+    let (exit_code, timed_out) = wait?;
     Ok(CommandOutput {
         stdout,
         _stderr: stderr,
-        exit_code: status.code().unwrap_or(-1),
+        exit_code,
+        timed_out,
     })
 }
 
+/// A child the runner can poll and kill as a unit. Implemented for the piped
+/// path's `GroupChild` and the PTY path's `Box<dyn Child>`.
+trait RunnableChild {
+    /// Reap the child if it has exited, returning its exit code.
+    fn poll_exit(&mut self) -> Result<Option<i32>, String>;
+    /// Terminate the child and its whole process group.
+    fn kill_group(&mut self) -> Result<(), String>;
+}
+
+impl RunnableChild for GroupChild {
+    fn poll_exit(&mut self) -> Result<Option<i32>, String> {
+        match self.try_wait() {
+            Ok(Some(status)) => Ok(Some(status.code().unwrap_or(-1))),
+            Ok(None) => Ok(None),
+            Err(err) => Err(format!("command wait failed: {err}")),
+        }
+    }
+    fn kill_group(&mut self) -> Result<(), String> {
+        self.kill()
+            .map_err(|err| format!("command kill failed: {err}"))
+    }
+}
+
+#[cfg(not(windows))]
+impl RunnableChild for Box<dyn portable_pty::Child + Send + Sync> {
+    fn poll_exit(&mut self) -> Result<Option<i32>, String> {
+        match self.try_wait() {
+            Ok(Some(status)) => Ok(Some(status.exit_code() as i32)),
+            Ok(None) => Ok(None),
+            Err(err) => Err(format!("command wait failed: {err}")),
+        }
+    }
+    fn kill_group(&mut self) -> Result<(), String> {
+        // portable-pty spawns the child as a session leader (setsid), so its
+        // pid doubles as the process-group id; signal the whole group. We only
+        // ever call this while `poll_exit` has reported the child still alive,
+        // so the pgid cannot have been recycled yet.
+        if let Some(pid) = self.process_id() {
+            unsafe {
+                libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+            }
+            Ok(())
+        } else {
+            self.kill()
+                .map_err(|err| format!("command kill failed: {err}"))
+        }
+    }
+}
+
+/// Wait for `child` to exit, killing its process group when `opts.timeout`
+/// elapses or `opts.stop` flips. Returns `(exit_code, timed_out)`.
+fn wait_with_timeout<C: RunnableChild>(
+    child: &mut C,
+    opts: &RunnerOptions,
+) -> Result<(i32, bool), String> {
+    let start = Instant::now();
+    let mut kill_issued_at: Option<Instant> = None;
+    let mut timed_out = false;
+    loop {
+        if let Some(exit_code) = child.poll_exit()? {
+            return Ok((exit_code, timed_out));
+        }
+        if let Some(since) = kill_issued_at {
+            if since.elapsed() >= KILL_GRACE {
+                return Err("command did not terminate after kill signal".to_string());
+            }
+        } else {
+            let timeout_hit = opts.timeout.is_some_and(|t| start.elapsed() >= t);
+            let cancelled = opts
+                .stop
+                .as_ref()
+                .is_some_and(|s| s.load(Ordering::Relaxed));
+            if timeout_hit || cancelled {
+                timed_out = timeout_hit;
+                child.kill_group()?;
+                kill_issued_at = Some(Instant::now());
+                continue;
+            }
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 impl CommandRunner {
-    #[cfg(windows)]
     pub fn run(command: &str, envs: &BTreeMap<String, String>) -> Result<CommandOutput, String> {
-        run_piped(command, envs)
+        Self::run_with_options(command, envs, RunnerOptions::default())
     }
 
-    /// Test-only: force all subprocesses in this process to use piped stdio
-    /// instead of a PTY (avoids the macOS PTY buffer-destruction race on child
-    /// exit). Idempotent; safe to call from any test thread.
+    /// Run `command` with per-invocation supervision options (timeout, stop).
+    pub fn run_with_options(
+        command: &str,
+        envs: &BTreeMap<String, String>,
+        opts: RunnerOptions,
+    ) -> Result<CommandOutput, String> {
+        #[cfg(windows)]
+        {
+            run_piped(command, envs, &opts)
+        }
+        #[cfg(not(windows))]
+        {
+            if FORCE_PIPES.load(Ordering::Relaxed)
+                || envs.contains_key(argtuner_common::FORCE_PIPES_ENV)
+                || std::env::var_os(argtuner_common::FORCE_PIPES_ENV).is_some()
+            {
+                run_piped(command, envs, &opts)
+            } else {
+                run_pty(command, envs, &opts)
+            }
+        }
+    }
+
     /// Test-only: force all subprocesses in this process to use piped stdio
     /// instead of a PTY (avoids the macOS PTY buffer-destruction race on child
     /// exit). Idempotent; safe to call from any test thread. No-op on Windows,
@@ -247,113 +382,113 @@ impl CommandRunner {
     pub fn force_pipes_for_tests() {
         FORCE_PIPES.store(true, Ordering::Relaxed);
     }
+}
 
-    #[cfg(not(windows))]
-    pub fn run(command: &str, envs: &BTreeMap<String, String>) -> Result<CommandOutput, String> {
-        if FORCE_PIPES.load(Ordering::Relaxed)
-            || envs.contains_key(argtuner_common::FORCE_PIPES_ENV)
-            || std::env::var_os(argtuner_common::FORCE_PIPES_ENV).is_some()
-        {
-            return run_piped(command, envs);
-        }
-        let parts = split_command(command).map_err(|err| format!("command parse failed: {err}"))?;
-        if parts.is_empty() {
-            return Err("command is empty".to_string());
-        }
-        let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows: 24,
-                cols: 120,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|err| format!("pty open failed: {err}"))?;
-        let mut cmd = CommandBuilder::new(&parts[0]);
-        let cwd = std::env::current_dir().map_err(|err| format!("command cwd failed: {err}"))?;
-        cmd.cwd(cwd);
-        if parts.len() > 1 {
-            cmd.args(&parts[1..]);
-        }
-        for (key, value) in envs {
-            cmd.env(key, value);
-        }
-        let mut child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|err| format!("command failed: {err}"))?;
-        drop(pair.slave);
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|err| format!("pty reader failed: {err}"))?;
-        #[cfg(unix)]
-        let mut writer = pair
-            .master
-            .take_writer()
-            .map_err(|err| format!("pty writer failed: {err}"))?;
-        let output = spawn_reader(reader, false);
-
-        #[cfg(unix)]
-        let input_guard = {
-            let stop = Arc::new(AtomicBool::new(false));
-            let stop_for_thread = stop.clone();
-            let handle = thread::spawn(move || {
-                let mut stdin = std::io::stdin();
-                let fd = stdin.as_raw_fd();
-                let mut buf = [0u8; 1024];
-                loop {
-                    if stop_for_thread.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let mut fds = libc::pollfd {
-                        fd,
-                        events: libc::POLLIN,
-                        revents: 0,
-                    };
-                    let ready = unsafe { libc::poll(&mut fds, 1, 100) };
-                    if ready < 0 {
-                        break;
-                    }
-                    if ready == 0 {
-                        continue;
-                    }
-                    if (fds.revents & libc::POLLIN) == 0 {
-                        continue;
-                    }
-                    let read = stdin.read(&mut buf).unwrap_or(0);
-                    if read == 0 {
-                        break;
-                    }
-                    if writer.write_all(&buf[..read]).is_err() {
-                        break;
-                    }
-                    let _ = writer.flush();
-                }
-            });
-            Some(InputGuard {
-                handle: Some(handle),
-                stop: Some(stop),
-            })
-        };
-
-        #[cfg(not(any(unix, windows)))]
-        let input_guard: Option<InputGuard> = None;
-        let status = child
-            .wait()
-            .map_err(|err| format!("command wait failed: {err}"))?;
-        let stdout = output
-            .join()
-            .map_err(|_| "pty reader thread panicked".to_string())?;
-        if let Some(mut guard) = input_guard {
-            guard.stop();
-        }
-        Ok(CommandOutput {
-            stdout,
-            _stderr: String::new(),
-            exit_code: status.exit_code() as i32,
-        })
+/// Run a command attached to a fresh PTY. The child becomes a session leader
+/// (portable-pty calls setsid), so the process group is killable as a unit.
+#[cfg(not(windows))]
+fn run_pty(
+    command: &str,
+    envs: &BTreeMap<String, String>,
+    opts: &RunnerOptions,
+) -> Result<CommandOutput, String> {
+    let parts = split_command(command).map_err(|err| format!("command parse failed: {err}"))?;
+    if parts.is_empty() {
+        return Err("command is empty".to_string());
     }
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 24,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|err| format!("pty open failed: {err}"))?;
+    let mut cmd = CommandBuilder::new(&parts[0]);
+    let cwd = std::env::current_dir().map_err(|err| format!("command cwd failed: {err}"))?;
+    cmd.cwd(cwd);
+    if parts.len() > 1 {
+        cmd.args(&parts[1..]);
+    }
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    let mut child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|err| format!("command failed: {err}"))?;
+    drop(pair.slave);
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|err| format!("pty reader failed: {err}"))?;
+    #[cfg(unix)]
+    let mut writer = pair
+        .master
+        .take_writer()
+        .map_err(|err| format!("pty writer failed: {err}"))?;
+    let output = spawn_reader(reader, false);
+
+    #[cfg(unix)]
+    let input_guard = {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = stop.clone();
+        let handle = thread::spawn(move || {
+            let mut stdin = std::io::stdin();
+            let fd = stdin.as_raw_fd();
+            let mut buf = [0u8; 1024];
+            loop {
+                if stop_for_thread.load(Ordering::Relaxed) {
+                    break;
+                }
+                let mut fds = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let ready = unsafe { libc::poll(&mut fds, 1, 100) };
+                if ready < 0 {
+                    break;
+                }
+                if ready == 0 {
+                    continue;
+                }
+                if (fds.revents & libc::POLLIN) == 0 {
+                    continue;
+                }
+                let read = stdin.read(&mut buf).unwrap_or(0);
+                if read == 0 {
+                    break;
+                }
+                if writer.write_all(&buf[..read]).is_err() {
+                    break;
+                }
+                let _ = writer.flush();
+            }
+        });
+        Some(InputGuard {
+            handle: Some(handle),
+            stop: Some(stop),
+        })
+    };
+
+    #[cfg(not(any(unix, windows)))]
+    let input_guard: Option<InputGuard> = None;
+    let wait = wait_with_timeout(&mut child, opts);
+    let stdout = output
+        .join()
+        .map_err(|_| "pty reader thread panicked".to_string())?;
+    if let Some(mut guard) = input_guard {
+        guard.stop();
+    }
+    let (exit_code, timed_out) = wait?;
+    Ok(CommandOutput {
+        stdout,
+        _stderr: String::new(),
+        exit_code,
+        timed_out,
+    })
 }
 
 fn spawn_reader<R: Read + Send + 'static>(
@@ -392,7 +527,7 @@ fn spawn_reader<R: Read + Send + 'static>(
     })
 }
 
-fn split_command(command: &str) -> Result<Vec<String>, String> {
+pub(crate) fn split_command(command: &str) -> Result<Vec<String>, String> {
     #[cfg(windows)]
     {
         split_command_windows(command)
@@ -480,10 +615,124 @@ mod tests {
             stdout: output_str,
             _stderr: String::new(),
             exit_code: 0,
+            timed_out: false,
         };
         let payload = output.parse_payload(crate::RESULT_PREFIX).expect("payload");
         let metric = payload.get_metric("metric").expect("metric");
         assert_eq!(metric, 0.2);
         assert!(!payload.data.contains_key("aux"));
+    }
+
+    #[test]
+    fn run_piped_completes_without_options() {
+        CommandRunner::force_pipes_for_tests();
+        let envs = BTreeMap::from([(
+            crate::test_support::SELF_ROLE_ENV.to_string(),
+            "noop".to_string(),
+        )]);
+        let output =
+            CommandRunner::run(&crate::test_support::self_invoking_command(), &envs).expect("run");
+        assert_eq!(output.exit_code, 0);
+        assert!(!output.timed_out);
+    }
+
+    #[test]
+    fn run_times_out_and_kills_process_group() {
+        CommandRunner::force_pipes_for_tests();
+        let envs = BTreeMap::from([(
+            crate::test_support::SELF_ROLE_ENV.to_string(),
+            "sleepy".to_string(),
+        )]);
+        let start = Instant::now();
+        let output = CommandRunner::run_with_options(
+            &crate::test_support::self_invoking_command(),
+            &envs,
+            RunnerOptions {
+                timeout: Some(Duration::from_secs(2)),
+                stop: None,
+            },
+        )
+        .expect("run");
+        assert!(output.timed_out, "should be marked as timed out");
+        assert_ne!(output.exit_code, 0, "killed process has non-zero status");
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "should not wait out the full 100s sleep"
+        );
+    }
+
+    #[test]
+    fn run_stop_flag_kills_process_group_without_timeout() {
+        CommandRunner::force_pipes_for_tests();
+        let envs = BTreeMap::from([(
+            crate::test_support::SELF_ROLE_ENV.to_string(),
+            "sleepy".to_string(),
+        )]);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_worker = stop.clone();
+        let worker = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            stop_for_worker.store(true, Ordering::Relaxed);
+        });
+        let output = CommandRunner::run_with_options(
+            &crate::test_support::self_invoking_command(),
+            &envs,
+            RunnerOptions {
+                timeout: None,
+                stop: Some(stop),
+            },
+        )
+        .expect("run");
+        worker.join().expect("worker");
+        assert!(!output.timed_out, "cancellation is not a timeout");
+        assert_ne!(output.exit_code, 0, "killed process has non-zero status");
+    }
+
+    #[test]
+    fn run_timeout_kills_grandchild_processes() {
+        CommandRunner::force_pipes_for_tests();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_path = dir.path().join("grandchild.pid");
+        let heartbeat_path = dir.path().join("grandchild.heartbeat");
+        let envs = BTreeMap::from([
+            (
+                crate::test_support::SELF_ROLE_ENV.to_string(),
+                "child".to_string(),
+            ),
+            (
+                crate::test_support::SELF_PID_FILE_ENV.to_string(),
+                pid_path.to_string_lossy().into_owned(),
+            ),
+            (
+                crate::test_support::SELF_HEARTBEAT_ENV.to_string(),
+                heartbeat_path.to_string_lossy().into_owned(),
+            ),
+        ]);
+        // The child role spawns a grandchild and waits for it; the timeout
+        // kills the whole process group, so the grandchild must stop too.
+        let output = CommandRunner::run_with_options(
+            &crate::test_support::self_invoking_command(),
+            &envs,
+            RunnerOptions {
+                timeout: Some(Duration::from_secs(2)),
+                stop: None,
+            },
+        )
+        .expect("run");
+        assert!(output.timed_out, "should be marked as timed out");
+        let pid_text = std::fs::read_to_string(&pid_path).unwrap_or_else(|err| {
+            panic!(
+                "grandchild failed to write PID before timeout: {err} (stdout: {})",
+                output.stdout
+            )
+        });
+        let pid: u32 = pid_text.trim().parse().unwrap_or_else(|err| {
+            panic!("invalid grandchild PID in {pid_path:?}: {pid_text:?}: {err}")
+        });
+        crate::test_support::assert_no_longer_running(
+            pid,
+            &heartbeat_path,
+            Duration::from_millis(600),
+        );
     }
 }

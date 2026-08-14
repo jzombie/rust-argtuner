@@ -15,5 +15,5 @@ publish = false
 
 [dependencies]
 argtuner-common.workspace = true
-argtuner-talkback.workspace = true
+argtuner-sdk.workspace = true
 serde.workspace = true

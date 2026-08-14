@@ -1,20 +1,19 @@
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 
-use argtuner_talkback_derive::talkback_args;
-use clap::Parser;
+use argtuner_sdk::talkback_args;
 
 #[talkback_args]
-#[derive(Debug, Parser)]
 struct ProbeArgs {
-    #[arg(long, value_name = "KEY")]
+    /// Metric key to emit under
     metric_key: Option<String>,
-    #[arg(long, value_name = "PATH")]
+    /// Checkpoint directory (reserved: trial_dir)
+    #[param(value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 
 fn main() -> io::Result<()> {
-    let (talkback, parsed) = argtuner_talkback::init_with_args::<ProbeArgs>();
+    let (talkback, parsed) = argtuner_sdk::init::<ProbeArgs>();
     let metric_key = parsed.metric_key.as_deref().unwrap_or("metric");
     let checkpoint_dir = parsed.checkpoint_dir.as_deref();
     let mut reader = input_reader();

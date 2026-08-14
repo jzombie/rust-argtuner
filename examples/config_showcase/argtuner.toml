@@ -1,0 +1,43 @@
+template = '''
+  cargo run -p argtuner --example loss_pattern_generator -- \
+    --pattern noisy \
+    --steps {steps} \
+    --noise {noise} \
+    --metric-key val_loss \
+    --checkpoint-dir {trial_dir} \
+    --epoch-time 1
+'''
+
+[project]
+metric_key = "val_loss"
+goal = "min"
+inject_trial_placeholders = true
+
+[sampler]
+type = "random"
+
+[scheduler]
+type = "successive_halving"
+n_trials = 30
+seed = 42
+
+[scheduler.successive_halving]
+budget_placeholder = "steps"
+min_epochs = 20
+max_epochs = 300
+eta = 3
+
+[space]
+[[space.params]]
+type = "Float"
+name = "noise"
+min = 0.01
+max = 0.5
+log = true
+
+[[space.params]]
+type = "Int"
+name = "steps"
+min = 20
+max = 300
+step = 20

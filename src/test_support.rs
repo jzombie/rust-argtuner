@@ -14,7 +14,7 @@
 //! let template = CommandTemplate::new(argtuner::test_support::bin_command("mock_emit_result"));
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Absolute path to a compiled binary for the given bin name.
 ///
@@ -53,11 +53,196 @@ pub fn bin_path(bin: &str) -> PathBuf {
     );
 }
 
-/// Returns a shell-quoted command string for the given mock binary.
+/// Quote a path for argtuner's command tokenizer on the current platform.
 ///
-/// The path is shell-quoted so that paths containing spaces (e.g.
-/// `/Volumes/2TB Storage Vault/...`) are handled correctly when the string is
-/// split by `shell_words::split` at runtime.
+/// Unix splits with `shell_words` (POSIX single quotes); Windows splits with
+/// `split_command_windows`, which understands `"`-delimited tokens but not the
+/// POSIX single-quote escape pattern (`'` inside a path), so double quotes are
+/// used there. Quoting is applied only when the path needs it (contains
+/// whitespace or a quote character); simple paths like `C:\Users\...` stay bare
+/// so they can be embedded in a TOML basic string without escaping the
+/// delimiters.
+fn quote_command_path(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if s.chars()
+            .any(|c| c.is_whitespace() || c == '"' || c == '\'')
+        {
+            format!("\"{}\"", s)
+        } else {
+            s.to_string()
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        shell_words::quote(&path.to_string_lossy()).to_string()
+    }
+}
+
+/// Returns a command string for the given mock binary, with the path quoted for
+/// argtuner's platform tokenizer so spaces in the path (e.g.
+/// `/Volumes/2TB Storage Vault/...`) survive splitting at runtime.
 pub fn bin_command(bin: &str) -> String {
-    shell_words::quote(&bin_path(bin).to_string_lossy()).to_string()
+    quote_command_path(&bin_path(bin))
+}
+
+/// Env var consumed by [`self_invoking_helper`] selecting its role.
+pub const SELF_ROLE_ENV: &str = "ARGTUNER_SELF_ROLE";
+
+/// Env var carrying the path where a `grandchild`-role helper writes its pid.
+pub const SELF_PID_FILE_ENV: &str = "ARGTUNER_SELF_PID_FILE";
+
+/// Env var carrying the path where a `grandchild`-role helper writes a
+/// heartbeat while it is running (its liveness signal).
+pub const SELF_HEARTBEAT_ENV: &str = "ARGTUNER_SELF_HEARTBEAT";
+
+/// libtest filter that runs exactly [`self_invoking_helper`].
+const SELF_TEST_FILTER: &str = "test_support::self_invoking_helper";
+
+/// A command that re-executes the current test binary, filtered with `--exact`
+/// so the subprocess runs [`self_invoking_helper`] instead of the whole suite.
+/// The role is supplied separately through [`SELF_ROLE_ENV`] (e.g. by placing
+/// it in the runner's envs).
+pub fn self_invoking_command() -> String {
+    let exe = std::env::current_exe().expect("test binary path");
+    format!("{} --exact {SELF_TEST_FILTER}", quote_command_path(&exe))
+}
+
+/// Re-executable cross-platform helper for subprocess tests. Running it
+/// directly under `cargo test` (no role) is a no-op pass. Spawned with
+/// [`SELF_ROLE_ENV`] set it plays one role:
+/// - `noop`: exits 0 immediately.
+/// - `sleepy`: sleeps 100s (timeout / cancellation target).
+/// - `grandchild`: writes its pid to [`SELF_PID_FILE_ENV`], then advances a
+///   heartbeat in [`SELF_HEARTBEAT_ENV`] until killed (liveness signal).
+/// - `child`: spawns a `grandchild` and waits for it (group-kill target).
+#[cfg_attr(test, test)]
+pub fn self_invoking_helper() {
+    match std::env::var(SELF_ROLE_ENV).as_deref() {
+        Ok("noop") => {}
+        Ok("sleepy") => std::thread::sleep(std::time::Duration::from_secs(100)),
+        Ok("grandchild") => {
+            if let Ok(pid_file) = std::env::var(SELF_PID_FILE_ENV) {
+                let _ = std::fs::write(&pid_file, std::process::id().to_string());
+            }
+            if let Ok(heartbeat_file) = std::env::var(SELF_HEARTBEAT_ENV) {
+                use std::io::Write;
+                if let Ok(mut file) = std::fs::File::create(&heartbeat_file) {
+                    let mut counter: u64 = 0;
+                    loop {
+                        let _ = file.write_all(format!("{counter:020}\n").as_bytes());
+                        // Flush so each heartbeat reaches the OS before any
+                        // signal termination could race the write.
+                        let _ = file.flush();
+                        counter = counter.wrapping_add(1);
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(100));
+        }
+        Ok("child") => {
+            let exe = std::env::current_exe().expect("test binary path");
+            let mut cmd = std::process::Command::new(exe);
+            cmd.args(["--exact", SELF_TEST_FILTER])
+                .env(SELF_ROLE_ENV, "grandchild")
+                .env(
+                    SELF_PID_FILE_ENV,
+                    std::env::var(SELF_PID_FILE_ENV).unwrap_or_default(),
+                )
+                .env(
+                    SELF_HEARTBEAT_ENV,
+                    std::env::var(SELF_HEARTBEAT_ENV).unwrap_or_default(),
+                );
+            let mut child = cmd.spawn().expect("spawn grandchild");
+            let _ = child.wait();
+        }
+        _ => {}
+    }
+}
+
+/// Assert that the process identified by `pid` is no longer running by
+/// checking that its heartbeat file stopped advancing for at least `grace`.
+///
+/// A heartbeat rather than `kill(pid, 0)`: on Unix a terminated-but-unreaped
+/// zombie still answers `kill(pid, 0)` successfully, but it cannot write a
+/// file, so a frozen heartbeat proves the process is not executing. Works
+/// identically on Windows with no handle API.
+pub fn assert_no_longer_running(
+    pid: u32,
+    heartbeat_file: &std::path::Path,
+    grace: std::time::Duration,
+) {
+    let read = || std::fs::read(heartbeat_file).unwrap_or_default();
+    let before = read();
+    std::thread::sleep(grace);
+    let after = read();
+    assert_eq!(
+        before, after,
+        "process {pid} is still running: its heartbeat advanced after the group kill"
+    );
+}
+
+/// Extract a README fenced block: everything between the `marker` comment's
+/// following `` ```<fence_lang> `` fence and the closing `` ``` `` fence, line
+/// endings normalized to LF and trimmed.
+pub fn extract_fenced_block(readme: &str, marker: &str, fence_lang: &str) -> Option<String> {
+    let marker_end = readme.find(marker)?.checked_add(marker.len())?;
+    let rest = &readme[marker_end..];
+    let fence = format!("```{fence_lang}");
+    let fence_start = rest.find(&fence)? + fence.len();
+    let after_fence = &rest[fence_start..];
+    let after_fence = line_ending::LineEnding::normalize(after_fence);
+    let content = after_fence.strip_prefix(line_ending::LineEnding::LF.as_char())?;
+    let close = content.find(&format!("{}```", line_ending::LineEnding::LF.as_str()))?;
+    Some(content[..close].trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The produced command must survive argtuner's platform tokenizer as a
+    /// single token. On the developer's Unix path this genuinely exercises a
+    /// space-containing path (`/Volumes/2TB Storage Vault/...`).
+    #[test]
+    fn bin_command_round_trips_through_command_splitter() {
+        let cmd = bin_command("mock_emit_result");
+        let parts = crate::command::subprocess::runner::split_command(&cmd).expect("split");
+        assert_eq!(
+            parts,
+            vec![bin_path("mock_emit_result").to_string_lossy().to_string()],
+            "quoted bin path must survive the platform tokenizer: {cmd:?}"
+        );
+    }
+
+    /// Worst case for the tokenizers: a path with a space AND a POSIX-single-
+    /// quote character. `shell_words` would escape the quote as `'`\''` (the
+    /// Windows tokenizer cannot recover that), so Windows double-quotes.
+    #[test]
+    fn quoted_path_with_space_and_single_quote_round_trips() {
+        let path = PathBuf::from("C:/Some 'Path/mock_emit_result.exe");
+        let cmd = quote_command_path(&path);
+        let parts = crate::command::subprocess::runner::split_command(&cmd).expect("split");
+        assert_eq!(
+            parts,
+            vec![path.to_string_lossy().to_string()],
+            "platform quoting must recover a spaced+quoted path: {cmd:?}"
+        );
+    }
+
+    #[test]
+    fn self_invoking_command_round_trips_through_command_splitter() {
+        let cmd = self_invoking_command();
+        let parts = crate::command::subprocess::runner::split_command(&cmd).expect("split");
+        let exe = std::env::current_exe()
+            .expect("test binary path")
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(
+            parts,
+            vec![exe, "--exact".to_string(), SELF_TEST_FILTER.to_string()]
+        );
+    }
 }

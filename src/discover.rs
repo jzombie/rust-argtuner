@@ -63,6 +63,7 @@ pub fn find_projects(root: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use line_ending::LineEnding;
     use std::fs;
     use tempfile::TempDir;
 
@@ -107,7 +108,11 @@ mod tests {
         write_config(&in_target);
         write_config(&in_custom);
         write_config(&hidden);
-        fs::write(root.join(".gitignore"), "target/\nout/\n").unwrap();
+        fs::write(
+            root.join(".gitignore"),
+            format!("target/{lf}out/{lf}", lf = LineEnding::LF.as_str()),
+        )
+        .unwrap();
 
         // target/ and out/ are git-ignored (out/ is not hardcoded anywhere);
         // .hidden/ is skipped by default.
@@ -124,7 +129,11 @@ mod tests {
         fs::create_dir_all(&in_custom).unwrap();
         write_config(&project);
         write_config(&in_custom);
-        fs::write(root.join(".ignore"), "custom/\n").unwrap();
+        fs::write(
+            root.join(".ignore"),
+            format!("custom/{lf}", lf = LineEnding::LF.as_str()),
+        )
+        .unwrap();
 
         assert_eq!(find_projects(root), vec![project]);
     }

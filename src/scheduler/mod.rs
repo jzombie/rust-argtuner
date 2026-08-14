@@ -27,7 +27,9 @@ pub struct ScheduledTrial {
 
 pub trait TrialScheduler {
     fn next_trial(&mut self) -> Option<ScheduledTrial>;
-    fn record_result(&mut self, token: TrialToken, score: Option<f64>);
+    /// Record a trial's score vector (one entry per objective, normalized so
+    /// lower is better). An empty vector means the trial errored.
+    fn record_result(&mut self, token: TrialToken, scores: Vec<f64>);
     fn is_done(&self) -> bool;
     fn retry_trial(&mut self, _token: TrialToken) -> bool {
         false
@@ -72,12 +74,12 @@ impl<'a> SchedulerBinding<'a> {
                 dims,
                 self.config.scheduler.n_trials,
                 self.config.scheduler.seed,
-                None,
-                None,
+                None, // budget_epochs
+                None, // budget_key
             )),
             Scheduler::SuccessiveHalving => {
                 let sh = &self.config.scheduler.successive_halving;
-                Box::new(SuccessiveHalvingScheduler::new_with_seed(
+                let mut scheduler = SuccessiveHalvingScheduler::new_with_seed(
                     dims,
                     self.config.scheduler.n_trials,
                     sh.min_epochs,
@@ -85,7 +87,9 @@ impl<'a> SchedulerBinding<'a> {
                     sh.eta,
                     sh.budget_placeholder.clone(),
                     self.config.scheduler.seed,
-                ))
+                );
+                scheduler.with_primary_index(self.config.primary_objective_index());
+                Box::new(scheduler)
             }
         }
     }

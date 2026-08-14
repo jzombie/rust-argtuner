@@ -253,6 +253,7 @@ mod tests {
                 kind: Scheduler::SuccessiveHalving,
                 n_trials: 6,
                 seed: 7,
+                trial_timeout_s: 0,
                 fixed: crate::FixedSchedulerConfig::default(),
                 successive_halving: SuccessiveHalvingSchedulerConfig {
                     budget_placeholder: "epochs".to_string(),
@@ -264,6 +265,7 @@ mod tests {
             pruner: crate::Pruner::None,
             inject_trial_placeholders: true,
             checkpoint_arg: None,
+            objectives: vec![],
         };
 
         let plan = build_plan(&config, Some(0));
