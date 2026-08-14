@@ -11,4 +11,4 @@ type = "fixed"
 n_trials = 5
 
 [space]
-args = []
+params = []
