@@ -3,7 +3,7 @@ use std::io::{self, BufRead, Write};
 
 use argtuner_sdk::prelude::*;
 
-#[talkback_args]
+#[tuner_args]
 struct ProbeArgs {
     /// Metric key to emit under
     metric_key: Option<String>,
@@ -13,7 +13,7 @@ struct ProbeArgs {
 }
 
 fn main() -> io::Result<()> {
-    let (talkback, parsed) = argtuner_sdk::init::<ProbeArgs>();
+    let (channel, parsed) = argtuner_sdk::init::<ProbeArgs>();
     let metric_key = parsed.metric_key.as_deref().unwrap_or("metric");
     let checkpoint_dir = parsed.checkpoint_dir.as_deref();
     let mut reader = input_reader();
@@ -74,13 +74,13 @@ fn main() -> io::Result<()> {
                         Some(value) => value,
                         None => {
                             // No extra positional value; keep kv-only.
-                            talkback.emit_event(argtuner_common::EventKind::EpochEnd, &fields)?;
+                            channel.emit_event(argtuner_common::EventKind::EpochEnd, &fields)?;
                             continue;
                         }
                     };
                     fields.insert(metric_key.to_string(), value.to_string());
                 }
-                talkback.emit_event(argtuner_common::EventKind::EpochEnd, &fields)?;
+                channel.emit_event(argtuner_common::EventKind::EpochEnd, &fields)?;
             }
             "event" | "e" => {
                 let name = match parts.next() {
@@ -98,7 +98,7 @@ fn main() -> io::Result<()> {
                     continue;
                 };
                 let fields = parse_kv(parts);
-                talkback.emit_event(event, &fields)?;
+                channel.emit_event(event, &fields)?;
             }
             "invalid" | "i" => {
                 let reason = parts.collect::<Vec<_>>().join(" ");
@@ -107,7 +107,7 @@ fn main() -> io::Result<()> {
                 } else {
                     reason
                 };
-                talkback.emit_event(
+                channel.emit_event(
                     argtuner_common::EventKind::InvalidConfig,
                     &BTreeMap::from([("error".to_string(), reason)]),
                 )?;

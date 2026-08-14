@@ -6,7 +6,7 @@ use patterns::{LossPattern, Noisy, Overfitting, SmoothDecay, Spikes, Underfittin
 use std::thread;
 use std::time::Duration;
 
-#[talkback_args]
+#[tuner_args]
 struct Args {
     /// The pattern to generate
     #[param(
@@ -71,7 +71,7 @@ fn pattern_label(pattern: PatternType) -> &'static str {
 }
 
 fn main() {
-    let (talkback, args) = argtuner_sdk::init::<Args>();
+    let (channel, args) = argtuner_sdk::init::<Args>();
     let _ = args.checkpoint_dir;
     let pattern = pattern_from_label(&args.pattern);
     let pattern_name = pattern_label(pattern).to_string();
@@ -135,7 +135,7 @@ fn main() {
         let train_loss = train_pattern.generate(step, args.steps);
         let val_loss = val_pattern.generate(step, args.steps);
         println!("{},{:.6},{:.6}", step, train_loss, val_loss);
-        let _ = talkback
+        let _ = channel
             .metrics()
             .record("loss", train_loss)
             .record("train_loss", train_loss)
@@ -145,7 +145,7 @@ fn main() {
             .emit_step();
         // Emit epoch event every `epoch_every` steps
         if (step + 1) % epoch_every == 0 || step == args.steps - 1 {
-            let _ = talkback
+            let _ = channel
                 .metrics()
                 .record("loss", train_loss)
                 .record("train_loss", train_loss)
@@ -167,7 +167,7 @@ fn main() {
     } else {
         final_val_loss
     };
-    let mut metrics = talkback.metrics();
+    let mut metrics = channel.metrics();
     metrics
         .record("loss", final_train_loss)
         .record("train_loss", final_train_loss)

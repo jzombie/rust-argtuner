@@ -2,7 +2,7 @@ use argtuner::UnifiedConfig;
 use argtuner_sdk::prelude::*;
 
 #[allow(dead_code)] // template-only definition: fields are read by the derive, not this test
-#[talkback_args]
+#[tuner_args]
 struct TemplateArgs {
     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
@@ -19,7 +19,7 @@ fn space_names(config: &UnifiedConfig) -> Vec<&str> {
 }
 
 #[test]
-fn talkback_template_toml_is_valid() {
+fn tuner_args_toml_is_valid() {
     let toml_text = argtuner_sdk::render_template_toml::<TemplateArgs>();
     let parsed: UnifiedConfig =
         toml::from_str(&toml_text).expect("template must parse as UnifiedConfig");
@@ -45,7 +45,7 @@ fn talkback_template_toml_is_valid() {
 }
 
 #[test]
-fn talkback_template_renders_placeholders() {
+fn tuner_args_renders_placeholders() {
     let cmd = argtuner_sdk::render_template_command::<TemplateArgs>();
     assert!(cmd.contains("--lr {lr}"), "template: {cmd}");
     assert!(cmd.contains("--steps {steps}"), "template: {cmd}");
@@ -57,7 +57,7 @@ fn talkback_template_renders_placeholders() {
 }
 
 #[allow(dead_code)]
-#[talkback_args]
+#[tuner_args]
 struct TrickyArgs {
     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, step = 0.001)]
     lr: f64,
@@ -66,7 +66,7 @@ struct TrickyArgs {
 }
 
 #[test]
-fn talkback_template_round_trips_tricky_values() {
+fn tuner_args_round_trips_tricky_values() {
     let toml_text = argtuner_sdk::render_template_toml::<TrickyArgs>();
     let parsed: UnifiedConfig = toml::from_str(&toml_text)
         .expect("template must parse as UnifiedConfig even with quotes/backslashes");
@@ -105,7 +105,7 @@ fn talkback_template_round_trips_tricky_values() {
 }
 
 #[allow(dead_code)]
-#[talkback_args]
+#[tuner_args]
 struct BoolParamArgs {
     #[param(role = ParamRole::Tune, default = true)]
     use_dropout: bool,
@@ -114,7 +114,7 @@ struct BoolParamArgs {
 }
 
 #[test]
-fn talkback_template_renders_bool() {
+fn tuner_args_renders_bool() {
     let toml_text = argtuner_sdk::render_template_toml::<BoolParamArgs>();
     let parsed: UnifiedConfig =
         toml::from_str(&toml_text).expect("template must parse as UnifiedConfig");
@@ -148,7 +148,7 @@ fn talkback_template_renders_bool() {
 }
 
 #[test]
-fn talkback_template_cli_bool_parses_on_cli() {
+fn tuner_args_cli_bool_parses_on_cli() {
     let command = BoolParamArgs::command();
 
     // `--verbose` (missing value) parses as true.
@@ -182,7 +182,7 @@ fn talkback_template_cli_bool_parses_on_cli() {
 }
 
 #[allow(dead_code)]
-#[talkback_args]
+#[tuner_args]
 struct OptionalArgs {
     #[param(role = ParamRole::Tune, default = 0.1, min = 0.01, max = 0.5)]
     eval_split: Option<f64>,
@@ -193,7 +193,7 @@ struct OptionalArgs {
 }
 
 #[test]
-fn talkback_template_option_tune_and_fixed_bools() {
+fn tuner_args_option_tune_and_fixed_bools() {
     let cmd = argtuner_sdk::render_template_command::<OptionalArgs>();
 
     // Option<f64> with role=tune renders a placeholder, like a plain f64.

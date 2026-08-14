@@ -87,7 +87,7 @@ pub fn render_trial_command_with_overrides(
             .or_insert_with(|| dir.to_string_lossy().to_string());
         trial_dir = Some(dir);
     }
-    // Always mark this subprocess as an argtuner-managed trial so the talkback
+    // Always mark this subprocess as an argtuner-managed trial so the ipc
     // binding can suppress stdout emission for standalone (non-argtuner) runs.
     env.insert(
         argtuner_common::TUNING_MARKER_ENV.to_string(),

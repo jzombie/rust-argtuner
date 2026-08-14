@@ -1,6 +1,6 @@
 use argtuner_sdk::prelude::*;
 
-#[talkback_args]
+#[tuner_args]
 struct ExampleArgs {
     /// Learning rate for gradient descent
     #[param(role = ParamRole::Tune, default = 0.01, min = 0.001, max = 0.1, log = true)]
@@ -14,7 +14,7 @@ struct ExampleArgs {
 }
 
 fn main() {
-    let (_talkback, args) = argtuner_sdk::init::<ExampleArgs>();
+    let (_channel, args) = argtuner_sdk::init::<ExampleArgs>();
     let _ = args.checkpoint_dir;
 
     let data = (0..10)

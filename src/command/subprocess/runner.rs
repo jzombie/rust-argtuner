@@ -15,7 +15,7 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use command_group::{CommandGroup, GroupChild};
 
-use super::talkback::{ParsedItem, parse_prefix_lines};
+use super::ipc::{ParsedItem, parse_prefix_lines};
 use crate::constants::{METRIC_NAMESPACE, MODEL_NAMESPACE, TUNER_NAMESPACE};
 
 #[cfg(not(windows))]

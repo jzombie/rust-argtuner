@@ -62,14 +62,14 @@ fn readme_echoes_current_schema() {
 #[test]
 fn readme_example_extracts_payload() {
     let feed = readme_block("<!-- protocol.example.feed -->", "text").replace("\\x1b", "\u{1b}");
-    let expected: argtuner_common::TalkbackMessage =
+    let expected: argtuner_common::IpcMessage =
         serde_json::from_str(&readme_block("<!-- protocol.example.parsed -->", "json"))
-            .expect("README expected payload must be a valid TalkbackMessage");
+            .expect("README expected payload must be a valid IpcMessage");
 
     let parsed = argtuner::command::subprocess::parse_prefix_lines(&feed, PREFIX)
         .expect("example feed must parse cleanly");
     match expected {
-        argtuner_common::TalkbackMessage::Event { name, fields } => {
+        argtuner_common::IpcMessage::Event { name, fields } => {
             assert_eq!(
                 parsed,
                 vec![vec![argtuner::command::subprocess::ParsedItem::Event {
@@ -79,7 +79,7 @@ fn readme_example_extracts_payload() {
                 "the example feed must parse to exactly the README's expected message"
             );
         }
-        argtuner_common::TalkbackMessage::Result { .. } => {
+        argtuner_common::IpcMessage::Result { .. } => {
             panic!("README example must show an `event` payload");
         }
     }

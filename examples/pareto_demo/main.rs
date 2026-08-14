@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use argtuner_sdk::prelude::*;
 
-#[talkback_args]
+#[tuner_args]
 struct ParetoArgs {
     /// Learning rate
     #[param(role = ParamRole::Tune, default = 0.01, min = 0.001, max = 0.1, log = true)]
@@ -16,7 +16,7 @@ struct ParetoArgs {
 }
 
 fn main() {
-    let (_talkback, args) = argtuner_sdk::init::<ParetoArgs>();
+    let (_channel, args) = argtuner_sdk::init::<ParetoArgs>();
     let _ = args.checkpoint_dir;
 
     let batch_size: f64 = args.batch_size.parse().unwrap_or(32.0);

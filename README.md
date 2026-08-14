@@ -29,7 +29,7 @@ fn train(lr: f64, steps: usize) -> f64 {
     0.0 // your training logic
 }
 
-#[talkback_args]
+#[tuner_args]
 struct Params {
     /// Learning rate
     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
@@ -43,7 +43,7 @@ struct Params {
 }
 
 fn main() {
-    let (_talkback, params) = init::<Params>();
+    let (_channel, params) = init::<Params>();
 
     // ... your training logic using params.lr, params.steps ...
     let val_loss = train(params.lr, params.steps);
@@ -81,7 +81,7 @@ running under argtuner, so `stdout` stays clean.
 
 ## Declaring parameters
 
-Each field of your `#[talkback_args]` struct becomes a `--flag <name>` CLI
+Each field of your `#[tuner_args]` struct becomes a `--flag <name>` CLI
 argument; its doc comment becomes the `--help` text. `#[param(role = ...)]`
 declares **who supplies the value**, and the other hints are constraints that
 only apply to `role = ParamRole::Tune`:
@@ -108,7 +108,7 @@ Example:
 ```rust,no_run
 use argtuner_sdk::prelude::*;
 
-#[talkback_args]
+#[tuner_args]
 struct Params {
     /// tunable float, log scale
     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
@@ -169,7 +169,7 @@ use argtuner_sdk::{init, is_tuning_active};
 use burn::train::LearnerBuilder;
 
 fn main() {
-    let (_talkback, params) = init::<Params>();
+    let (_channel, params) = init::<Params>();
 
     let mut builder = LearnerBuilder::new(&params.checkpoint_dir);
 
@@ -446,11 +446,11 @@ argtuner watch --project ./argtuner/my-project --poll-ms 5000
 ## Protocol
 
 ### The `argtuner-sdk` Rust binding
-If your application is written in Rust, you do not need to format these JSON strings manually. Add the **`argtuner-sdk`** crate and declare your algorithm's parameters once as a **plain struct** with `#[talkback_args]`; the derive generates the `clap` CLI, the command template, and a real search space (`argtuner_sdk::init::<P>()`, `argtuner_sdk::talkback_args`, `argtuner_sdk::Params`, and `argtuner_sdk::emit_metrics!` come from that crate's root; no `clap`/`serde` needed in your `Cargo.toml`). It provides:
-* **Type-safe emission:** `emit_metrics!` / `talkback.metrics()` and the serde-backed `emit_epoch_end()`, `emit_step_end()`, and `emit_result()` methods write `::ARGTUNER::` JSON to stdout (silently no-op when the binary runs standalone, so the same CLI doubles as a clean production tool).
+If your application is written in Rust, you do not need to format these JSON strings manually. Add the **`argtuner-sdk`** crate and declare your algorithm's parameters once as a **plain struct** with `#[tuner_args]`; the derive generates the `clap` CLI, the command template, and a real search space (`argtuner_sdk::init::<P>()`, `argtuner_sdk::tuner_args`, `argtuner_sdk::Params`, and `argtuner_sdk::emit_metrics!` come from that crate's root; no `clap`/`serde` needed in your `Cargo.toml`). It provides:
+* **Type-safe emission:** `emit_metrics!` / `channel.metrics()` and the serde-backed `emit_epoch_end()`, `emit_step_end()`, and `emit_result()` methods write `::ARGTUNER::` JSON to stdout (silently no-op when the binary runs standalone, so the same CLI doubles as a clean production tool).
 * **CLI auto-generation:** `--print-template-toml` prints a starter `argtuner.toml` — populated `[space]` included — directly from your struct definition.
 * **Version handshake:** Ensures compatibility between your app and the CLI.
-* **Typed argv parsing:** The derive parses flags for you and returns `(Talkback, Params)` via `init()`.
+* **Typed argv parsing:** The derive parses flags for you and returns `(IpcChannel, Params)` via `init()`.
 
 `argtuner-sdk` is a deliberately tiny crate: it pulls in only a handful of
 small, common dependencies (`clap`, `serde`, `serde_json`, `toml_edit`,
@@ -478,8 +478,8 @@ For all other languages, simply emit the following raw JSON strings to standard 
   - `ARGTUNER_TRIAL_ID` / `ARGTUNER_TRIAL_DIR`
 
 The protocol is **self-describing**: a JSON Schema generated from the shared
-`argtuner_common::TalkbackMessage` type is committed at
-[`crates/common/assets/protocol.schema.json`](https://github.com/jzombie/rust-argtuner/blob/main/crates/common/assets/protocol.schema.json), and any talkback binary can print
+`argtuner_common::IpcMessage` type is committed at
+[`crates/common/assets/protocol.schema.json`](https://github.com/jzombie/rust-argtuner/blob/main/crates/common/assets/protocol.schema.json), and any binary can print
 the current schema with `--print-protocol-schema`. The schema validates the
 JSON document after the prefix; the prefix/ANSI line framing is documented in
 its `x-argtuner` extension object.
@@ -495,7 +495,7 @@ schema, so it cannot go stale:
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "argtuner talkback protocol",
+  "title": "argtuner ipc protocol",
   "description": "Line-framed JSON protocol spoken over subprocess stdout. Each stdout line is ANSI-stripped; the first occurrence of the literal prefix `::ARGTUNER::` marks the start of a message, and the JSON document after the prefix must match this schema. Field values are always strings on the wire.",
   "oneOf": [
     {
@@ -565,7 +565,7 @@ schema, so it cannot go stale:
       "tuner"
     ],
     "prefix": "::ARGTUNER::",
-    "protocol": "argtuner.talkback",
+    "protocol": "argtuner.ipc",
     "stripAnsi": true
   }
 }

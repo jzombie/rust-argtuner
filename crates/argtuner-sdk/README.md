@@ -16,7 +16,7 @@ The main `argtuner` package houses the complete orchestration engine: terminal U
 
 ## Usage
 
-Annotate hyperparameter definitions with `#[talkback_args]`. The macro derives the CLI parser, command template generator, and search space AST:
+Annotate hyperparameter definitions with `#[tuner_args]`. The macro derives the CLI parser, command template generator, and search space AST:
 
 ```rust,no_run
 use argtuner_sdk::prelude::*;
@@ -25,7 +25,7 @@ fn train(lr: f64, steps: usize) -> f64 {
     0.0 // Training loop logic
 }
 
-#[talkback_args]
+#[tuner_args]
 struct Params {
     /// Learning rate
     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
@@ -36,7 +36,7 @@ struct Params {
 }
 
 fn main() {
-    let (_talkback, params) = init::<Params>();
+    let (_channel, params) = init::<Params>();
 
     let val_loss = train(params.lr, params.steps);
     let _ = emit_metrics!("val_loss" => val_loss, "epoch" => params.steps);
@@ -50,7 +50,7 @@ Target binaries expose self-inspection flags for automated setup:
 
 * `--print-template-toml`: Generates a fully configured `argtuner.toml` project manifest.
 * `--print-template`: Outputs the CLI command invocation template.
-* `--print-protocol-schema`: Exports the talkback protocol JSON Schema.
+* `--print-protocol-schema`: Exports the ipc protocol JSON Schema.
 
 ## Wire Protocol
 

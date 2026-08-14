@@ -11,10 +11,10 @@ use syn::{Fields, GenericArgument, ItemStruct, Lit, PathArguments, Token};
 /// template/search-space definition.
 ///
 /// ```rust
-/// use argtuner_derive::talkback_args;
+/// use argtuner_derive::tuner_args;
 /// use argtuner_sdk::ParamRole;
 ///
-/// #[talkback_args]
+/// #[tuner_args]
 /// struct ModelParams {
 ///     /// Learning rate
 ///     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
@@ -30,7 +30,7 @@ use syn::{Fields, GenericArgument, ItemStruct, Lit, PathArguments, Token};
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn tuner_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(item as ItemStruct);
 
     // Capture `#[param(...)]` metadata first, then strip the helper attribute
@@ -52,7 +52,7 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     if !input.generics.params.is_empty() {
-        return syn::Error::new_spanned(&input, "talkback_args does not support generic structs")
+        return syn::Error::new_spanned(&input, "tuner_args does not support generic structs")
             .to_compile_error()
             .into();
     }
@@ -63,7 +63,7 @@ pub fn talkback_args(_attr: TokenStream, item: TokenStream) -> TokenStream {
         _ => {
             return syn::Error::new_spanned(
                 &input,
-                "talkback_args only supports structs with named fields",
+                "tuner_args only supports structs with named fields",
             )
             .to_compile_error()
             .into();
