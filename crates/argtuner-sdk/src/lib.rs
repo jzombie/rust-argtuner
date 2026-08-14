@@ -1,5 +1,10 @@
 #![doc = include_str!("../README.md")]
 
+/// Alias the crate to its own name so the `#[tuner_params]` derive's
+/// generated `::argtuner_sdk::…` paths resolve when a struct is expanded
+/// inside this crate (e.g. its own unit tests).
+extern crate self as argtuner_sdk;
+
 use std::collections::BTreeMap;
 use std::io;
 
@@ -771,5 +776,41 @@ mod tests {
             cmd, quoted,
             "template must quote the bin path for spaced install dirs: {cmd:?} (expected {quoted:?})"
         );
+    }
+
+    // ── const-path defaults ────────────────────────────────────────────────
+
+    const DEFAULT_EPOCHS: usize = 10;
+    const DEFAULT_LR: f64 = 0.001;
+    const DEFAULT_MODE: &str = "pair";
+
+    #[tuner_params]
+    struct ConstDefaults {
+        #[param(role = ParamRole::Fixed, default = DEFAULT_EPOCHS)]
+        epochs: usize,
+        #[param(role = ParamRole::Tune, default = DEFAULT_LR, min = 1e-6, max = 0.01)]
+        lr: f64,
+        #[param(role = ParamRole::Fixed, default = DEFAULT_MODE)]
+        mode: String,
+    }
+
+    #[test]
+    fn const_defaults_bake_into_template() {
+        let cmd = render_template_command::<ConstDefaults>();
+        assert!(cmd.contains("--epochs 10"), "numeric const default baked: {cmd}");
+        assert!(cmd.contains("--mode pair"), "&str const default baked: {cmd}");
+        assert!(cmd.contains("--lr {lr}"), "tune param stays a placeholder: {cmd}");
+    }
+
+    #[test]
+    fn const_defaults_parse_when_absent() {
+        let matches = <ConstDefaults as TunerParams>::command()
+            .no_binary_name(true)
+            .try_get_matches_from(Vec::<String>::new())
+            .expect("parses with const defaults");
+        let p = ConstDefaults::from_matches(&matches);
+        assert_eq!(p.epochs, DEFAULT_EPOCHS);
+        assert_eq!(p.lr, DEFAULT_LR);
+        assert_eq!(p.mode, DEFAULT_MODE);
     }
 }

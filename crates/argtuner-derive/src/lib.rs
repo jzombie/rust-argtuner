@@ -74,11 +74,11 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
             .into();
         }
     };
-    let field_count = fields.named.len();
 
     let mut param_specs = Vec::new();
     let mut command_args = Vec::new();
     let mut field_inits = Vec::new();
+    let mut lazy_default_fns = Vec::new();
 
     for (field, attrs) in fields.named.iter().zip(param_attrs.iter()) {
         let ident = field.ident.as_ref().expect("named field");
@@ -190,18 +190,48 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
             Some(vn) => quote!(Some(#vn)),
             None => quote!(None),
         };
-        let default_tok = match attrs.default.as_deref() {
-            Some(d) => quote!(Some(#d)),
-            None => quote!(None),
+        let default_lit = attrs.default.as_ref().and_then(expr_literal);
+        // A non-literal `default` on a numeric/bool field needs a lazily
+        // stringified `&'static str` (the value of a `const` is unknowable at
+        // macro-expansion time), shared by both the clap default and the
+        // `TunerParam` descriptor.
+        let default_fn_ident = if default_lit.is_none()
+            && attrs.default.is_some()
+            && !is_string
+        {
+            Some(proc_macro2::Ident::new(
+                &format!("__argtuner_param_default_{name}"),
+                proc_macro2::Span::call_site(),
+            ))
+        } else {
+            None
+        };
+        if let Some(f) = &default_fn_ident {
+            let expr = attrs.default.as_ref().expect("const default");
+            lazy_default_fns.push(quote! {
+                #[doc(hidden)]
+                fn #f() -> &'static str {
+                    static VALUE: ::std::sync::OnceLock<&'static str> =
+                        ::std::sync::OnceLock::new();
+                    *VALUE.get_or_init(|| ::std::format!("{}", #expr).leak())
+                }
+            });
+        }
+        let default_tok = match (&attrs.default, default_lit.as_deref(), &default_fn_ident, is_string) {
+            (None, _, _, _) => quote!(None),
+            (_, Some(lit), _, _) => quote!(Some(#lit)),
+            (Some(e), None, None, true) => quote!(Some(#e)),
+            (Some(_), None, Some(f), _) => quote!(Some(#f())),
+            _ => quote!(None),
         };
         let help_tok = match help.as_deref() {
             Some(h) => quote!(Some(#h)),
             None => quote!(None),
         };
-        let min = f64_tok(attrs.min);
-        let max = f64_tok(attrs.max);
+        let min = numeric_tok(&attrs.min);
+        let max = numeric_tok(&attrs.max);
         let log = attrs.log;
-        let step = f64_tok(attrs.step);
+        let step = numeric_tok(&attrs.step);
         let choices = if attrs.choices.is_empty() {
             quote!(&[])
         } else {
@@ -247,9 +277,12 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
             Some(h) => quote!(.help(#h)),
             None => quote!(),
         };
-        let default_arg = match attrs.default.as_deref() {
-            Some(d) => quote!(.default_value(#d)),
-            None => quote!(),
+        let default_arg = match (&attrs.default, default_lit.as_deref(), &default_fn_ident, is_string) {
+            (None, _, _, _) => quote!(),
+            (_, Some(lit), _, _) => quote!(.default_value(#lit)),
+            (Some(e), None, None, true) => quote!(.default_value(#e)),
+            (Some(_), None, Some(f), _) => quote!(.default_value(#f())),
+            _ => quote!(),
         };
         let required = if !is_option && attrs.default.is_none() {
             quote!(.required(true))
@@ -308,16 +341,19 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input
 
+        #(#lazy_default_fns)*
+
         impl ::argtuner_sdk::TunerParams for #struct_ident {
             fn app_name() -> &'static str {
                 env!("CARGO_PKG_NAME")
             }
 
             fn tuner_params() -> &'static [::argtuner_sdk::TunerParam] {
-                static PARAMS: [::argtuner_sdk::TunerParam; #field_count] = [
-                    #(#param_specs),*
-                ];
-                &PARAMS
+                static PARAMS: ::std::sync::OnceLock<Vec<::argtuner_sdk::TunerParam>> =
+                    ::std::sync::OnceLock::new();
+                PARAMS
+                    .get_or_init(|| ::std::vec![#(#param_specs),*])
+                    .as_slice()
             }
 
             fn command() -> ::argtuner_sdk::clap::Command {
@@ -338,13 +374,13 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 struct ParamAttrs {
     role: Option<String>,
-    default: Option<String>,
+    default: Option<syn::Expr>,
     long: Option<String>,
     value_name: Option<String>,
-    min: Option<f64>,
-    max: Option<f64>,
+    min: Option<syn::Expr>,
+    max: Option<syn::Expr>,
     log: bool,
-    step: Option<f64>,
+    step: Option<syn::Expr>,
     choices: Vec<String>,
     parent: Option<String>,
     parent_values: Vec<String>,
@@ -430,7 +466,7 @@ fn parse_param_attrs(field: &syn::Field) -> Result<ParamAttrs, syn::Error> {
                     out.present.insert("role");
                 }
                 "default" => {
-                    out.default = expr_string(value);
+                    out.default = Some(value.clone());
                     out.present.insert("default");
                 }
                 "long" => {
@@ -442,15 +478,15 @@ fn parse_param_attrs(field: &syn::Field) -> Result<ParamAttrs, syn::Error> {
                     out.present.insert("value_name");
                 }
                 "min" => {
-                    out.min = expr_f64(value);
+                    out.min = Some(value.clone());
                     out.present.insert("min");
                 }
                 "max" => {
-                    out.max = expr_f64(value);
+                    out.max = Some(value.clone());
                     out.present.insert("max");
                 }
                 "step" => {
-                    out.step = expr_f64(value);
+                    out.step = Some(value.clone());
                     out.present.insert("step");
                 }
                 "log" => {
@@ -688,14 +724,36 @@ fn expr_string_array(e: &syn::Expr) -> Vec<String> {
         .collect()
 }
 
-fn f64_tok(v: Option<f64>) -> proc_macro2::TokenStream {
-    match v {
-        Some(x) => {
-            let lit = x;
-            quote!(Some(#lit))
-        }
+/// Emit a `Some(f64)` for a `min`/`max`/`step` value. Literals are inlined;
+/// any other (const) expression is forwarded as `Some(#expr as f64)` and
+/// evaluated lazily inside `tuner_params()`.
+fn numeric_tok(expr: &Option<syn::Expr>) -> proc_macro2::TokenStream {
+    match expr {
         None => quote!(None),
+        Some(e) => {
+            if let Some(f) = expr_f64(e) {
+                quote!(Some(#f))
+            } else {
+                quote!(Some(#e as f64))
+            }
+        }
     }
+}
+
+/// String form if `expr` is a literal (`"..."`, `123`, `1.5`, `true`, ...);
+/// `None` for any other expression (e.g. a `const` path).
+fn expr_literal(e: &syn::Expr) -> Option<String> {
+    if let syn::Expr::Lit(syn::ExprLit { lit, .. }) = e {
+        match lit {
+            Lit::Str(s) => return Some(s.value()),
+            Lit::Int(i) => return Some(i.base10_digits().to_string()),
+            Lit::Float(f) => return Some(f.base10_digits().to_string()),
+            Lit::Bool(b) => return Some(b.value().to_string()),
+            Lit::Char(c) => return Some(c.value().to_string()),
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
