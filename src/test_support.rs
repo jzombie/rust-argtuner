@@ -14,7 +14,7 @@
 //! let template = CommandTemplate::new(argtuner::test_support::bin_command("mock_emit_result"));
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Absolute path to a compiled binary for the given bin name.
 ///
@@ -53,13 +53,29 @@ pub fn bin_path(bin: &str) -> PathBuf {
     );
 }
 
-/// Returns a shell-quoted command string for the given mock binary.
+/// Quote a path for argtuner's command tokenizer on the current platform.
 ///
-/// The path is shell-quoted so that paths containing spaces (e.g.
-/// `/Volumes/2TB Storage Vault/...`) are handled correctly when the string is
-/// split by `shell_words::split` at runtime.
+/// Unix splits with `shell_words` (POSIX single quotes); Windows splits with
+/// `split_command_windows`, which understands `"`-delimited tokens but not the
+/// POSIX single-quote escape pattern (`'` inside a path), so double quotes are
+/// used there. Quoting is what lets paths containing spaces — and single quotes
+/// on Windows — survive as one token.
+fn quote_command_path(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!("\"{}\"", path.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        shell_words::quote(&path.to_string_lossy()).to_string()
+    }
+}
+
+/// Returns a command string for the given mock binary, with the path quoted for
+/// argtuner's platform tokenizer so spaces in the path (e.g.
+/// `/Volumes/2TB Storage Vault/...`) survive splitting at runtime.
 pub fn bin_command(bin: &str) -> String {
-    shell_words::quote(&bin_path(bin).to_string_lossy()).to_string()
+    quote_command_path(&bin_path(bin))
 }
 
 /// Env var consumed by [`self_invoking_helper`] selecting its role.
@@ -81,19 +97,7 @@ const SELF_TEST_FILTER: &str = "test_support::self_invoking_helper";
 /// it in the runner's envs).
 pub fn self_invoking_command() -> String {
     let exe = std::env::current_exe().expect("test binary path");
-    #[cfg(windows)]
-    {
-        // `split_command_windows` tokenizes with Windows rules and does not
-        // understand POSIX single quotes, so use double quotes on Windows.
-        format!("\"{}\" --exact {SELF_TEST_FILTER}", exe.to_string_lossy())
-    }
-    #[cfg(not(windows))]
-    {
-        format!(
-            "{} --exact {SELF_TEST_FILTER}",
-            shell_words::quote(&exe.to_string_lossy())
-        )
-    }
+    format!("{} --exact {SELF_TEST_FILTER}", quote_command_path(&exe))
 }
 
 /// Re-executable cross-platform helper for subprocess tests. Running it
@@ -184,4 +188,46 @@ pub fn extract_fenced_block(readme: &str, marker: &str, fence_lang: &str) -> Opt
     let content = after_fence.strip_prefix(line_ending::LineEnding::LF.as_char())?;
     let close = content.find(&format!("{}```", line_ending::LineEnding::LF.as_str()))?;
     Some(content[..close].trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The produced command must survive argtuner's platform tokenizer as a
+    /// single token. On the developer's Unix path this genuinely exercises a
+    /// space-containing path (`/Volumes/2TB Storage Vault/...`).
+    #[test]
+    fn bin_command_round_trips_through_command_splitter() {
+        let cmd = bin_command("mock_emit_result");
+        let parts = crate::command::subprocess::runner::split_command(&cmd).expect("split");
+        assert_eq!(
+            parts,
+            vec![bin_path("mock_emit_result").to_string_lossy().to_string()],
+            "quoted bin path must survive the platform tokenizer: {cmd:?}"
+        );
+    }
+
+    /// Worst case for the tokenizers: a path with a space AND a POSIX-single-
+    /// quote character. `shell_words` would escape the quote as `'`\''` (the
+    /// Windows tokenizer cannot recover that), so Windows double-quotes.
+    #[test]
+    fn quoted_path_with_space_and_single_quote_round_trips() {
+        let path = PathBuf::from("C:/Some 'Path/mock_emit_result.exe");
+        let cmd = quote_command_path(&path);
+        let parts = crate::command::subprocess::runner::split_command(&cmd).expect("split");
+        assert_eq!(
+            parts,
+            vec![path.to_string_lossy().to_string()],
+            "platform quoting must recover a spaced+quoted path: {cmd:?}"
+        );
+    }
+
+    #[test]
+    fn self_invoking_command_round_trips_through_command_splitter() {
+        let cmd = self_invoking_command();
+        let parts = crate::command::subprocess::runner::split_command(&cmd).expect("split");
+        let exe = std::env::current_exe().expect("test binary path").to_string_lossy().to_string();
+        assert_eq!(parts, vec![exe, "--exact".to_string(), SELF_TEST_FILTER.to_string()]);
+    }
 }

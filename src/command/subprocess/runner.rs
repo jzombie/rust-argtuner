@@ -527,7 +527,7 @@ fn spawn_reader<R: Read + Send + 'static>(
     })
 }
 
-fn split_command(command: &str) -> Result<Vec<String>, String> {
+pub(crate) fn split_command(command: &str) -> Result<Vec<String>, String> {
     #[cfg(windows)]
     {
         split_command_windows(command)

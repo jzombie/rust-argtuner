@@ -301,8 +301,25 @@ pub fn maybe_print_template_and_exit<T: Params>() {
     std::process::exit(0);
 }
 
+/// Quote a binary path for the argtuner command template on the current
+/// platform. Arg t's runner splits templates with `shell_words` on Unix (POSIX
+/// single quotes) and a Windows tokenizer that understands `"`-delimited
+/// tokens but not the POSIX single-quote escape pattern — so the path must be
+/// quoted per-platform or a spaced install dir would split into multiple
+/// tokens. (No `shell_words` dep: the SDK stays dependency-light.)
+fn quote_bin_path(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("\"{path}\"")
+    }
+    #[cfg(not(windows))]
+    {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    }
+}
+
 pub fn render_template_command<T: Params>() -> String {
-    let bin = resolve_bin_path();
+    let bin = quote_bin_path(&resolve_bin_path());
     let mut parts = vec![bin];
     for p in T::params() {
         if p.is_tunable() || p.is_reserved() {
@@ -628,4 +645,42 @@ fn emit_json<T: Serialize>(value: &T) -> io::Result<()> {
     let json = serde_json::to_value(value)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     emit_line(format!("{PREFIX}{json}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TemplateParams;
+
+    impl Params for TemplateParams {
+        fn app_name() -> &'static str {
+            "template-params"
+        }
+
+        fn params() -> &'static [ParamHint] {
+            &[]
+        }
+
+        fn command() -> clap::Command {
+            clap::Command::new(Self::app_name())
+        }
+
+        fn from_matches(_m: &clap::ArgMatches) -> Self {
+            Self
+        }
+    }
+
+    #[test]
+    fn rendered_template_quotes_bin_path() {
+        // The exe may live in a spaced directory (e.g. `/Volumes/2TB Storage
+        // Vault/...`); the generated template must quote the path so argtuner's
+        // command tokenizer recovers it as one token on every platform.
+        let cmd = render_template_command::<TemplateParams>();
+        let quoted = quote_bin_path(&resolve_bin_path());
+        assert_eq!(
+            cmd, quoted,
+            "template must quote the bin path for spaced install dirs: {cmd:?} (expected {quoted:?})"
+        );
+    }
 }
