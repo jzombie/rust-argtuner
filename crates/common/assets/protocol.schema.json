@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "argtuner talkback protocol",
+  "title": "argtuner ipc protocol",
   "description": "Line-framed JSON protocol spoken over subprocess stdout. Each stdout line is ANSI-stripped; the first occurrence of the literal prefix `::ARGTUNER::` marks the start of a message, and the JSON document after the prefix must match this schema. Field values are always strings on the wire.",
   "oneOf": [
     {
@@ -70,7 +70,7 @@
       "tuner"
     ],
     "prefix": "::ARGTUNER::",
-    "protocol": "argtuner.talkback",
+    "protocol": "argtuner.ipc",
     "stripAnsi": true
   }
 }

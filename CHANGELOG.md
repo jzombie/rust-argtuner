@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/) and this project adheres to
 (or is loosely based on) Semantic Versioning.
 
+## [0.1.3-alpha] - 2026-08-15
+
+### Added
+
+- **Const-path `default`/`min`/`max`/`step` hints:** `#[param(default = crate::DEFAULT_EPOCHS)]` (and `min`/`max`/`step`) now accept arbitrary const expressions, not just literals, so defaults can reference named constants instead of duplicating values. Non-literal numeric/bool defaults are stringified at runtime into a generated per-field `static OnceLock<String>` anchor (`__ARGTUNER_DEFAULT_<struct>_<field>`, mangled with the struct ident to avoid module-scope collisions) that yields a `&'static str` with exactly one bounded allocation per process — **no `.leak()`, no `Cow`**. `TunerParam.default` stays `Option<&'static str>` and `TunerParam` keeps its `Copy` impl.
+- **`#[tuner_params]` auto-derives `Debug`, `Clone`, and `serde::Serialize`:** the macro injects `#[derive(Debug, Clone, ::argtuner_sdk::serde::Serialize)]` plus `#[serde(crate = "::argtuner_sdk::serde")]` on the struct (serde resolves through the SDK, so consumers need no direct serde dependency). Consumers must not derive these themselves.
+- **`Vec<T>` repeatable flags:** a `Vec<String>` field becomes a repeatable `--flag` (each occurrence appends; `from_matches` collects via `get_many`). The flag is never `required` and is excluded from the template/search space.
+
+### Changed
+
+- **`default` on a `Fixed` `Option<T>` field is rejected at compile time:** clap would always yield `Some(default)`, making the `Option` meaningless; the derive now emits a `syn::Error` telling the user to omit the default or drop the `Option`.
+- **`#[tuner_params]` parameters now use an explicit `role` (breaking):** each
+  field declares who supplies its value via `#[param(role = ...)]` instead of
+  relying on type- and bounds-inference. `role = ParamRole::Fixed` is the
+  uniform default for every type (a bare `bool` is no longer silently tunable).
+  Roles: `Fixed` (constant baked into the template), `Tune` (sampled from
+  `[space]`; requires `min`/`max` or `choices`, or a bool), `Injected` (argtuner
+  supplies the value; `value_name` must be `trial_dir`/`trial_id`), and `Cli`
+  (operational flag, excluded from template and space). The derive now rejects
+  constraint hints on non-`tune` roles, `role = ParamRole::Tune` without the
+  bounds its kind requires, numeric bounds on bools, and arbitrary `value_name`s
+  at compile time. `Option<T>` fields classify by their inner type
+  (`Option<f64>` is a `Float`), and all bools — plain and `Option` — parse
+  flag-style. The `skip = true` hint was removed in favor of
+  `role = ParamRole::Cli`; old hints produce a compile error pointing at the
+  migration. `role` takes an **enum variant path** — the canonical
+  `role = ParamRole::Tune`, or a fully-qualified
+  `role = argtuner_sdk::ParamRole::Tune` — not a string literal (bare
+  `role = tune` still parses as a fallback, but the string form `role = "tune"`
+  is rejected with a pointer to the migration).
+- **`argtuner_sdk::prelude` — single import surface for training binaries:**
+  `use argtuner_sdk::prelude::*;` brings in `tuner_params`, `init`,
+  `init_with_args`, `is_tuning_active`, `emit_metrics`, `TunerParams`, `ParamRole`,
+  `ParamKind`, `TunerParam`, `IpcChannel`, `MetricsBuilder`, and `EventKind`, so
+  `#[param(role = ParamRole::Tune)]` resolves in the IDE with autocompletion and
+  hover docs. The SDK/tuner boundary is unchanged: `argtuner` (the CLI crate)
+  does **not** depend on `argtuner-sdk`, so training binaries never pull in the
+  tuner package.
+
 ## [0.1.2-alpha] - 2026-08-13
 
 ### Added

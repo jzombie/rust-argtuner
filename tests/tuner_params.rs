@@ -1,17 +1,16 @@
 use argtuner::UnifiedConfig;
-use argtuner_sdk::Params;
-use argtuner_sdk::talkback_args;
+use argtuner_sdk::prelude::*;
 
 #[allow(dead_code)] // template-only definition: fields are read by the derive, not this test
-#[talkback_args]
-struct TemplateArgs {
-    #[param(default = 0.001, min = 0.0001, max = 0.1, log = true)]
+#[tuner_params]
+struct TemplateParams {
+    #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
-    #[param(default = 100, min = 10, max = 1000)]
+    #[param(role = ParamRole::Tune, default = 100, min = 10, max = 1000)]
     steps: usize,
-    #[param(choices = ["adam", "adamw"])]
+    #[param(role = ParamRole::Tune, choices = ["adam", "adamw"])]
     optimizer: String,
-    #[param(value_name = "trial_dir")]
+    #[param(role = ParamRole::Injected, value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 
@@ -20,8 +19,8 @@ fn space_names(config: &UnifiedConfig) -> Vec<&str> {
 }
 
 #[test]
-fn talkback_template_toml_is_valid() {
-    let toml_text = argtuner_sdk::render_template_toml::<TemplateArgs>();
+fn tuner_params_toml_is_valid() {
+    let toml_text = argtuner_sdk::render_template_toml::<TemplateParams>();
     let parsed: UnifiedConfig =
         toml::from_str(&toml_text).expect("template must parse as UnifiedConfig");
     parsed
@@ -46,8 +45,8 @@ fn talkback_template_toml_is_valid() {
 }
 
 #[test]
-fn talkback_template_renders_placeholders() {
-    let cmd = argtuner_sdk::render_template_command::<TemplateArgs>();
+fn tuner_params_renders_placeholders() {
+    let cmd = argtuner_sdk::render_template_command::<TemplateParams>();
     assert!(cmd.contains("--lr {lr}"), "template: {cmd}");
     assert!(cmd.contains("--steps {steps}"), "template: {cmd}");
     assert!(cmd.contains("--optimizer {optimizer}"), "template: {cmd}");
@@ -58,17 +57,17 @@ fn talkback_template_renders_placeholders() {
 }
 
 #[allow(dead_code)]
-#[talkback_args]
-struct TrickyArgs {
-    #[param(default = 0.001, min = 0.0001, max = 0.1, step = 0.001)]
+#[tuner_params]
+struct TrickyParams {
+    #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, step = 0.001)]
     lr: f64,
-    #[param(choices = ["a\"b", "c\\d", "plain"])]
+    #[param(role = ParamRole::Tune, choices = ["a\"b", "c\\d", "plain"])]
     kernel: String,
 }
 
 #[test]
-fn talkback_template_round_trips_tricky_values() {
-    let toml_text = argtuner_sdk::render_template_toml::<TrickyArgs>();
+fn tuner_params_round_trips_tricky_values() {
+    let toml_text = argtuner_sdk::render_template_toml::<TrickyParams>();
     let parsed: UnifiedConfig = toml::from_str(&toml_text)
         .expect("template must parse as UnifiedConfig even with quotes/backslashes");
 
@@ -106,17 +105,17 @@ fn talkback_template_round_trips_tricky_values() {
 }
 
 #[allow(dead_code)]
-#[talkback_args]
-struct BoolParamArgs {
-    #[param(default = true)]
+#[tuner_params]
+struct BoolParams {
+    #[param(role = ParamRole::Tune, default = true)]
     use_dropout: bool,
-    #[param(skip = true, default = false)]
+    #[param(role = ParamRole::Cli, default = false)]
     verbose: bool,
 }
 
 #[test]
-fn talkback_template_renders_bool() {
-    let toml_text = argtuner_sdk::render_template_toml::<BoolParamArgs>();
+fn tuner_params_renders_bool() {
+    let toml_text = argtuner_sdk::render_template_toml::<BoolParams>();
     let parsed: UnifiedConfig =
         toml::from_str(&toml_text).expect("template must parse as UnifiedConfig");
 
@@ -127,7 +126,7 @@ fn talkback_template_renders_bool() {
     );
     assert!(
         !names.contains(&"verbose"),
-        "skipped bool must be excluded from the space: {names:?}"
+        "cli bool must be excluded from the space: {names:?}"
     );
     match parsed
         .space
@@ -141,7 +140,7 @@ fn talkback_template_renders_bool() {
     }
 
     // Tunable bool renders as a placeholder, not a bare flag.
-    let cmd = argtuner_sdk::render_template_command::<BoolParamArgs>();
+    let cmd = argtuner_sdk::render_template_command::<BoolParams>();
     assert!(
         cmd.contains("--use-dropout {use_dropout}"),
         "template: {cmd}"
@@ -149,8 +148,8 @@ fn talkback_template_renders_bool() {
 }
 
 #[test]
-fn talkback_template_skipped_bool_parses_on_cli() {
-    let command = BoolParamArgs::command();
+fn tuner_params_cli_bool_parses_on_cli() {
+    let command = BoolParams::command();
 
     // `--verbose` (missing value) parses as true.
     let matches = command
@@ -179,5 +178,84 @@ fn talkback_template_skipped_bool_parses_on_cli() {
     assert!(
         !*matches.get_one::<bool>("verbose").expect("verbose"),
         "absent verbose should use the default (false)"
+    );
+}
+
+#[allow(dead_code)]
+#[tuner_params]
+struct OptionalParams {
+    #[param(role = ParamRole::Tune, default = 0.1, min = 0.01, max = 0.5)]
+    eval_split: Option<f64>,
+    #[param(role = ParamRole::Fixed, default = true)]
+    use_lora: bool,
+    // Option<bool> with no default: standalone-only (excluded from the
+    // template), still parsed flag-style: `--resume` -> Some(true),
+    // `--resume false` -> Some(false), absent -> None.
+    resume: Option<bool>,
+}
+
+#[test]
+fn tuner_params_option_tune_and_fixed_bools() {
+    let cmd = argtuner_sdk::render_template_command::<OptionalParams>();
+
+    // Option<f64> with role=tune renders a placeholder, like a plain f64.
+    assert!(cmd.contains("--eval-split {eval_split}"), "template: {cmd}");
+    // A fixed bool with a default renders a bare flag — never `--flag true`.
+    assert!(cmd.contains("--use-lora"), "template: {cmd}");
+    assert!(!cmd.contains("--use-lora true"), "template: {cmd}");
+    // A fixed Option<bool> without a default is standalone-only: excluded.
+    assert!(!cmd.contains("--resume"), "template: {cmd}");
+
+    // Only the tune param lands in [space].
+    let toml_text = argtuner_sdk::render_template_toml::<OptionalParams>();
+    let parsed: UnifiedConfig =
+        toml::from_str(&toml_text).expect("template must parse as UnifiedConfig");
+    let names = space_names(&parsed);
+    assert!(
+        names.contains(&"eval_split"),
+        "Option<f64> tune param missing from space: {names:?}"
+    );
+    assert!(
+        !names.contains(&"use_lora") && !names.contains(&"resume"),
+        "fixed bools must not be in the space: {names:?}"
+    );
+
+    // Bare `--flag` parses as true for both bool and Option<bool> (uniform
+    // flag-style), and an explicit value still parses for the Option<bool>.
+    let command = OptionalParams::command();
+    let matches = command
+        .clone()
+        .try_get_matches_from(["app", "--use-lora", "--resume"])
+        .expect("bare fixed-bool flags must parse");
+    assert!(
+        *matches.get_one::<bool>("use_lora").expect("use_lora"),
+        "bare --use-lora should parse as true"
+    );
+    assert!(
+        *matches.get_one::<bool>("resume").expect("resume"),
+        "bare --resume should parse as Some(true)"
+    );
+
+    let matches = command
+        .clone()
+        .try_get_matches_from(["app", "--resume", "false"])
+        .expect("--resume false must parse");
+    assert!(
+        !*matches.get_one::<bool>("resume").expect("resume"),
+        "--resume false should parse as Some(false)"
+    );
+
+    // Absent: use_lora uses its clap default (true); the Option<bool> is None.
+    let matches = command
+        .try_get_matches_from(["app"])
+        .expect("no flags must parse");
+    assert!(
+        *matches.get_one::<bool>("use_lora").expect("use_lora"),
+        "absent bool should use its default (true)"
+    );
+    assert_eq!(
+        matches.get_one::<bool>("resume").copied(),
+        None,
+        "absent optional bool should be None"
     );
 }
