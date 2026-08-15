@@ -5,6 +5,8 @@ black-box hyperparameter optimization CLI; this crate defines the wire format of
 the "ipc" protocol a trial command speaks on stdout (`::ARGTUNER::`-prefixed
 JSON lines).
 
+> **Heads up:** not stable yet. The API is still settling, so expect breaking changes.
+
 Highlights:
 
 - `IpcMessage` — the single wire type; `protocol_schema()` generates the

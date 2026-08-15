@@ -2,6 +2,8 @@
 
 `argtuner-sdk` provides lightweight, type-safe Rust bindings for [`argtuner`](https://crates.io/crates/argtuner), a black-box hyperparameter optimization CLI. It enables training programs to define search spaces, parse CLI arguments, and emit evaluation telemetry over line-framed `stdio`.
 
+> **Heads up:** not stable yet. The API is still settling, so expect breaking changes.
+
 ## Architecture & Dependency Isolation
 
 The main `argtuner` package houses the complete orchestration engine: terminal UI components, process supervision, SQLite persistence, and optimization algorithms.

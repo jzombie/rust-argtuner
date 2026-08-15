@@ -5,6 +5,8 @@ the lightweight client crate a training script uses to report metrics to
 [`argtuner`](https://crates.io/crates/argtuner) (a black-box hyperparameter
 optimization CLI) over stdout.
 
+> **Heads up:** not stable yet. The API is still settling, so expect breaking changes.
+
 `#[tuner_params]` — attribute macro for a plain struct of fields. It generates
 the `argtuner_sdk::TunerParams` implementation, turning the struct into both a
 production `clap` CLI and an argtuner template/search-space definition.

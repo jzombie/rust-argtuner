@@ -8,6 +8,8 @@
 
 By defining a search space in `argtuner.toml` and templating your command (e.g., `--lr {lr}`), `argtuner` orchestrates trials using algorithms like Particle Swarm Optimization (PSO) or Successive Halving. It reads trial metrics directly from the process `stdout` and logs results to a local SQLite/CSV database.
 
+> **Heads up:** not stable yet. The API is still settling, so expect breaking changes.
+
 ## When it fits
 
 Use argtuner when:
