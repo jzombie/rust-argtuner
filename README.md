@@ -141,6 +141,10 @@ Other supported hints: `default = 0.001` (the CLI default; fields without one
 are required unless `Option<T>`), `long = "checkpoint-dir"` (override the
 `--flag` name).
 
+`#[tuner_params]` also auto-derives `Debug`, `Clone`, and `serde::Serialize`
+(resolved through `argtuner_sdk`), so don't add your own `#[derive(...)]` on the
+struct — it would conflict.
+
 Supported field types: `f64`/`f32`, integers (`usize`, `i64`, …), `String`,
 `bool` (a tunable `Bool` `[space]` entry, parsed flag-style: `--use-dropout`
 means `true`, `--use-dropout false` means `false`), and `Option<T>` (optional;
@@ -450,7 +454,7 @@ If your application is written in Rust, you do not need to format these JSON str
 * **Type-safe emission:** `emit_metrics!` / `channel.metrics()` and the serde-backed `emit_epoch_end()`, `emit_step_end()`, and `emit_result()` methods write `::ARGTUNER::` JSON to stdout (silently no-op when the binary runs standalone, so the same CLI doubles as a clean production tool).
 * **CLI auto-generation:** `--print-template-toml` prints a starter `argtuner.toml` — populated `[space]` included — directly from your struct definition.
 * **Version handshake:** Ensures compatibility between your app and the CLI.
-* **Typed argv parsing:** The derive parses flags for you and returns `(IpcChannel, TunerParams)` via `init()`.
+* **Typed argv parsing:** The derive parses flags for you and returns `(IpcChannel, TrainParams)` via `init()`.
 
 `argtuner-sdk` is a deliberately tiny crate: it pulls in only a handful of
 small, common dependencies (`clap`, `serde`, `serde_json`, `toml_edit`,
