@@ -629,7 +629,7 @@ pub fn init_with_args<T: TunerParams>() -> (IpcChannel, T) {
     (channel, args)
 }
 
-/// Print the ipc protocol JSON Schema to stdout and exit if the
+/// Print the IPC protocol JSON Schema to stdout and exit if the
 /// `--print-protocol-schema` flag is present on argv. Call early (before any
 /// protocol messages are emitted) so stdout stays clean.
 pub fn maybe_print_protocol_schema_and_exit() {
@@ -640,7 +640,7 @@ pub fn maybe_print_protocol_schema_and_exit() {
     std::process::exit(0);
 }
 
-/// Print the ipc protocol JSON Schema to stdout.
+/// Print the IPC protocol JSON Schema to stdout.
 pub fn print_protocol_schema() {
     print!("{}", argtuner_common::protocol_schema_string());
 }

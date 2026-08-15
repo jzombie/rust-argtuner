@@ -15,7 +15,7 @@ The SDK injects three flags:
 
 - `--print-template` — print the rendered command template and exit.
 - `--print-template-toml` — print a starter `argtuner.toml` and exit.
-- `--print-protocol-schema` — print the ipc protocol JSON Schema and exit.
+- `--print-protocol-schema` — print the IPC protocol JSON Schema and exit.
 
 Requires a struct with named fields. Full API docs:
 [`argtuner-sdk`](https://github.com/jzombie/rust-argtuner/blob/main/crates/argtuner-sdk/README.md).

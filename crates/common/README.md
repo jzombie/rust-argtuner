@@ -2,7 +2,7 @@
 
 Shared constants and protocol types for the [argtuner](https://crates.io/crates/argtuner) workspace. `argtuner` is a
 black-box hyperparameter optimization CLI; this crate defines the wire format of
-the "ipc" protocol a trial command speaks on stdout (`::ARGTUNER::`-prefixed
+the "IPC" protocol a trial command speaks on stdout (`::ARGTUNER::`-prefixed
 JSON lines).
 
 > **Heads up:** not stable yet. The API is still settling, so expect breaking changes.

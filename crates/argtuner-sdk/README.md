@@ -52,7 +52,7 @@ Target binaries expose self-inspection flags for automated setup:
 
 * `--print-template-toml`: Generates a fully configured `argtuner.toml` project manifest.
 * `--print-template`: Outputs the CLI command invocation template.
-* `--print-protocol-schema`: Exports the ipc protocol JSON Schema.
+* `--print-protocol-schema`: Exports the IPC protocol JSON Schema.
 
 ## Wire Protocol
 

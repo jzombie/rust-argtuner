@@ -11,7 +11,7 @@ pub const RESULT_PREFIX: &str = "::ARGTUNER::";
 /// `CommandRunner` uses piped stdio instead of a PTY (test-only).
 pub const FORCE_PIPES_ENV: &str = "ARGTUNER_FORCE_PIPES";
 
-/// Env var the tuner always exports to trial subprocesses. The ipc binding
+/// Env var the tuner always exports to trial subprocesses. The IPC binding
 /// checks it to detect "running under argtuner" and suppresses stdout emission
 /// when absent, so standalone runs of the same binary stay clean.
 pub const TUNING_MARKER_ENV: &str = "ARGTUNER_TUNING";
