@@ -188,7 +188,9 @@ struct OptionalParams {
     eval_split: Option<f64>,
     #[param(role = ParamRole::Fixed, default = true)]
     use_lora: bool,
-    #[param(role = ParamRole::Fixed, default = true)]
+    // Option<bool> with no default: standalone-only (excluded from the
+    // template), still parsed flag-style: `--resume` -> Some(true),
+    // `--resume false` -> Some(false), absent -> None.
     resume: Option<bool>,
 }
 
@@ -198,11 +200,11 @@ fn tuner_params_option_tune_and_fixed_bools() {
 
     // Option<f64> with role=tune renders a placeholder, like a plain f64.
     assert!(cmd.contains("--eval-split {eval_split}"), "template: {cmd}");
-    // Fixed bools render bare flags — never `--flag true` / `--flag false`.
+    // A fixed bool with a default renders a bare flag — never `--flag true`.
     assert!(cmd.contains("--use-lora"), "template: {cmd}");
     assert!(!cmd.contains("--use-lora true"), "template: {cmd}");
-    assert!(cmd.contains("--resume"), "template: {cmd}");
-    assert!(!cmd.contains("--resume true"), "template: {cmd}");
+    // A fixed Option<bool> without a default is standalone-only: excluded.
+    assert!(!cmd.contains("--resume"), "template: {cmd}");
 
     // Only the tune param lands in [space].
     let toml_text = argtuner_sdk::render_template_toml::<OptionalParams>();
@@ -243,12 +245,17 @@ fn tuner_params_option_tune_and_fixed_bools() {
         "--resume false should parse as Some(false)"
     );
 
-    // Absent uses the clap default (true), matching the baked `--resume` flag.
+    // Absent: use_lora uses its clap default (true); the Option<bool> is None.
     let matches = command
         .try_get_matches_from(["app"])
         .expect("no flags must parse");
     assert!(
-        *matches.get_one::<bool>("resume").expect("resume"),
-        "absent optional bool should use its default (true)"
+        *matches.get_one::<bool>("use_lora").expect("use_lora"),
+        "absent bool should use its default (true)"
+    );
+    assert_eq!(
+        matches.get_one::<bool>("resume").copied(),
+        None,
+        "absent optional bool should be None"
     );
 }
