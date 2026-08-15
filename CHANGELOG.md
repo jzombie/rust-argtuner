@@ -6,8 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 
 ## Unreleased
 
+### Added
+
+- **Const-path `default`/`min`/`max`/`step` hints:** `#[param(default = crate::DEFAULT_EPOCHS)]` (and `min`/`max`/`step`) now accept arbitrary const expressions, not just literals, so defaults can reference named constants instead of duplicating values. Non-literal numeric/bool defaults are stringified at runtime into a generated per-field `static OnceLock<String>` anchor (`__ARGTUNER_DEFAULT_<struct>_<field>`, mangled with the struct ident to avoid module-scope collisions) that yields a `&'static str` with exactly one bounded allocation per process — **no `.leak()`, no `Cow`**. `TunerParam.default` stays `Option<&'static str>` and `TunerParam` keeps its `Copy` impl.
+- **`#[tuner_params]` auto-derives `Debug`, `Clone`, and `serde::Serialize`:** the macro injects `#[derive(Debug, Clone, ::argtuner_sdk::serde::Serialize)]` plus `#[serde(crate = "::argtuner_sdk::serde")]` on the struct (serde resolves through the SDK, so consumers need no direct serde dependency). Consumers must not derive these themselves.
+- **`Vec<T>` repeatable flags:** a `Vec<String>` field becomes a repeatable `--flag` (each occurrence appends; `from_matches` collects via `get_many`). The flag is never `required` and is excluded from the template/search space.
+
 ### Changed
 
+- **`default` on a `Fixed` `Option<T>` field is rejected at compile time:** clap would always yield `Some(default)`, making the `Option` meaningless; the derive now emits a `syn::Error` telling the user to omit the default or drop the `Option`.
 - **`#[tuner_params]` parameters now use an explicit `role` (breaking):** each
   field declares who supplies its value via `#[param(role = ...)]` instead of
   relying on type- and bounds-inference. `role = ParamRole::Fixed` is the
