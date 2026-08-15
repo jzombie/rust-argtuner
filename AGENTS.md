@@ -48,4 +48,5 @@ the coupling this split exists to prevent. This is a deliberate, documented
   from `argtuner-sdk` — do not move logic there.
 - Before committing, verify the boundary holds:
   `cargo tree -i argtuner-sdk` must show the SDK is pulled in only by
-  examples/tests/dev-deps, never by the `argtuner` library.
+  examples/tests/dev-deps, never by the `argtuner` library. (Enforced in CI by
+  the "Check SDK boundary" step in `.github/workflows/rust-lint.yml`.)
