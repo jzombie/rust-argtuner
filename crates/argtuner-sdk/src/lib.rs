@@ -834,4 +834,29 @@ mod tests {
         let json = serde_json::to_string(&p).expect("serialize");
         assert!(json.contains("\"epochs\":10"), "serialized params: {json}");
     }
+
+    // ── Vec<T> (repeatable flag) fields ────────────────────────────────────
+
+    #[tuner_params]
+    struct VecParams {
+        #[param(role = ParamRole::Fixed)]
+        tags: Vec<String>,
+    }
+
+    #[test]
+    fn vec_fields_collect_repeated_flags() {
+        let matches = <VecParams as TunerParams>::command()
+            .no_binary_name(true)
+            .try_get_matches_from(["--tags", "a", "--tags", "b"])
+            .expect("parses repeated flags");
+        let p = VecParams::from_matches(&matches);
+        assert_eq!(p.tags, vec!["a", "b"]);
+
+        let absent = <VecParams as TunerParams>::command()
+            .no_binary_name(true)
+            .try_get_matches_from(Vec::<String>::new())
+            .expect("parses without the flag");
+        let p = VecParams::from_matches(&absent);
+        assert!(p.tags.is_empty(), "absent flag yields empty vec");
+    }
 }

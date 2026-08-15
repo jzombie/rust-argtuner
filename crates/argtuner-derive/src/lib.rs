@@ -95,6 +95,15 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
         let is_float = type_is_float(&inner_ty);
         let is_int = type_is_int(&inner_ty);
         let is_string = type_is_ident(&inner_ty, "String");
+        // A `Vec<T>` field is a repeatable `--flag` (each occurrence appends);
+        // the clap value parser operates on the element type `T`.
+        let vec_inner = unwrap_vec(ty);
+        let is_vec = vec_inner.is_some();
+        let parser_ty = if is_vec {
+            vec_inner.as_ref().expect("vec inner type")
+        } else {
+            &inner_ty
+        };
         let help = doc_comment(field);
 
         let long = attrs
@@ -269,7 +278,7 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 quote!(.default_value(::std::format!("{}", #e)))
             }
         };
-        let required = if !is_option && attrs.default.is_none() {
+        let required = if !is_option && !is_vec && attrs.default.is_none() {
             quote!(.required(true))
         } else {
             quote!()
@@ -290,12 +299,17 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
             )
         } else {
             (
-                quote!(::argtuner_sdk::clap::value_parser!(#inner_ty)),
+                quote!(::argtuner_sdk::clap::value_parser!(#parser_ty)),
                 false,
             )
         };
         let num_args = if bool_flag {
             quote!(.num_args(0..=1).default_missing_value("true"))
+        } else {
+            quote!()
+        };
+        let append_action = if is_vec {
+            quote!(.action(::argtuner_sdk::clap::ArgAction::Append))
         } else {
             quote!()
         };
@@ -308,6 +322,7 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     #default_arg
                     #required
                     #num_args
+                    #append_action
                     .value_parser(#value_parser),
             )
         });
@@ -315,10 +330,16 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
         // Field extraction in from_matches.
         let id_lit = lit_str(&name);
         let err_lit = lit_str(&format!("--{long}"));
-        let init = if is_option {
-            quote!(m.get_one::<#inner_ty>(#id_lit).cloned())
+        let init = if is_vec {
+            quote! {
+                m.get_many::<#parser_ty>(#id_lit)
+                    .map(|vals| vals.cloned().collect::<::std::vec::Vec<_>>())
+                    .unwrap_or_default()
+            }
+        } else if is_option {
+            quote!(m.get_one::<#parser_ty>(#id_lit).cloned())
         } else {
-            quote!(m.get_one::<#inner_ty>(#id_lit).cloned().expect(#err_lit))
+            quote!(m.get_one::<#parser_ty>(#id_lit).cloned().expect(#err_lit))
         };
         field_inits.push(quote!(#ident: #init));
     }
@@ -563,6 +584,19 @@ fn unwrap_option(ty: &syn::Type) -> (bool, syn::Type) {
         return (true, inner.clone());
     }
     (false, ty.clone())
+}
+
+/// The element type if `ty` is `Vec<T>`; `None` otherwise.
+fn unwrap_vec(ty: &syn::Type) -> Option<syn::Type> {
+    if let syn::Type::Path(tp) = ty
+        && let Some(seg) = tp.path.segments.last()
+        && seg.ident == "Vec"
+        && let PathArguments::AngleBracketed(ab) = &seg.arguments
+        && let Some(GenericArgument::Type(inner)) = ab.args.first()
+    {
+        return Some(inner.clone());
+    }
+    None
 }
 
 fn type_is_ident(ty: &syn::Type, ident: &str) -> bool {
