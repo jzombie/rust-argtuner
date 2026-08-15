@@ -83,6 +83,7 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut param_specs = Vec::new();
     let mut command_args = Vec::new();
     let mut field_inits = Vec::new();
+    let mut anchor_statics = Vec::new();
 
     for (field, attrs) in fields.named.iter().zip(param_attrs.iter()) {
         let ident = field.ident.as_ref().expect("named field");
@@ -204,16 +205,32 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
             None => quote!(None),
         };
         let default_lit = attrs.default.as_ref().and_then(expr_literal);
-        // `default` is a `Cow<'static, str>`: literals and `&str` consts are
-        // `Borrowed` (zero allocation); numeric/bool consts are stringified
-        // into an `Owned` `String` at runtime — owned memory, never leaked.
-        let default_tok = match (&attrs.default, default_lit.as_deref(), is_string) {
+        // Non-literal const defaults on numeric/bool fields can't be stringified
+        // at macro time. Emit a hidden per-field static `OnceLock<String>`
+        // anchor: `get_or_init(...).as_str()` yields a `&'static str` with
+        // exactly one bounded allocation per process (no `.leak()`, no `Cow`,
+        // `TunerParam` stays `Copy`).
+        let default_anchor = if default_lit.is_none() && attrs.default.is_some() && !is_string {
+            let id = proc_macro2::Ident::new(
+                &format!("__ARGTUNER_DEFAULT_{name}"),
+                proc_macro2::Span::call_site(),
+            );
+            anchor_statics.push(quote! {
+                #[doc(hidden)]
+                static #id: ::std::sync::OnceLock<::std::string::String> =
+                    ::std::sync::OnceLock::new();
+            });
+            Some(id)
+        } else {
+            None
+        };
+        let default_tok = match (&attrs.default, default_lit.as_deref(), &default_anchor) {
             (None, _, _) => quote!(None),
-            (_, Some(lit), _) => quote!(Some(::std::borrow::Cow::Borrowed(#lit))),
-            (Some(e), None, true) => quote!(Some(::std::borrow::Cow::Borrowed(#e))),
-            (Some(e), None, false) => {
-                quote!(Some(::std::borrow::Cow::Owned(::std::format!("{}", #e))))
+            (_, Some(lit), _) => quote!(Some(#lit)),
+            (Some(e), None, Some(id)) => {
+                quote!(Some(#id.get_or_init(|| ::std::format!("{}", #e)).as_str()))
             }
+            (Some(e), None, None) => quote!(Some(#e)),
         };
         let help_tok = match help.as_deref() {
             Some(h) => quote!(Some(#h)),
@@ -268,15 +285,16 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
             Some(h) => quote!(.help(#h)),
             None => quote!(),
         };
-        let default_arg = match (&attrs.default, default_lit.as_deref(), is_string) {
+        let default_arg = match (&attrs.default, default_lit.as_deref(), &default_anchor) {
             (None, _, _) => quote!(),
             (_, Some(lit), _) => quote!(.default_value(#lit)),
-            (Some(e), None, true) => quote!(.default_value(#e)),
-            (Some(e), None, false) => {
-                // The owned `String` is moved into clap's `builder::OsStr`
-                // (`From<String>`), so no `'static` borrow is required.
-                quote!(.default_value(::std::format!("{}", #e)))
+            (Some(e), None, Some(id)) => {
+                // `&'static str` borrowed from the static anchor is
+                // `IntoResettable<OsStr>` (clap's non-feature-gated
+                // `From<&'static str>`), so no `String` feature is needed.
+                quote!(.default_value(#id.get_or_init(|| ::std::format!("{}", #e)).as_str()))
             }
+            (Some(e), None, None) => quote!(.default_value(#e)),
         };
         let required = if !is_option && !is_vec && attrs.default.is_none() {
             quote!(.required(true))
@@ -348,6 +366,8 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #[derive(Debug, Clone, ::argtuner_sdk::serde::Serialize)]
         #[serde(crate = "::argtuner_sdk::serde")]
         #input
+
+        #(#anchor_statics)*
 
         impl ::argtuner_sdk::TunerParams for #struct_ident {
             fn app_name() -> &'static str {
