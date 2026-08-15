@@ -800,9 +800,18 @@ mod tests {
     #[test]
     fn const_defaults_bake_into_template() {
         let cmd = render_template_command::<ConstDefaults>();
-        assert!(cmd.contains("--epochs 10"), "numeric const default baked: {cmd}");
-        assert!(cmd.contains("--mode pair"), "&str const default baked: {cmd}");
-        assert!(cmd.contains("--lr {lr}"), "tune param stays a placeholder: {cmd}");
+        assert!(
+            cmd.contains("--epochs 10"),
+            "numeric const default baked: {cmd}"
+        );
+        assert!(
+            cmd.contains("--mode pair"),
+            "&str const default baked: {cmd}"
+        );
+        assert!(
+            cmd.contains("--lr {lr}"),
+            "tune param stays a placeholder: {cmd}"
+        );
     }
 
     #[test]
