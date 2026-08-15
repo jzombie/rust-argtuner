@@ -211,8 +211,10 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
         // exactly one bounded allocation per process (no `.leak()`, no `Cow`,
         // `TunerParam` stays `Copy`).
         let default_anchor = if default_lit.is_none() && attrs.default.is_some() && !is_string {
+            // Mangle with the struct ident so two `#[tuner_params]` structs in
+            // the same module can't collide on identical field names.
             let id = proc_macro2::Ident::new(
-                &format!("__ARGTUNER_DEFAULT_{name}"),
+                &format!("__ARGTUNER_DEFAULT_{struct_ident}_{name}"),
                 proc_macro2::Span::call_site(),
             );
             anchor_statics.push(quote! {
@@ -589,6 +591,18 @@ fn parse_param_attrs(field: &syn::Field) -> Result<ParamAttrs, syn::Error> {
                 ));
             }
         }
+    }
+
+    // A `default` on a `Fixed` `Option<T>` field is meaningless: clap always
+    // yields `Some(default)`, so the `Option` can never be `None`. Reject at
+    // compile time rather than relying on discipline.
+    if role == "fixed" && out.default.is_some() && unwrap_option(&field.ty).0 {
+        return Err(syn::Error::new_spanned(
+            field,
+            "`default` on an `Option<T>` field with `role = \"fixed\"` is meaningless \
+             (clap always yields `Some(default)`); omit the default or make the field \
+             non-`Option`",
+        ));
     }
 
     Ok(out)
