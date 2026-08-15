@@ -1163,11 +1163,11 @@ mod tests {
                 field_map.insert(key.clone(), value);
             }
         }
-        let payload = argtuner_common::TalkbackMessage::Event {
+        let payload = argtuner_common::IpcMessage::Event {
             name: name.to_string(),
             fields: field_map,
         };
-        let json = serde_json::to_value(&payload).expect("talkback event serializes");
+        let json = serde_json::to_value(&payload).expect("ipc event serializes");
         crate::command::template::CommandTemplate::embed_json(&json)
     }
 

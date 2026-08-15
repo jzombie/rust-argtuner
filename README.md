@@ -8,6 +8,8 @@
 
 By defining a search space in `argtuner.toml` and templating your command (e.g., `--lr {lr}`), `argtuner` orchestrates trials using algorithms like Particle Swarm Optimization (PSO) or Successive Halving. It reads trial metrics directly from the process `stdout` and logs results to a local SQLite/CSV database.
 
+> **Heads up:** not stable yet. The API is still settling, so expect breaking changes.
+
 ## When it fits
 
 Use argtuner when:
@@ -23,27 +25,27 @@ Use argtuner when:
 proc-macro, so you only need to name one crate):
 
 ```rust,no_run
-use argtuner_sdk::{emit_metrics, init, talkback_args};
+use argtuner_sdk::prelude::*;
 
 fn train(lr: f64, steps: usize) -> f64 {
     0.0 // your training logic
 }
 
-#[talkback_args]
-struct Params {
+#[tuner_params]
+struct TrainParams {
     /// Learning rate
-    #[param(default = 0.001, min = 0.0001, max = 0.1, log = true)]
+    #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
     /// Training steps
-    #[param(default = 100, min = 10, max = 1000)]
+    #[param(role = ParamRole::Tune, default = 100, min = 10, max = 1000)]
     steps: usize,
-    /// Checkpoint directory (reserved: trial_dir)
-    #[param(value_name = "trial_dir")]
+    /// Checkpoint directory (injected: trial_dir)
+    #[param(role = ParamRole::Injected, value_name = "trial_dir")]
     checkpoint_dir: Option<String>,
 }
 
 fn main() {
-    let (_talkback, params) = init::<Params>();
+    let (_channel, params) = init::<TrainParams>();
 
     // ... your training logic using params.lr, params.steps ...
     let val_loss = train(params.lr, params.steps);
@@ -81,26 +83,75 @@ running under argtuner, so `stdout` stays clean.
 
 ## Declaring parameters
 
-Each field of your `#[talkback_args]` struct becomes a `--flag <name>` CLI
-argument and a template placeholder; its doc comment becomes the `--help` text.
-`#[param(...)]` hints control the rest:
+Each field of your `#[tuner_params]` struct becomes a `--flag <name>` CLI
+argument; its doc comment becomes the `--help` text. `#[param(role = ...)]`
+declares **who supplies the value**, and the other hints are constraints that
+only apply to `role = ParamRole::Tune`:
 
-- `default = 0.001` — CLI default; fields without one are required (unless `Option<T>`).
-- `min = …` / `max = …` — search-space bounds → `Float`/`Int` `[space]` entry.
-- `log = true` — log-scale range (floats).
-- `step = …` — stepped (linear) range.
-- `choices = ["a", "b"]` — categorical → `Choice` `[space]` entry + CLI validation.
-- `skip = true` — exclude the parameter from the search space while keeping its
-  CLI argument (e.g. an operational `--verbose` bool you don't want tuned).
-- `value_name = "trial_dir"` — reserved placeholder, injected by argtuner.
-- `long = "checkpoint-dir"` — override the `--flag` name.
+| `role` | Who supplies the value | Requires | Template / `[space]` |
+|---|---|---|---|
+| `ParamRole::Fixed` (**default**) | you — a constant baked into the template | nothing | `[space]`: no; template: `--flag <default>` if a default exists, else a standalone-only CLI arg |
+| `ParamRole::Tune` | argtuner, sampled from `[space]` | `min` + `max` (float/int) or `choices` (string); bools need neither | `[space]`: yes; template: `--flag {name}` |
+| `ParamRole::Injected` | argtuner, per trial | `value_name = "trial_dir"` or `"trial_id"` | `[space]`: no; template: `--flag {value_name}` |
+| `ParamRole::Cli` | nobody — an operational flag, excluded from tuning entirely | nothing (non-`Option` fields need a `default`) | `[space]`: no; template: excluded |
+
+`ParamRole` comes into scope via `use argtuner_sdk::prelude::*;` (a bare
+`role = tune` also parses, but the qualified form keeps IDE autocompletion and
+hover docs working). Constraint hints — `min`/`max`/`step`/`log`/`choices`/
+`parent`/`parent_values` — are only valid on `role = ParamRole::Tune`; putting
+one on another role is a compile error rather than a silently ignored
+attribute. The macro rejects `role = ParamRole::Tune` without the bounds its
+kind requires, rejects numeric bounds on `bool`, rejects `value_name` outside
+the two reserved placeholders, and reports a helpful error for the removed
+`skip = true` hint (use `role = ParamRole::Cli`).
+
+Example:
+
+```rust,no_run
+use argtuner_sdk::prelude::*;
+
+#[tuner_params]
+struct TrainParams {
+    /// tunable float, log scale
+    #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
+    lr: f64,
+    /// tunable int
+    #[param(role = ParamRole::Tune, default = 100, min = 10, max = 1000)]
+    steps: usize,
+    /// tunable categorical string
+    #[param(role = ParamRole::Tune, choices = ["adam", "adamw"])]
+    optimizer: String,
+    /// tunable bool
+    #[param(role = ParamRole::Tune)]
+    use_dropout: bool,
+    /// fixed (non-tunable) string baked into the template
+    #[param(default = "val_loss")]
+    metric_key: String,
+    /// operational flag, excluded from the template and space
+    #[param(role = ParamRole::Cli, default = false)]
+    verbose: bool,
+    /// injected by argtuner per trial
+    #[param(role = ParamRole::Injected, value_name = "trial_dir")]
+    checkpoint_dir: Option<String>,
+    /// conditional on parent value
+    #[param(role = ParamRole::Tune, parent = "optimizer", parent_values = ["sgd"], default = 0.9, min = 0.0, max = 1.0)]
+    momentum: f64,
+}
+```
+
+Other supported hints: `default = 0.001` (the CLI default; fields without one
+are required unless `Option<T>`), `long = "checkpoint-dir"` (override the
+`--flag` name).
+
+`#[tuner_params]` also auto-derives `Debug`, `Clone`, and `serde::Serialize`
+(resolved through `argtuner_sdk`), so don't add your own `#[derive(...)]` on the
+struct — it would conflict.
 
 Supported field types: `f64`/`f32`, integers (`usize`, `i64`, …), `String`,
 `bool` (a tunable `Bool` `[space]` entry, parsed flag-style: `--use-dropout`
-means `true`, `--use-dropout false` means `false`), and `Option<T>` (optional);
-other `FromStr` types work too. Fields with no `min`/`max`/`choices` are fixed
-CLI args — baked into the generated template as their default and excluded from
-`[space]`.
+means `true`, `--use-dropout false` means `false`), and `Option<T>` (optional;
+`Option<f64>` etc. classify by their inner type); other `FromStr` types work
+too.
 
 - **TUI & progress bars:** if your application uses interactive terminal
   loggers (e.g. `burn-rs` or `indicatif`), gate them on
@@ -124,7 +175,7 @@ use argtuner_sdk::{init, is_tuning_active};
 use burn::train::LearnerBuilder;
 
 fn main() {
-    let (_talkback, params) = init::<Params>();
+    let (_channel, params) = init::<TrainParams>();
 
     let mut builder = LearnerBuilder::new(&params.checkpoint_dir);
 
@@ -401,11 +452,11 @@ argtuner watch --project ./argtuner/my-project --poll-ms 5000
 ## Protocol
 
 ### The `argtuner-sdk` Rust binding
-If your application is written in Rust, you do not need to format these JSON strings manually. Add the **`argtuner-sdk`** crate and declare your algorithm's parameters once as a **plain struct** with `#[talkback_args]`; the derive generates the `clap` CLI, the command template, and a real search space (`argtuner_sdk::init::<P>()`, `argtuner_sdk::talkback_args`, `argtuner_sdk::Params`, and `argtuner_sdk::emit_metrics!` come from that crate's root; no `clap`/`serde` needed in your `Cargo.toml`). It provides:
-* **Type-safe emission:** `emit_metrics!` / `talkback.metrics()` and the serde-backed `emit_epoch_end()`, `emit_step_end()`, and `emit_result()` methods write `::ARGTUNER::` JSON to stdout (silently no-op when the binary runs standalone, so the same CLI doubles as a clean production tool).
+If your application is written in Rust, you do not need to format these JSON strings manually. Add the **`argtuner-sdk`** crate and declare your algorithm's parameters once as a **plain struct** with `#[tuner_params]`; the derive generates the `clap` CLI, the command template, and a real search space (`argtuner_sdk::init::<P>()`, `argtuner_sdk::tuner_params`, `argtuner_sdk::TunerParams`, and `argtuner_sdk::emit_metrics!` come from that crate's root; no `clap`/`serde` needed in your `Cargo.toml`). It provides:
+* **Type-safe emission:** `emit_metrics!` / `channel.metrics()` and the serde-backed `emit_epoch_end()`, `emit_step_end()`, and `emit_result()` methods write `::ARGTUNER::` JSON to stdout (silently no-op when the binary runs standalone, so the same CLI doubles as a clean production tool).
 * **CLI auto-generation:** `--print-template-toml` prints a starter `argtuner.toml` — populated `[space]` included — directly from your struct definition.
 * **Version handshake:** Ensures compatibility between your app and the CLI.
-* **Typed argv parsing:** The derive parses flags for you and returns `(Talkback, Params)` via `init()`.
+* **Typed argv parsing:** The derive parses flags for you and returns `(IpcChannel, TrainParams)` via `init()`.
 
 `argtuner-sdk` is a deliberately tiny crate: it pulls in only a handful of
 small, common dependencies (`clap`, `serde`, `serde_json`, `toml_edit`,
@@ -433,8 +484,8 @@ For all other languages, simply emit the following raw JSON strings to standard 
   - `ARGTUNER_TRIAL_ID` / `ARGTUNER_TRIAL_DIR`
 
 The protocol is **self-describing**: a JSON Schema generated from the shared
-`argtuner_common::TalkbackMessage` type is committed at
-[`crates/common/assets/protocol.schema.json`](https://github.com/jzombie/rust-argtuner/blob/main/crates/common/assets/protocol.schema.json), and any talkback binary can print
+`argtuner_common::IpcMessage` type is committed at
+[`crates/common/assets/protocol.schema.json`](https://github.com/jzombie/rust-argtuner/blob/main/crates/common/assets/protocol.schema.json), and any binary can print
 the current schema with `--print-protocol-schema`. The schema validates the
 JSON document after the prefix; the prefix/ANSI line framing is documented in
 its `x-argtuner` extension object.
@@ -450,7 +501,7 @@ schema, so it cannot go stale:
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "argtuner talkback protocol",
+  "title": "argtuner IPC protocol",
   "description": "Line-framed JSON protocol spoken over subprocess stdout. Each stdout line is ANSI-stripped; the first occurrence of the literal prefix `::ARGTUNER::` marks the start of a message, and the JSON document after the prefix must match this schema. Field values are always strings on the wire.",
   "oneOf": [
     {
@@ -520,7 +571,7 @@ schema, so it cannot go stale:
       "tuner"
     ],
     "prefix": "::ARGTUNER::",
-    "protocol": "argtuner.talkback",
+    "protocol": "argtuner.ipc",
     "stripAnsi": true
   }
 }

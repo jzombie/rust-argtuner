@@ -24,7 +24,5 @@ quote.workspace = true
 syn = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
-# Path-only (no version): cargo strips version-less path dev-dependencies from
-# the packaged manifest, so the compilable doctest below doesn't block publishing
-# this crate before `argtuner-sdk`.
+argtuner-common = { path = "../common" }
 argtuner-sdk = { path = "../argtuner-sdk" }

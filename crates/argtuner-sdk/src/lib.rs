@@ -1,5 +1,10 @@
 #![doc = include_str!("../README.md")]
 
+/// Alias the crate to its own name so the `#[tuner_params]` derive's
+/// generated `::argtuner_sdk::…` paths resolve when a struct is expanded
+/// inside this crate (e.g. its own unit tests).
+extern crate self as argtuner_sdk;
+
 use std::collections::BTreeMap;
 use std::io;
 
@@ -8,10 +13,10 @@ use serde::de::DeserializeOwned;
 
 pub use argtuner_common::EventKind;
 
-use argtuner_common::{PLACEHOLDER_TRIAL_DIR, PLACEHOLDER_TRIAL_ID, TalkbackMessage};
-/// Re-export of the `#[talkback_args]` attribute macro so consumers only need
+use argtuner_common::IpcMessage;
+/// Re-export of the `#[tuner_params]` attribute macro so consumers only need
 /// `argtuner-sdk`.
-pub use argtuner_derive::talkback_args;
+pub use argtuner_derive::tuner_params;
 
 /// `clap` re-exported so the derive-generated code can reference it through
 /// `argtuner_sdk::clap`, keeping clap off the consumer's dependency list.
@@ -20,6 +25,35 @@ pub use clap;
 /// (e.g. `use argtuner_sdk::serde::Serialize;`) without adding serde as a
 /// direct dependency.
 pub use serde;
+
+/// Single import surface for training binaries: brings the derive macro, the
+/// [`TunerParams`] contract, the [`ParamRole`]/[`ParamKind`] enums, initialization,
+/// telemetry emission, and the [`IpcChannel`] handle into scope together.
+///
+/// ```rust,no_run
+/// use argtuner_sdk::prelude::*;
+///
+/// #[tuner_params]
+/// struct TrainParams {
+///     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1)]
+///     lr: f64,
+/// }
+///
+/// fn main() {
+///     let (_channel, params) = init::<TrainParams>();
+///     let _ = params.lr;
+/// }
+/// ```
+pub mod prelude {
+    pub use crate::emit_metrics;
+    pub use crate::init;
+    pub use crate::init_with_args;
+    pub use crate::is_tuning_active;
+    pub use crate::{
+        EventKind, IpcChannel, MetricsBuilder, ParamKind, ParamRole, TunerParam, TunerParams,
+        tuner_params,
+    };
+}
 
 pub const PREFIX: &str = argtuner_common::RESULT_PREFIX;
 pub const BINDING_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -39,14 +73,14 @@ pub fn is_tuning_active() -> bool {
 }
 
 #[derive(Debug, Clone)]
-pub struct Talkback {
+pub struct IpcChannel {
     args_map: BTreeMap<String, Vec<String>>,
 }
 
-impl Talkback {
+impl IpcChannel {
     /// Capture argv and emit the binding-version handshake.
     ///
-    /// All [`Talkback`] `emit_*` methods (and the free `emit_*` functions) no-op
+    /// All [`IpcChannel`] `emit_*` methods (and the free `emit_*` functions) no-op
     /// when the process is not running under argtuner, so a standalone run of
     /// the binary keeps stdout clean. [`is_tuning_active`] reports the state.
     pub fn init() -> Self {
@@ -104,7 +138,7 @@ pub fn emit_event<T: Serialize>(event: argtuner_common::EventKind, value: &T) ->
         return emit_result(value);
     }
     let fields = fields_from_value(value)?;
-    emit_json(&TalkbackMessage::Event {
+    emit_json(&IpcMessage::Event {
         name: event.as_str().to_string(),
         fields,
     })
@@ -126,19 +160,19 @@ pub fn emit_result<T: Serialize>(value: &T) -> io::Result<()> {
     if fields.is_empty() {
         return Ok(());
     }
-    emit_json(&TalkbackMessage::Result { fields })
+    emit_json(&IpcMessage::Result { fields })
 }
 
 /// Build a set of metric fields for emission without any `serde` derive.
 pub struct MetricsBuilder<'a> {
-    talkback: &'a Talkback,
+    channel: &'a IpcChannel,
     fields: BTreeMap<String, String>,
 }
 
 impl<'a> MetricsBuilder<'a> {
-    pub fn new(talkback: &'a Talkback) -> Self {
+    pub fn new(channel: &'a IpcChannel) -> Self {
         Self {
-            talkback,
+            channel,
             fields: BTreeMap::new(),
         }
     }
@@ -152,7 +186,7 @@ impl<'a> MetricsBuilder<'a> {
     /// Emit the recorded fields as an event of the given kind (no-op when not
     /// running under argtuner).
     pub fn emit_kind(&self, kind: argtuner_common::EventKind) -> io::Result<()> {
-        self.talkback.emit_event(kind, &self.fields)
+        self.channel.emit_event(kind, &self.fields)
     }
 
     /// Emit the recorded fields as a `model.epoch_end` event (no-op when not
@@ -170,7 +204,7 @@ impl<'a> MetricsBuilder<'a> {
     /// Emit the recorded fields as a flat result payload (no-op when not
     /// running under argtuner).
     pub fn emit_result(&self) -> io::Result<()> {
-        self.talkback.emit_result(&self.fields)
+        self.channel.emit_result(&self.fields)
     }
 }
 
@@ -207,39 +241,95 @@ pub fn parse_args<T: DeserializeOwned>() -> Result<T, String> {
     parse_args_from_map(&args_map())
 }
 
-/// How a declared parameter maps onto the generated CLI and search space.
+/// Who supplies the value of a declared parameter — orthogonal to its
+/// structural [`ParamKind`]. Declared per field with
+/// `#[param(role = ParamRole::Tune)]` (a bare `role = tune` also parses);
+/// defaults to [`ParamRole::Fixed`] for every type.
+///
+/// # Usage
+///
+/// ```
+/// use argtuner_sdk::prelude::*;
+///
+/// #[tuner_params]
+/// struct TrainParams {
+///     #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1)]
+///     lr: f64,
+///     #[param(role = ParamRole::Injected, value_name = "trial_dir")]
+///     checkpoint_dir: Option<String>,
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamRole {
+    /// Constant value: **you** supply it.
+    ///
+    /// - `#[param(...)]` attributes: `default` (optional).
+    /// - Template: `--flag <default>` baked as a literal (a fixed field with no
+    ///   default is a standalone-only CLI arg, excluded from the template).
+    /// - `[space]`: excluded.
+    Fixed,
+    /// Sampled hyperparameter: **argtuner** supplies it from the search space.
+    ///
+    /// - `#[param(...)]` attributes: `min` + `max` (float/int), `choices`
+    ///   (string), or a bare bool; `default`, `log`, `step`, `parent`,
+    ///   `parent_values` also allowed. The derive rejects this role without the
+    ///   bounds its kind requires, and rejects numeric bounds on bools.
+    /// - Template: `--flag {name}` placeholder.
+    /// - `[space]`: included.
+    Tune,
+    /// Runtime value: **argtuner** injects it per trial.
+    ///
+    /// - `#[param(...)]` attributes: `value_name` must be `"trial_dir"` or
+    ///   `"trial_id"` (anything else is a compile error). No `default`.
+    /// - Template: `--flag {value_name}` placeholder.
+    /// - `[space]`: excluded.
+    Injected,
+    /// Operational CLI-only flag: excluded from tuning entirely.
+    ///
+    /// - `#[param(...)]` attributes: `default` (required for non-`Option`
+    ///   fields, so absent flags don't panic standalone). No constraints.
+    /// - Template: excluded.
+    /// - `[space]`: excluded.
+    Cli,
+}
+
+/// The structural type of a declared parameter: how it maps onto the search
+/// space and CLI parsing. Tunability is a separate concern, carried by
+/// [`ParamRole`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamKind {
-    /// A float hyperparameter (tunable when `min`/`max` are set).
+    /// A float hyperparameter.
     Float,
-    /// An integer hyperparameter (tunable when `min`/`max` are set).
+    /// An integer hyperparameter.
     Int,
-    /// A categorical hyperparameter (tunable when `choices` are set).
+    /// A categorical hyperparameter.
     Choice,
-    /// A boolean hyperparameter (tunable unless skipped).
+    /// A boolean hyperparameter.
     Bool,
-    /// Any other scalar/string CLI argument (fixed unless it carries hints).
+    /// Any other scalar/string CLI argument.
     Other,
 }
 
-/// Static description of one field of a [`Params`] struct, generated by
-/// `#[talkback_args]`.
+/// Static description of one field of a [`TunerParams`] struct, generated by
+/// `#[tuner_params]`.
 #[derive(Debug, Clone, Copy)]
-pub struct ParamHint {
+pub struct TunerParam {
     /// Field name; the template placeholder token.
     pub name: &'static str,
     /// `--long` flag name.
     pub long: &'static str,
     /// Override value name (e.g. `"trial_dir"` marks the reserved placeholder).
     pub value_name: Option<&'static str>,
-    /// Default value rendered as a string (also the clap default).
+    /// Default value rendered as a string (also the clap default). Literal and
+    /// `&str`-const defaults borrow static text; numeric/bool const defaults
+    /// borrow from a generated `OnceLock<String>` static anchor (initialized
+    /// once per process — never leaked).
     pub default: Option<&'static str>,
     /// `--help` text (from the field's doc comment).
     pub help: Option<&'static str>,
     pub kind: ParamKind,
-    /// Excluded from the search space via `#[param(skip = true)]` (e.g. an
-    /// operational flag that must stay a fixed CLI arg).
-    pub skip: bool,
+    /// Who supplies this parameter's value (`#[param(role = ...)]`).
+    pub role: ParamRole,
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub log: bool,
@@ -252,41 +342,31 @@ pub struct ParamHint {
     pub parent_values: &'static [&'static str],
 }
 
-impl ParamHint {
-    /// True for the reserved placeholders (`trial_dir`/`trial_id`) that argtuner
-    /// injects automatically rather than samples from the search space.
+impl TunerParam {
+    /// Whether argtuner injects this parameter's value at runtime (role
+    /// `injected` with a reserved `trial_dir`/`trial_id` placeholder).
     pub fn is_reserved(&self) -> bool {
-        matches!(
-            self.value_name,
-            Some(PLACEHOLDER_TRIAL_DIR | PLACEHOLDER_TRIAL_ID)
-        )
+        matches!(self.role, ParamRole::Injected)
     }
 
-    /// Whether this parameter belongs in the generated `[space]`.
+    /// Whether this parameter belongs in the generated `[space]`: only
+    /// `role = ParamRole::Tune` parameters are sampled.
     pub fn is_tunable(&self) -> bool {
-        if self.skip || self.is_reserved() {
-            return false;
-        }
-        match self.kind {
-            ParamKind::Float | ParamKind::Int => self.min.is_some() && self.max.is_some(),
-            ParamKind::Choice => !self.choices.is_empty(),
-            ParamKind::Bool => true,
-            ParamKind::Other => false,
-        }
+        matches!(self.role, ParamRole::Tune)
     }
 }
 
-/// The contract `#[talkback_args]` implements for a parameter struct: a plain
+/// The contract `#[tuner_params]` implements for a parameter struct: a plain
 /// struct becomes both a production `clap` CLI and an argtuner template/space
 /// definition.
-pub trait Params: Sized {
+pub trait TunerParams: Sized {
     fn app_name() -> &'static str;
-    fn params() -> &'static [ParamHint];
+    fn tuner_params() -> &'static [TunerParam];
     fn command() -> clap::Command;
     fn from_matches(m: &clap::ArgMatches) -> Self;
 }
 
-pub fn maybe_print_template_and_exit<T: Params>() {
+pub fn maybe_print_template_and_exit<T: TunerParams>() {
     let wants_template = std::env::args().any(|arg| arg == PRINT_TEMPLATE_FLAG);
     let wants_toml = std::env::args().any(|arg| arg == PRINT_TEMPLATE_TOML_FLAG);
     if !wants_template && !wants_toml {
@@ -318,21 +398,38 @@ fn quote_bin_path(path: &str) -> String {
     }
 }
 
-pub fn render_template_command<T: Params>() -> String {
+pub fn render_template_command<T: TunerParams>() -> String {
     let bin = quote_bin_path(&resolve_bin_path());
     let mut parts = vec![bin];
-    for p in T::params() {
-        if p.is_tunable() || p.is_reserved() {
-            // Tunable params become placeholders filled from the search space;
-            // reserved value_names are injected by argtuner.
-            let placeholder = p.value_name.unwrap_or(p.name);
-            parts.push(format!("--{} {{{placeholder}}}", p.long));
-        } else if let Some(default) = p.default {
-            // Fixed CLI arg with a default: bake the literal default in.
-            parts.push(format!("--{} {}", p.long, default));
+    for p in T::tuner_params() {
+        match p.role {
+            // Sampled params become placeholders filled from the search space;
+            // injected params use their reserved value_name, supplied by argtuner.
+            ParamRole::Tune => parts.push(format!("--{} {{{}}}", p.long, p.name)),
+            ParamRole::Injected => {
+                let placeholder = p.value_name.unwrap_or(p.name);
+                parts.push(format!("--{} {{{placeholder}}}", p.long));
+            }
+            // Fixed CLI arg with a default: bake the literal default in. Bools
+            // render as a bare `--flag` for `true` (all bools parse flag-style)
+            // and are omitted for `false`, so no `--flag true/false` tokens.
+            ParamRole::Fixed => match p.kind {
+                ParamKind::Bool => {
+                    if p.default == Some("true") {
+                        parts.push(format!("--{}", p.long));
+                    }
+                }
+                _ => {
+                    if let Some(default) = p.default {
+                        parts.push(format!("--{} {}", p.long, default));
+                    }
+                }
+            },
+            // Operational CLI-only flag: excluded from the template.
+            ParamRole::Cli => {}
         }
-        // Non-tunable args without a default are standalone-only: excluded so
-        // the generated template stays renderable by argtuner.
+        // Fixed/standalone args without a default are excluded so the generated
+        // template stays renderable by argtuner.
     }
     parts.join(" ")
 }
@@ -396,7 +493,7 @@ fn finite_i64(f: Option<f64>) -> i64 {
 }
 
 impl<'a> SpaceParam<'a> {
-    fn from_hint(p: &'a ParamHint) -> Option<Self> {
+    fn from_hint(p: &'a TunerParam) -> Option<Self> {
         let parent = p.parent;
         let parent_values = p.parent_values;
         match p.kind {
@@ -433,11 +530,11 @@ impl<'a> SpaceParam<'a> {
     }
 }
 
-pub fn render_template_toml<T: Params>() -> String {
+pub fn render_template_toml<T: TunerParams>() -> String {
     let template = render_template_command::<T>();
     let base = argtuner_common::render_starter_toml(&template);
     let mut doc: toml_edit::DocumentMut = base.parse().expect("starter template is valid TOML");
-    let params: Vec<SpaceParam<'_>> = T::params()
+    let params: Vec<SpaceParam<'_>> = T::tuner_params()
         .iter()
         .filter(|p| p.is_tunable())
         .filter_map(SpaceParam::from_hint)
@@ -460,8 +557,8 @@ pub fn render_template_toml<T: Params>() -> String {
 
 fn resolve_bin_path() -> String {
     let from_current = std::env::current_exe().ok();
-    let from_args = std::env::args().next().map(std::path::PathBuf::from);
-    let candidate = from_current.or(from_args);
+    let from_hints = std::env::args().next().map(std::path::PathBuf::from);
+    let candidate = from_current.or(from_hints);
     if let Some(path) = candidate
         && let Some(resolved) = normalize_bin_path(&path)
     {
@@ -506,7 +603,7 @@ fn try_target_bin(stem: &str) -> Option<String> {
     None
 }
 
-/// Unified entry point for a struct annotated with `#[talkback_args]`.
+/// Unified entry point for a struct annotated with `#[tuner_params]`.
 ///
 /// Declare your algorithm's parameters once as a plain struct (with optional
 /// `#[param(...)]` hints); the derive generates the `clap` CLI, the command
@@ -518,21 +615,21 @@ fn try_target_bin(stem: &str) -> Option<String> {
 /// 2. emits the `::ARGTUNER::` binding-version handshake when running under
 ///    argtuner (suppressed on standalone runs),
 /// 3. parses the remaining flags via the generated `clap` command and returns
-///    `(Talkback, T)`.
-pub fn init<T: Params>() -> (Talkback, T) {
+///    `(IpcChannel, T)`.
+pub fn init<T: TunerParams>() -> (IpcChannel, T) {
     init_with_args::<T>()
 }
 
-pub fn init_with_args<T: Params>() -> (Talkback, T) {
+pub fn init_with_args<T: TunerParams>() -> (IpcChannel, T) {
     maybe_print_protocol_schema_and_exit();
     maybe_print_template_and_exit::<T>();
-    let talkback = Talkback::init();
+    let channel = IpcChannel::init();
     let matches = T::command().get_matches();
     let args = T::from_matches(&matches);
-    (talkback, args)
+    (channel, args)
 }
 
-/// Print the talkback protocol JSON Schema to stdout and exit if the
+/// Print the IPC protocol JSON Schema to stdout and exit if the
 /// `--print-protocol-schema` flag is present on argv. Call early (before any
 /// protocol messages are emitted) so stdout stays clean.
 pub fn maybe_print_protocol_schema_and_exit() {
@@ -543,7 +640,7 @@ pub fn maybe_print_protocol_schema_and_exit() {
     std::process::exit(0);
 }
 
-/// Print the talkback protocol JSON Schema to stdout.
+/// Print the IPC protocol JSON Schema to stdout.
 pub fn print_protocol_schema() {
     print!("{}", argtuner_common::protocol_schema_string());
 }
@@ -651,14 +748,14 @@ fn emit_json<T: Serialize>(value: &T) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    struct TemplateParams;
+    struct TemplateTunerParams;
 
-    impl Params for TemplateParams {
+    impl TunerParams for TemplateTunerParams {
         fn app_name() -> &'static str {
             "template-params"
         }
 
-        fn params() -> &'static [ParamHint] {
+        fn tuner_params() -> &'static [TunerParam] {
             &[]
         }
 
@@ -676,11 +773,107 @@ mod tests {
         // The exe may live in a spaced directory (e.g. `/Volumes/2TB Storage
         // Vault/...`); the generated template must quote the path so argtuner's
         // command tokenizer recovers it as one token on every platform.
-        let cmd = render_template_command::<TemplateParams>();
+        let cmd = render_template_command::<TemplateTunerParams>();
         let quoted = quote_bin_path(&resolve_bin_path());
         assert_eq!(
             cmd, quoted,
             "template must quote the bin path for spaced install dirs: {cmd:?} (expected {quoted:?})"
         );
+    }
+
+    // ── const-path defaults ────────────────────────────────────────────────
+
+    const DEFAULT_EPOCHS: usize = 10;
+    const DEFAULT_LR: f64 = 0.001;
+    const DEFAULT_MODE: &str = "pair";
+
+    #[tuner_params]
+    struct ConstDefaults {
+        #[param(role = ParamRole::Fixed, default = DEFAULT_EPOCHS)]
+        epochs: usize,
+        #[param(role = ParamRole::Tune, default = DEFAULT_LR, min = 1e-6, max = 0.01)]
+        lr: f64,
+        #[param(role = ParamRole::Fixed, default = DEFAULT_MODE)]
+        mode: String,
+    }
+
+    #[test]
+    fn const_defaults_bake_into_template() {
+        let cmd = render_template_command::<ConstDefaults>();
+        assert!(
+            cmd.contains("--epochs 10"),
+            "numeric const default baked: {cmd}"
+        );
+        assert!(
+            cmd.contains("--mode pair"),
+            "&str const default baked: {cmd}"
+        );
+        assert!(
+            cmd.contains("--lr {lr}"),
+            "tune param stays a placeholder: {cmd}"
+        );
+    }
+
+    #[test]
+    fn const_defaults_parse_when_absent() {
+        let matches = <ConstDefaults as TunerParams>::command()
+            .no_binary_name(true)
+            .try_get_matches_from(Vec::<String>::new())
+            .expect("parses with const defaults");
+        let p = ConstDefaults::from_matches(&matches);
+        assert_eq!(p.epochs, DEFAULT_EPOCHS);
+        assert_eq!(p.lr, DEFAULT_LR);
+        assert_eq!(p.mode, DEFAULT_MODE);
+    }
+
+    #[test]
+    fn tuner_param_is_copy() {
+        // `TunerParam` must stay `Copy` (descriptors are passed by value in
+        // `&'static [TunerParam]` slices); the const-default static-anchor
+        // codegen must never force a non-`Copy` field type.
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<TunerParam>();
+    }
+
+    #[test]
+    fn tuner_params_struct_is_debug_clone_serialize() {
+        let p = ConstDefaults::from_matches(
+            &<ConstDefaults as TunerParams>::command()
+                .no_binary_name(true)
+                .try_get_matches_from(Vec::<String>::new())
+                .expect("parses"),
+        );
+        // Debug + Clone are auto-derived by `#[tuner_params]`.
+        let _ = format!("{p:?}");
+        let cloned = p.clone();
+        assert_eq!(cloned.epochs, p.epochs);
+        // Serialize is auto-derived (resolving serde through the SDK).
+        let json = serde_json::to_string(&p).expect("serialize");
+        assert!(json.contains("\"epochs\":10"), "serialized params: {json}");
+    }
+
+    // ── Vec<T> (repeatable flag) fields ────────────────────────────────────
+
+    #[tuner_params]
+    struct VecParams {
+        #[param(role = ParamRole::Fixed)]
+        tags: Vec<String>,
+    }
+
+    #[test]
+    fn vec_fields_collect_repeated_flags() {
+        let matches = <VecParams as TunerParams>::command()
+            .no_binary_name(true)
+            .try_get_matches_from(["--tags", "a", "--tags", "b"])
+            .expect("parses repeated flags");
+        let p = VecParams::from_matches(&matches);
+        assert_eq!(p.tags, vec!["a", "b"]);
+
+        let absent = <VecParams as TunerParams>::command()
+            .no_binary_name(true)
+            .try_get_matches_from(Vec::<String>::new())
+            .expect("parses without the flag");
+        let p = VecParams::from_matches(&absent);
+        assert!(p.tags.is_empty(), "absent flag yields empty vec");
     }
 }

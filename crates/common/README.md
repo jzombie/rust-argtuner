@@ -2,12 +2,14 @@
 
 Shared constants and protocol types for the [argtuner](https://crates.io/crates/argtuner) workspace. `argtuner` is a
 black-box hyperparameter optimization CLI; this crate defines the wire format of
-the "talkback" protocol a trial command speaks on stdout (`::ARGTUNER::`-prefixed
+the "IPC" protocol a trial command speaks on stdout (`::ARGTUNER::`-prefixed
 JSON lines).
+
+> **Heads up:** not stable yet. The API is still settling, so expect breaking changes.
 
 Highlights:
 
-- `TalkbackMessage` — the single wire type; `protocol_schema()` generates the
+- `IpcMessage` — the single wire type; `protocol_schema()` generates the
   JSON Schema from it so the schema can never drift from the emitter.
 - `RESULT_PREFIX` — the `::ARGTUNER::` line prefix the tuner parses.
 - `EventKind` / event-name constants (`model.epoch_end`, `model.early_stopped`, ...).

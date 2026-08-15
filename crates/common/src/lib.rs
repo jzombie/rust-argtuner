@@ -2,7 +2,7 @@
 
 pub mod protocol;
 
-pub use protocol::{TalkbackMessage, protocol_schema, protocol_schema_string};
+pub use protocol::{IpcMessage, protocol_schema, protocol_schema_string};
 
 /// Command stdout parser prefix for result/event messages.
 pub const RESULT_PREFIX: &str = "::ARGTUNER::";
@@ -11,7 +11,7 @@ pub const RESULT_PREFIX: &str = "::ARGTUNER::";
 /// `CommandRunner` uses piped stdio instead of a PTY (test-only).
 pub const FORCE_PIPES_ENV: &str = "ARGTUNER_FORCE_PIPES";
 
-/// Env var the tuner always exports to trial subprocesses. The talkback binding
+/// Env var the tuner always exports to trial subprocesses. The IPC binding
 /// checks it to detect "running under argtuner" and suppresses stdout emission
 /// when absent, so standalone runs of the same binary stay clean.
 pub const TUNING_MARKER_ENV: &str = "ARGTUNER_TUNING";

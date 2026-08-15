@@ -1360,17 +1360,17 @@ fn trial_signed_scores(trial: &TrialRow) -> Option<Vec<f64>> {
 }
 
 fn hparam_lines(trial: &TrialRow) -> Vec<String> {
-    let mut hparams: Vec<String> = trial
+    let mut params: Vec<String> = trial
         .fields
         .iter()
         .filter(|(k, _)| k.starts_with("hp."))
         .map(|(k, v)| format!("    {:<20} {}", k.trim_start_matches("hp."), v))
         .collect();
-    if hparams.is_empty() {
-        return hparams;
+    if params.is_empty() {
+        return params;
     }
     let mut out = vec!["  Hyperparameters:".to_string()];
-    out.append(&mut hparams);
+    out.append(&mut params);
     out
 }
 

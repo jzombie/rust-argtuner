@@ -123,6 +123,22 @@ jobs:
       - name: Check Cargo manifest sorting
         run: cargo sort --workspace --check
 
+      # Enforce the SDK/tuner boundary: `argtuner-sdk` must never be a non-dev
+      # (build/runtime) dependency of any crate, so training binaries that link
+      # the SDK never transitively compile the tuner package (TUI, database,
+      # solvers). The inverted normal-edge tree has no `└──`/`├──` branches when
+      # the boundary holds; any branch is a reverse dependent (a violation).
+      - name: Check SDK boundary (argtuner-sdk not a normal dependency)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if cargo tree --edges normal --invert -p argtuner-sdk 2>/dev/null | grep -qE '[├└]──'; then
+            echo "ERROR: argtuner-sdk is reachable as a non-dev dependency:" >&2
+            cargo tree --invert -p argtuner-sdk
+            exit 1
+          fi
+          echo "OK: argtuner-sdk is dev-only (never a normal dependency)."
+
       # Check formatting across the entire workspace
       - name: Check formatting
         run: cargo fmt --all -- --check

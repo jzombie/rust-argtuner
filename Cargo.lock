@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "argtuner"
-version = "0.1.2-alpha"
+version = "0.1.3-alpha"
 dependencies = [
  "argmin",
  "argmin-math",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "argtuner-common"
-version = "0.1.2-alpha"
+version = "0.1.3-alpha"
 dependencies = [
  "line-ending",
  "schemars",
@@ -218,8 +218,9 @@ dependencies = [
 
 [[package]]
 name = "argtuner-derive"
-version = "0.1.2-alpha"
+version = "0.1.3-alpha"
 dependencies = [
+ "argtuner-common",
  "argtuner-sdk",
  "proc-macro2",
  "quote",
@@ -228,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "argtuner-mock-bin"
-version = "0.1.2-alpha"
+version = "0.1.3-alpha"
 dependencies = [
  "argtuner-common",
  "argtuner-sdk",
@@ -237,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "argtuner-sdk"
-version = "0.1.2-alpha"
+version = "0.1.3-alpha"
 dependencies = [
  "argtuner-common",
  "argtuner-derive",
@@ -245,20 +246,6 @@ dependencies = [
  "serde",
  "serde_json",
  "toml_edit",
-]
-
-[[package]]
-name = "argtuner-talkback"
-version = "0.1.2-alpha"
-dependencies = [
- "argtuner-sdk",
-]
-
-[[package]]
-name = "argtuner-talkback-derive"
-version = "0.1.2-alpha"
-dependencies = [
- "argtuner-sdk",
 ]
 
 [[package]]

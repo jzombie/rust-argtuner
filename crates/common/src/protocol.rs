@@ -1,14 +1,14 @@
-//! Canonical definition of the argtuner "talkback" stdio protocol.
+//! Canonical definition of the argtuner "IPC" stdio protocol.
 //!
 //! Training subprocesses emit JSON lines on stdout, each prefixed with the
 //! literal [`RESULT_PREFIX`] (`::ARGTUNER::`). This module is the single source
 //! of truth for the wire shapes: the emitter
 //! (`argtuner`) and the tuner parser
-//! (`crate::command::subprocess::talkback`) both (de)serialize the same
-//! [`TalkbackMessage`] type.
+//! (`crate::command::subprocess::ipc`) both (de)serialize the same
+//! [`IpcMessage`] type.
 //!
 //! The protocol self-describes via a JSON Schema generated from
-//! [`TalkbackMessage`] with `schemars` (see [`protocol_schema`]). Consumers can
+//! [`IpcMessage`] with `schemars` (see [`protocol_schema`]). Consumers can
 //! tap into the protocol with any JSON Schema tooling: validate intercepted
 //! lines, generate bindings in other languages, or autocomplete event names.
 
@@ -23,20 +23,20 @@ use crate::{
 };
 
 /// Name of the protocol spoken after the [`RESULT_PREFIX`] on each line.
-pub const PROTOCOL_NAME: &str = "argtuner.talkback";
+pub const PROTOCOL_NAME: &str = "argtuner.ipc";
 
-/// Regex (applied after ANSI stripping) that matches any stdout line carrying a
-/// talkback message. The parser finds the first occurrence of the literal
+/// Regex (applied after ANSI stripping) that matches any stdout line carrying an
+/// IPC message. The parser finds the first occurrence of the literal
 /// prefix anywhere in the stripped line; this documents that framing
 /// contract for consumers that validate whole lines.
 pub const LINE_PATTERN: &str = "^.*::ARGTUNER::.*$";
 
-/// One talkback message as it appears on the wire.
+/// One IPC message as it appears on the wire.
 ///
 /// `type` discriminates the two shapes; `fields` values are always strings.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum TalkbackMessage {
+pub enum IpcMessage {
     /// A typed protocol event, e.g. `model.epoch_end`. The `name` is one of
     /// the canonical event names (or a legacy un-namespaced alias).
     #[schemars(description = "A typed protocol event, e.g. `model.epoch_end`.")]
@@ -92,17 +92,17 @@ fn event_name_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::Schema::try_from(schema).expect("event name schema is a JSON object")
 }
 
-/// Generate the JSON Schema that self-describes the talkback protocol.
+/// Generate the JSON Schema that self-describes the IPC protocol.
 ///
 /// The schema validates the JSON *document* after the prefix. The line framing
 /// (prefix, ANSI stripping, scanning rule) lives outside the JSON document and
 /// is captured in the `x-argtuner` extension object.
 pub fn protocol_schema() -> schemars::Schema {
-    let mut schema = schemars::schema_for!(TalkbackMessage);
+    let mut schema = schemars::schema_for!(IpcMessage);
     if let Some(obj) = schema.as_object_mut() {
         obj.insert(
             "title".to_string(),
-            serde_json::Value::String("argtuner talkback protocol".to_string()),
+            serde_json::Value::String("argtuner IPC protocol".to_string()),
         );
         obj.insert(
             "description".to_string(),
@@ -178,27 +178,27 @@ mod tests {
 
     #[test]
     fn round_trip_event_and_result() {
-        let event = TalkbackMessage::Event {
+        let event = IpcMessage::Event {
             name: "model.epoch_end".to_string(),
             fields: BTreeMap::from([("metric".to_string(), "0.5".to_string())]),
         };
         let json = serde_json::to_value(&event).unwrap();
-        let back: TalkbackMessage = serde_json::from_value(json.clone()).unwrap();
+        let back: IpcMessage = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), json);
 
-        let result = TalkbackMessage::Result {
+        let result = IpcMessage::Result {
             fields: BTreeMap::from([("loss".to_string(), "0.1".to_string())]),
         };
         let json = serde_json::to_value(&result).unwrap();
-        let back: TalkbackMessage = serde_json::from_value(json.clone()).unwrap();
+        let back: IpcMessage = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), json);
     }
 
     #[test]
     fn legacy_aliases_still_parse() {
-        let msg: TalkbackMessage =
+        let msg: IpcMessage =
             serde_json::from_str(r#"{"type":"event","name":"epoch_end","fields":{}}"#).unwrap();
-        assert!(matches!(msg, TalkbackMessage::Event { name, .. } if name == "epoch_end"));
+        assert!(matches!(msg, IpcMessage::Event { name, .. } if name == "epoch_end"));
     }
 
     #[test]

@@ -2,6 +2,8 @@
 
 `argtuner-sdk` provides lightweight, type-safe Rust bindings for [`argtuner`](https://crates.io/crates/argtuner), a black-box hyperparameter optimization CLI. It enables training programs to define search spaces, parse CLI arguments, and emit evaluation telemetry over line-framed `stdio`.
 
+> **Heads up:** not stable yet. The API is still settling, so expect breaking changes.
+
 ## Architecture & Dependency Isolation
 
 The main `argtuner` package houses the complete orchestration engine: terminal UI components, process supervision, SQLite persistence, and optimization algorithms.
@@ -16,27 +18,27 @@ The main `argtuner` package houses the complete orchestration engine: terminal U
 
 ## Usage
 
-Annotate hyperparameter definitions with `#[talkback_args]`. The macro derives the CLI parser, command template generator, and search space AST:
+Annotate hyperparameter definitions with `#[tuner_params]`. The macro derives the CLI parser, command template generator, and search space AST:
 
 ```rust,no_run
-use argtuner_sdk::{emit_metrics, init, talkback_args};
+use argtuner_sdk::prelude::*;
 
 fn train(lr: f64, steps: usize) -> f64 {
     0.0 // Training loop logic
 }
 
-#[talkback_args]
-struct Params {
+#[tuner_params]
+struct TrainParams {
     /// Learning rate
-    #[param(default = 0.001, min = 0.0001, max = 0.1, log = true)]
+    #[param(role = ParamRole::Tune, default = 0.001, min = 0.0001, max = 0.1, log = true)]
     lr: f64,
     /// Training steps
-    #[param(default = 100, min = 10, max = 1000)]
+    #[param(role = ParamRole::Tune, default = 100, min = 10, max = 1000)]
     steps: usize,
 }
 
 fn main() {
-    let (_talkback, params) = init::<Params>();
+    let (_channel, params) = init::<TrainParams>();
 
     let val_loss = train(params.lr, params.steps);
     let _ = emit_metrics!("val_loss" => val_loss, "epoch" => params.steps);
@@ -50,8 +52,8 @@ Target binaries expose self-inspection flags for automated setup:
 
 * `--print-template-toml`: Generates a fully configured `argtuner.toml` project manifest.
 * `--print-template`: Outputs the CLI command invocation template.
-* `--print-protocol-schema`: Exports the talkback protocol JSON Schema.
+* `--print-protocol-schema`: Exports the IPC protocol JSON Schema.
 
 ## Wire Protocol
 
-The SDK emits line-delimited JSON frames to `stdout`, identified by the literal `::ARGTUNER::` marker prefix. During an active session, `argtuner` ingests these events to track evaluation scoring via `model.epoch_end` payloads. Protocol contracts are versioned via initial handshake frames and formally defined in `argtuner-common`. 
+The SDK emits line-delimited JSON frames to `stdout`, identified by the literal `::ARGTUNER::` marker prefix. During an active session, `argtuner` ingests these events to track evaluation scoring via `model.epoch_end` payloads. Protocol contracts are versioned via initial handshake frames and formally defined in `argtuner-common`.
