@@ -8,6 +8,8 @@
 
 By defining a search space in `argtuner.toml` and templating your command (e.g., `--lr {lr}`), `argtuner` orchestrates trials using algorithms like Particle Swarm Optimization (PSO) or Successive Halving. It reads trial metrics directly from the process `stdout` and logs results to a local SQLite/CSV database.
 
+> **Heads up:** not stable yet. The API is still settling, so expect breaking changes.
+
 ## When it fits
 
 Use argtuner when:
@@ -499,7 +501,7 @@ schema, so it cannot go stale:
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "argtuner ipc protocol",
+  "title": "argtuner IPC protocol",
   "description": "Line-framed JSON protocol spoken over subprocess stdout. Each stdout line is ANSI-stripped; the first occurrence of the literal prefix `::ARGTUNER::` marks the start of a message, and the JSON document after the prefix must match this schema. Field values are always strings on the wire.",
   "oneOf": [
     {

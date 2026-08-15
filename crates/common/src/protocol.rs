@@ -1,4 +1,4 @@
-//! Canonical definition of the argtuner "ipc" stdio protocol.
+//! Canonical definition of the argtuner "IPC" stdio protocol.
 //!
 //! Training subprocesses emit JSON lines on stdout, each prefixed with the
 //! literal [`RESULT_PREFIX`] (`::ARGTUNER::`). This module is the single source
@@ -26,12 +26,12 @@ use crate::{
 pub const PROTOCOL_NAME: &str = "argtuner.ipc";
 
 /// Regex (applied after ANSI stripping) that matches any stdout line carrying an
-/// ipc message. The parser finds the first occurrence of the literal
+/// IPC message. The parser finds the first occurrence of the literal
 /// prefix anywhere in the stripped line; this documents that framing
 /// contract for consumers that validate whole lines.
 pub const LINE_PATTERN: &str = "^.*::ARGTUNER::.*$";
 
-/// One ipc message as it appears on the wire.
+/// One IPC message as it appears on the wire.
 ///
 /// `type` discriminates the two shapes; `fields` values are always strings.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -92,7 +92,7 @@ fn event_name_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::Schema::try_from(schema).expect("event name schema is a JSON object")
 }
 
-/// Generate the JSON Schema that self-describes the ipc protocol.
+/// Generate the JSON Schema that self-describes the IPC protocol.
 ///
 /// The schema validates the JSON *document* after the prefix. The line framing
 /// (prefix, ANSI stripping, scanning rule) lives outside the JSON document and
@@ -102,7 +102,7 @@ pub fn protocol_schema() -> schemars::Schema {
     if let Some(obj) = schema.as_object_mut() {
         obj.insert(
             "title".to_string(),
-            serde_json::Value::String("argtuner ipc protocol".to_string()),
+            serde_json::Value::String("argtuner IPC protocol".to_string()),
         );
         obj.insert(
             "description".to_string(),
