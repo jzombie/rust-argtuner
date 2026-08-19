@@ -1239,9 +1239,9 @@ dependencies = [
 
 [[package]]
 name = "glam"
-version = "0.33.4"
+version = "0.33.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8937e8f6ab8fdb18acb6df9fa05f71cb20f12c4a3e292ad3c54cd2399d67ee25"
+checksum = "c426daf70099baff33fac0ba85151c42424861c56828cef9ba02dacb78eb6b26"
 
 [[package]]
 name = "globset"
@@ -3325,7 +3325,9 @@ dependencies = [
 
 [[package]]
 name = "term-clipboard"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68cff16dbd0be320558ab3d2040b6f8a6ee86287a25eeab5fe9f9e119b0245d5"
 dependencies = [
  "arboard",
  "base64 0.23.1",
@@ -3337,7 +3339,9 @@ dependencies = [
 
 [[package]]
 name = "term-sys-io"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee2301a9300c454299484086ea3392b85e3ea2ad74aff715ad39aa393dbd3210"
 dependencies = [
  "libc",
  "tracing",
@@ -3345,7 +3349,9 @@ dependencies = [
 
 [[package]]
 name = "term-wm"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf4acf40b54e7244fb840b8ae7e98d97e5bc9d1348074c2d217d5fb38fb30699"
 dependencies = [
  "clap",
  "crossbeam-channel",
@@ -3374,11 +3380,15 @@ dependencies = [
 
 [[package]]
 name = "term-wm-config"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b871acbe7aabac54f5317890605d37d6947e31c2d389696e767e846ab294798"
 
 [[package]]
 name = "term-wm-console"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35dc9f00a721805156587e0b45a918a16c4de6b91e7d5f71b1f63ca5129eecea"
 dependencies = [
  "crossbeam-channel",
  "crossterm",
@@ -3393,7 +3403,9 @@ dependencies = [
 
 [[package]]
 name = "term-wm-core"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69fa74e131194c86632a73e033a1b486fc0556943167956a5792001a4cf650ed"
 dependencies = [
  "bitflags 2.13.1",
  "console",
@@ -3417,7 +3429,9 @@ dependencies = [
 
 [[package]]
 name = "term-wm-crossterm-adapter"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81633ee9de36349b847a46138edea6cee8b23a201a91fd089eb9bf7589b80457"
 dependencies = [
  "crossterm",
  "term-wm-events",
@@ -3425,7 +3439,9 @@ dependencies = [
 
 [[package]]
 name = "term-wm-events"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0ca898325d12a298c62e43e22c02b488e90d52a4c5c3eb475d956a9bc5cdd2e"
 dependencies = [
  "bitcode",
  "term-wm-layout-engine",
@@ -3433,11 +3449,15 @@ dependencies = [
 
 [[package]]
 name = "term-wm-layout-engine"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b21ace8eb3b84b88cabf46b3ed20fadb8382a99887ce6433902d2a37f8f4c1f4"
 
 [[package]]
 name = "term-wm-pty-engine"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "589efc4bec607376be56de8260a9eb1706705d1f6e83bfec387a4edd61a6122c"
 dependencies = [
  "ctrlc",
  "libc",
@@ -3456,11 +3476,15 @@ dependencies = [
 
 [[package]]
 name = "term-wm-render"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84c51d6ce5bb69b250f9c364bd22f775a4b8e9ed29dfbbb51dc767758a1cbe3e"
 
 [[package]]
 name = "term-wm-sys-ui-components"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45a4c6e7c5cf1cd8db2876cc86f9c2987e6ab25e85651c44fc9634b124c3a52a"
 dependencies = [
  "crossterm",
  "ratatui",
@@ -3476,7 +3500,9 @@ dependencies = [
 
 [[package]]
 name = "term-wm-ui-components"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bcfcd368cd92d20d0a75fc3e1aa8b4321e07e4d72655db4a437411f1b77cbc6"
 dependencies = [
  "crossterm",
  "indoc",
@@ -3501,7 +3527,9 @@ dependencies = [
 
 [[package]]
 name = "term-wm-ui-facade"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d2f5b45af1fef69449ad00c51cb42409f9f64a5419e6b59f65fa51dbb4e8117"
 dependencies = [
  "term-wm-core",
  "term-wm-render",
@@ -3511,7 +3539,9 @@ dependencies = [
 
 [[package]]
 name = "term-wm-view"
-version = "0.9.28-alpha"
+version = "0.10.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d9fec8fc767235a2935262132456766416f376c02c2067fdab19812f93715ce"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
