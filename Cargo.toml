@@ -65,11 +65,11 @@ shell-words = "1.1.1"
 similar = "2.7.0"
 syn = { version = "3.0.3", features = ["full"] }
 tempfile = "3.10"
-term-wm = "0.9.25-alpha"
-term-wm-console = "0.9.25-alpha"
-term-wm-core = "0.9.25-alpha"
-term-wm-render = "0.9.25-alpha"
-term-wm-ui-facade = "0.9.25-alpha"
+term-wm = { version = "0.9.28-alpha", default-features = false }
+term-wm-console = "0.9.28-alpha"
+term-wm-core = "0.9.28-alpha"
+term-wm-render = "0.9.28-alpha"
+term-wm-ui-facade = "0.9.28-alpha"
 thiserror = "2.0.17"
 toml = "1.1.4"
 toml_edit = { version = "0.25.13", features = ["serde"] }
