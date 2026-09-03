@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 
 ## Changes
 
+- **`ParamRole::Cli` fields can now be required:** removed the compile-time constraint that `Cli`-role fields must be `Option<T>` or carry a `default`. Required `Cli` fields (non-`Option`, no default) are enforced by clap at parse time. `render_template_command` now includes `Cli` fields with defaults in the tuner template; required fields without defaults are excluded (argtuner cannot inject them).
 - Bump term-wm to v0.10.1-alpha
 
 ## [0.1.3-alpha] - 2026-08-15

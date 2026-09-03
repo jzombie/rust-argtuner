@@ -425,8 +425,20 @@ pub fn render_template_command<T: TunerParams>() -> String {
                     }
                 }
             },
-            // Operational CLI-only flag: excluded from the template.
-            ParamRole::Cli => {}
+            // Operational CLI-only flag: include in template if it has a default,
+            // or if it's a non-Option required field (clap will enforce it).
+            ParamRole::Cli => match p.kind {
+                ParamKind::Bool => {
+                    if p.default == Some("true") {
+                        parts.push(format!("--{}", p.long));
+                    }
+                }
+                _ => {
+                    if let Some(default) = p.default {
+                        parts.push(format!("--{} {}", p.long, default));
+                    }
+                }
+            },
         }
         // Fixed/standalone args without a default are excluded so the generated
         // template stays renderable by argtuner.
@@ -875,5 +887,106 @@ mod tests {
             .expect("parses without the flag");
         let p = VecParams::from_matches(&absent);
         assert!(p.tags.is_empty(), "absent flag yields empty vec");
+    }
+
+    // ── ParamRole::Cli required fields ─────────────────────────────────────
+
+    #[tuner_params]
+    struct CliRequiredParams {
+        #[param(role = ParamRole::Cli)]
+        loss_fn: String,
+        #[param(role = ParamRole::Fixed, default = 10)]
+        epochs: usize,
+    }
+
+    #[test]
+    fn required_cli_field_is_enforced_by_clap() {
+        // Omitting --loss-fn must fail because it's a required Cli field.
+        let result = <CliRequiredParams as TunerParams>::command()
+            .no_binary_name(true)
+            .try_get_matches_from(Vec::<String>::new());
+        assert!(result.is_err(), "required Cli flag must be enforced");
+    }
+
+    #[test]
+    fn required_cli_field_parses_when_provided() {
+        let matches = <CliRequiredParams as TunerParams>::command()
+            .no_binary_name(true)
+            .try_get_matches_from(["--loss-fn", "matrix-kl"])
+            .expect("parses required Cli flag");
+        let p = CliRequiredParams::from_matches(&matches);
+        assert_eq!(p.loss_fn, "matrix-kl");
+        assert_eq!(p.epochs, 10);
+    }
+
+    #[test]
+    fn required_cli_field_includes_in_template() {
+        let cmd = render_template_command::<CliRequiredParams>();
+        // Required Cli fields without a default are excluded from the template
+        // (argtuner can't inject them), but Fixed fields with defaults are present.
+        assert!(
+            cmd.contains("--epochs 10"),
+            "Fixed field baked into template: {cmd}"
+        );
+        // loss_fn has no default, so it's excluded from the template.
+        assert!(
+            !cmd.contains("--loss-fn"),
+            "no-default Cli field excluded from template: {cmd}"
+        );
+    }
+
+    #[tuner_params]
+    struct CliWithDefaultParams {
+        #[param(role = ParamRole::Cli, default = "mse")]
+        loss_fn: String,
+        #[param(role = ParamRole::Fixed, default = 10)]
+        epochs: usize,
+    }
+
+    #[test]
+    fn cli_field_with_default_parses_when_absent() {
+        let matches = <CliWithDefaultParams as TunerParams>::command()
+            .no_binary_name(true)
+            .try_get_matches_from(Vec::<String>::new())
+            .expect("Cli field with default parses when absent");
+        let p = CliWithDefaultParams::from_matches(&matches);
+        assert_eq!(p.loss_fn, "mse");
+    }
+
+    #[test]
+    fn cli_field_with_default_includes_in_template() {
+        let cmd = render_template_command::<CliWithDefaultParams>();
+        assert!(
+            cmd.contains("--loss-fn mse"),
+            "Cli default baked into template: {cmd}"
+        );
+    }
+
+    #[tuner_params]
+    struct CliOptionalParams {
+        #[param(role = ParamRole::Cli)]
+        loss_fn: Option<String>,
+        #[param(role = ParamRole::Fixed, default = 10)]
+        epochs: usize,
+    }
+
+    #[test]
+    fn optional_cli_field_parses_when_absent() {
+        let matches = <CliOptionalParams as TunerParams>::command()
+            .no_binary_name(true)
+            .try_get_matches_from(Vec::<String>::new())
+            .expect("Optional Cli field parses when absent");
+        let p = CliOptionalParams::from_matches(&matches);
+        assert!(p.loss_fn.is_none());
+    }
+
+    #[test]
+    fn optional_cli_field_parses_when_provided() {
+        let matches = <CliOptionalParams as TunerParams>::command()
+            .no_binary_name(true)
+            .try_get_matches_from(["--loss-fn", "mse"])
+            .expect("Optional Cli field parses when provided");
+        let p = CliOptionalParams::from_matches(&matches);
+        assert_eq!(p.loss_fn.as_deref(), Some("mse"));
     }
 }
