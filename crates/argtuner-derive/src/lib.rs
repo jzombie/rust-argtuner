@@ -188,17 +188,6 @@ pub fn tuner_params(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
         }
-        // Operational `cli` flags must be optional or carry a default, otherwise
-        // `from_matches` would panic on an absent flag during standalone runs.
-        if role_name == "cli" && !is_option && attrs.default.is_none() {
-            return syn::Error::new_spanned(
-                field,
-                "`role = \"cli\"` operational flags must be `Option<T>` or carry a \
-                 `default` so standalone runs without the flag do not panic",
-            )
-            .to_compile_error()
-            .into();
-        }
 
         let value_name = match attrs.value_name.as_deref() {
             Some(vn) => quote!(Some(#vn)),
