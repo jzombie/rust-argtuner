@@ -967,6 +967,10 @@ mod tests {
         crate::test_support::bin_command("mock_emit_invalid_result")
     }
 
+    fn emit_garbage_command() -> String {
+        crate::test_support::bin_command("mock_emit_garbage")
+    }
+
     fn emit_x_used_command() -> String {
         crate::test_support::bin_command("mock_emit_x_used")
     }
@@ -1036,6 +1040,43 @@ mod tests {
         assert_eq!(
             fields.get(crate::FIELD_TRIAL_STATUS),
             Some(&"ok".to_string())
+        );
+    }
+
+    /// Garbage-only output must fail loudly at metric extraction — never
+    /// blow up the parser, and never score the trial on nothing.
+    #[test]
+    fn objective_errors_loudly_on_garbage_only_output() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = crate::CommandTemplate::new(emit_garbage_command());
+        let store = crate::TrialStore::new(
+            dir.path().join(crate::TRIALS_CSV_FILENAME),
+            template.clone(),
+        );
+        let space = crate::SearchSpace { params: vec![] };
+        let objective = CommandObjective::new(
+            store,
+            template,
+            space,
+            dir.path().join("artifacts"),
+            "metric".to_string(),
+            crate::Goal::Min,
+            true,
+            0,
+        );
+        let err = objective.eval(&[]).expect_err("garbage must not score");
+        assert!(
+            err.contains("missing objective metric"),
+            "unexpected error: {err}"
+        );
+        let fields = objective
+            .store()
+            .load_fields(0)
+            .expect("load fields")
+            .expect("fields row");
+        assert_eq!(
+            fields.get(crate::FIELD_TRIAL_STATUS),
+            Some(&"error".to_string())
         );
     }
 
