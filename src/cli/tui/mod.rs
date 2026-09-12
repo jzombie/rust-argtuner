@@ -1795,7 +1795,7 @@ fn metric_series_for_key(rows: &[TrialRow], key: &str, x_axis: &XAxisSpec) -> Ve
 }
 
 fn row_index(fields: &BTreeMap<String, String>, fallback: usize, x_axis: &XAxisSpec) -> f64 {
-    if let Some(key) = x_axis.key
+    if let Some(key) = x_axis.key.as_deref()
         && let Some(value) = fields.get(key)
         && let Ok(parsed) = value.parse::<f64>()
     {
@@ -1872,11 +1872,11 @@ fn series_y_bounds_in_range(series: &[(f64, f64)], min_x: f64, max_x: f64) -> Op
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct XAxisSpec {
-    key: Option<&'static str>,
-    label: &'static str,
-    unit: &'static str,
+    key: Option<String>,
+    label: String,
+    unit: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1890,78 +1890,90 @@ struct AxisKey {
     name: String,
 }
 
+/// Display names for known x-axis fields. Presentation only: axis *selection*
+/// never consults this map (see [`select_x_axis_spec`]).
+fn axis_display_name(key: &str) -> (String, String) {
+    match key {
+        "metric.time_s" | "metric.time_sec" | "metric.elapsed_s" => {
+            ("time".to_string(), "s".to_string())
+        }
+        "metric.time_ms" | "metric.elapsed_ms" => ("time".to_string(), "ms".to_string()),
+        _ => {
+            let short = key.strip_prefix("metric.").unwrap_or(key).to_string();
+            (short.clone(), short)
+        }
+    }
+}
+
+/// Pick the x-axis field for a row slice by data properties, not by a
+/// hardcoded name priority:
+///
+/// 1. Only numeric fields are eligible.
+/// 2. A field constant across all rows can never be the axis (it would stack
+///    every point onto one vertical line) — it is dropped. This is what bit
+///    step rows carrying a constant `metric.epoch`.
+/// 3. Among varying fields, strictly monotonically increasing ones (counters,
+///    clocks) win, most distinct values first — a counter spreads points in
+///    arrival order, which is what a live curve wants.
+/// 4. Then any varying field, most distinct values first.
+/// 5. Ties break by field name so the choice is deterministic.
+/// 6. No varying field at all (0–1 rows, or all constant) → row-index axis,
+///    which always spreads.
+///
+/// Any new numeric field a binary emits is handled automatically; no name
+/// list to keep in sync.
 fn select_x_axis_spec(rows: &[TrialRow]) -> XAxisSpec {
-    let candidates = [
-        XAxisSpec {
-            key: Some("metric.time_s"),
-            label: "time",
-            unit: "s",
-        },
-        XAxisSpec {
-            key: Some("metric.time_sec"),
-            label: "time",
-            unit: "s",
-        },
-        XAxisSpec {
-            key: Some("metric.elapsed_s"),
-            label: "time",
-            unit: "s",
-        },
-        XAxisSpec {
-            key: Some("metric.time_ms"),
-            label: "time",
-            unit: "ms",
-        },
-        XAxisSpec {
-            key: Some("metric.elapsed_ms"),
-            label: "time",
-            unit: "ms",
-        },
-        XAxisSpec {
-            key: Some("metric.step"),
-            label: "step",
-            unit: "step",
-        },
-        XAxisSpec {
-            key: Some("metric.step_idx"),
-            label: "step",
-            unit: "step",
-        },
-        XAxisSpec {
-            key: Some("metric.epoch"),
-            label: "epoch",
-            unit: "epoch",
-        },
-        XAxisSpec {
-            key: Some("metric.last_epoch"),
-            label: "epoch",
-            unit: "epoch",
-        },
-    ];
-
-    // NOTE: step precedes epoch deliberately. Step rows carry both fields,
-    // with epoch constant across the whole epoch — picking epoch as x would
-    // stack every step point onto one vertical line instead of drawing a
-    // left-to-right sparkline. Epoch rows carry no step field, so their
-    // axis choice is unaffected by this order.
-
-    for candidate in candidates {
-        if let Some(key) = candidate.key
-            && rows.iter().any(|row| {
-                row.fields
-                    .get(key)
-                    .and_then(|value| value.parse::<f64>().ok())
-                    .is_some()
-            })
-        {
-            return candidate;
+    let mut numeric: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
+    for row in rows {
+        for (key, value) in &row.fields {
+            if let Ok(parsed) = value.parse::<f64>() {
+                numeric.entry(key.as_str()).or_default().push(parsed);
+            }
         }
     }
 
-    XAxisSpec {
-        key: None,
-        label: "index",
-        unit: "idx",
+    /// Distinct value count via bitwise equality (NaN != NaN counts each NaN
+    /// as distinct, which only makes an axis *more* eligible — never collapses).
+    fn distinct(values: &[f64]) -> usize {
+        let mut count = 0;
+        for (i, a) in values.iter().enumerate() {
+            if values[..i].iter().all(|b| b.to_bits() != a.to_bits()) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    fn strictly_increasing(values: &[f64]) -> bool {
+        values.len() > 1
+            && values
+                .windows(2)
+                .all(|w| w[0].total_cmp(&w[1]) == std::cmp::Ordering::Less)
+    }
+
+    let mut varying: Vec<(&str, usize, bool)> = numeric
+        .iter()
+        .map(|(key, values)| (*key, distinct(values), strictly_increasing(values)))
+        .filter(|(_, distinct_count, _)| *distinct_count > 1)
+        .collect();
+    // Monotonic counters first, then by spread, then by name: deterministic,
+    // order-independent of how fields were emitted.
+    varying.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)).then(a.0.cmp(b.0)));
+
+    match varying.first() {
+        Some((key, _, _)) => {
+            let (label, unit) = axis_display_name(key);
+            XAxisSpec {
+                key: Some(key.to_string()),
+                label,
+                unit,
+            }
+        }
+        None => XAxisSpec {
+            key: None,
+            label: "index".to_string(),
+            unit: "idx".to_string(),
+        },
     }
 }
 
@@ -2473,5 +2485,88 @@ mod view_tests {
         assert_eq!(root.active, child.active);
         assert_eq!(root.dragging, child.dragging);
         assert_eq!(text.selection_text(), text.sv.selection_text());
+    }
+
+    fn axis_test_row(pairs: &[(&str, &str)]) -> TrialRow {
+        TrialRow {
+            trial_id: 0,
+            status: "running".to_string(),
+            elapsed_ms: 0,
+            error: None,
+            fields: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn x_axis_prefers_varying_step_over_constant_epoch() {
+        // The collapse that motivated property-based selection: epoch is
+        // constant across an epoch's steps, so it must never be the axis.
+        let rows = vec![
+            axis_test_row(&[
+                ("metric.epoch", "0"),
+                ("metric.step", "1"),
+                ("metric.loss", "0.9"),
+            ]),
+            axis_test_row(&[
+                ("metric.epoch", "0"),
+                ("metric.step", "2"),
+                ("metric.loss", "0.8"),
+            ]),
+            axis_test_row(&[
+                ("metric.epoch", "0"),
+                ("metric.step", "3"),
+                ("metric.loss", "0.7"),
+            ]),
+        ];
+        let spec = select_x_axis_spec(&rows);
+        assert_eq!(spec.key.as_deref(), Some("metric.step"));
+    }
+
+    #[test]
+    fn x_axis_uses_epoch_for_epoch_rows() {
+        let rows = vec![
+            axis_test_row(&[("metric.epoch", "1"), ("metric.val_loss", "0.5")]),
+            axis_test_row(&[("metric.epoch", "2"), ("metric.val_loss", "0.3")]),
+            axis_test_row(&[("metric.epoch", "3"), ("metric.val_loss", "0.1")]),
+        ];
+        let spec = select_x_axis_spec(&rows);
+        assert_eq!(spec.key.as_deref(), Some("metric.epoch"));
+    }
+
+    #[test]
+    fn x_axis_prefers_monotonic_counter_over_varying_noise() {
+        // Both fields vary with equal spread; the monotonic counter wins.
+        let rows = vec![
+            axis_test_row(&[("metric.step", "1"), ("metric.noise", "5.0")]),
+            axis_test_row(&[("metric.step", "2"), ("metric.noise", "1.0")]),
+            axis_test_row(&[("metric.step", "3"), ("metric.noise", "4.0")]),
+        ];
+        let spec = select_x_axis_spec(&rows);
+        assert_eq!(spec.key.as_deref(), Some("metric.step"));
+    }
+
+    #[test]
+    fn x_axis_falls_back_to_index_without_varying_fields() {
+        let single = vec![axis_test_row(&[("metric.loss", "0.5")])];
+        assert_eq!(select_x_axis_spec(&single).key, None);
+        // Every field constant across rows: nothing can spread the points.
+        let constant = vec![
+            axis_test_row(&[("metric.epoch", "0"), ("metric.loss", "0.5")]),
+            axis_test_row(&[("metric.epoch", "0"), ("metric.loss", "0.5")]),
+        ];
+        assert_eq!(select_x_axis_spec(&constant).key, None);
+    }
+
+    #[test]
+    fn x_axis_ignores_non_numeric_fields() {
+        let rows = vec![
+            axis_test_row(&[("metric.step", "1"), ("note", "hello")]),
+            axis_test_row(&[("metric.step", "2"), ("note", "world")]),
+        ];
+        let spec = select_x_axis_spec(&rows);
+        assert_eq!(spec.key.as_deref(), Some("metric.step"));
     }
 }
