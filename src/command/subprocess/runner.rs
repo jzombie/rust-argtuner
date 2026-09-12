@@ -527,6 +527,69 @@ fn run_pty(
     })
 }
 
+/// Byte count of `pending` safe to echo eagerly (see the call site).
+/// Returns 0 while the buffer contains a protocol line, and always holds
+/// back the trailing bytes: they could be the head of a prefix split across
+/// read chunks, and a split prefix must reach the callback intact.
+/// (`hold` is `len(prefix) - 1`, which covers every completable split: any
+/// split head is shorter than the prefix itself.) The returned index is
+/// always a char boundary — slicing a multibyte UTF-8 sequence would panic
+/// in `drain`, and barnetext may be non-ASCII on any platform.
+fn eager_echo_len(pending: &str, prefix: &str) -> usize {
+    if pending.contains(prefix) {
+        return 0;
+    }
+    let hold = prefix.len().saturating_sub(1);
+    if pending.len() <= hold {
+        return 0;
+    }
+    let mut end = pending.len() - hold;
+    while !pending.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
+}
+
+/// Pumps one complete stdout line to the terminal echo and the live
+/// callback. `line` is verbatim (no trailing `\n`); the parser
+/// downstream tolerates a trailing `\r` (PTY `\r\n`, progress-bar
+/// `\r` fragments glued onto the same line).
+fn pump_line(
+    line: &str,
+    stdout: &mut std::io::Stdout,
+    on_line: &Option<LineCallback>,
+    suppress_protocol_echo: bool,
+) {
+    if suppress_protocol_echo {
+        match line.find(crate::RESULT_PREFIX) {
+            // Echo any human-readable fragment glued before the
+            // protocol payload (e.g. a `\r` progress-bar update)
+            // so bars keep animating; the protocol JSON itself
+            // stays out of the terminal. No trailing newline:
+            // the next bar update overwrites this one in place.
+            // (Heads of such lines may already have been echoed eagerly;
+            // re-emitting the fragment is a harmless in-place redraw.)
+            Some(idx) => {
+                let pre = &line[..idx];
+                if !pre.is_empty() {
+                    let _ = stdout.write_all(pre.as_bytes());
+                }
+            }
+            None => {
+                let _ = stdout.write_all(line.as_bytes());
+                let _ = stdout.write_all(b"\n");
+            }
+        }
+    } else {
+        let _ = stdout.write_all(line.as_bytes());
+        let _ = stdout.write_all(b"\n");
+    }
+    if let Some(cb) = on_line.as_ref() {
+        cb(line);
+    }
+    let _ = stdout.flush();
+}
+
 fn spawn_reader<R: Read + Send + 'static>(
     mut reader: R,
     to_stderr: bool,
@@ -550,38 +613,6 @@ fn spawn_reader<R: Read + Send + 'static>(
             }
         } else {
             let mut stdout = std::io::stdout();
-            // Pumps one complete line to the terminal echo and the live
-            // callback. `line` is verbatim (no trailing `\n`); the parser
-            // downstream tolerates a trailing `\r` (PTY `\r\n`, progress-bar
-            // `\r` fragments glued onto the same line).
-            let mut pump_line = |line: &str| {
-                if suppress_protocol_echo {
-                    match line.find(crate::RESULT_PREFIX) {
-                        // Echo any human-readable fragment glued before the
-                        // protocol payload (e.g. a `\r` progress-bar update)
-                        // so bars keep animating; the protocol JSON itself
-                        // stays out of the terminal. No trailing newline:
-                        // the next bar update overwrites this one in place.
-                        Some(idx) => {
-                            let pre = &line[..idx];
-                            if !pre.is_empty() {
-                                let _ = stdout.write_all(pre.as_bytes());
-                            }
-                        }
-                        None => {
-                            let _ = stdout.write_all(line.as_bytes());
-                            let _ = stdout.write_all(b"\n");
-                        }
-                    }
-                } else {
-                    let _ = stdout.write_all(line.as_bytes());
-                    let _ = stdout.write_all(b"\n");
-                }
-                if let Some(cb) = on_line.as_ref() {
-                    cb(line);
-                }
-                let _ = stdout.flush();
-            };
             // `pending` reassembles lines split across read chunks (and holds
             // `\r`-terminated progress-bar fragments until the next `\n`).
             // `out` keeps the raw byte stream exactly as before.
@@ -596,11 +627,27 @@ fn spawn_reader<R: Read + Send + 'static>(
                 pending.push_str(&chunk);
                 while let Some(pos) = pending.find('\n') {
                     let line: String = pending.drain(..=pos).collect();
-                    pump_line(line.strip_suffix('\n').unwrap_or(&line));
+                    pump_line(
+                        line.strip_suffix('\n').unwrap_or(&line),
+                        &mut stdout,
+                        &on_line,
+                        suppress_protocol_echo,
+                    );
+                }
+                // Eagerly echo output that hasn't formed a line yet (e.g. `\r`
+                // progress-bar updates during long stretches with no `\n`,
+                // such as grad-accum windows of hundreds of micro-batches or
+                // long eval phases). See `eager_echo_len` for the safety
+                // rules (protocol hold-back, char boundaries).
+                let echo_up_to = eager_echo_len(&pending, crate::RESULT_PREFIX);
+                if echo_up_to > 0 {
+                    let fragment: String = pending.drain(..echo_up_to).collect();
+                    let _ = stdout.write_all(fragment.as_bytes());
+                    let _ = stdout.flush();
                 }
             }
             if !pending.is_empty() {
-                pump_line(&pending);
+                pump_line(&pending, &mut stdout, &on_line, suppress_protocol_echo);
             }
         }
         out
@@ -817,6 +864,38 @@ mod tests {
             &heartbeat_path,
             Duration::from_millis(600),
         );
+    }
+
+    #[test]
+    fn eager_echo_holds_short_buffers_and_protocol_lines() {
+        // Too short to hold anything back: nothing echoable.
+        assert_eq!(eager_echo_len("", crate::RESULT_PREFIX), 0);
+        assert_eq!(eager_echo_len("short", crate::RESULT_PREFIX), 0);
+        // A complete protocol line anywhere suppresses eager echo.
+        let with_prefix = format!("bar {} {{}}", crate::RESULT_PREFIX);
+        assert_eq!(eager_echo_len(&with_prefix, crate::RESULT_PREFIX), 0);
+    }
+
+    #[test]
+    fn eager_echo_holds_prefix_head_split_across_chunks() {
+        // Trailing partial prefix ("::ARGT", 6 of 12 bytes) must survive for
+        // reassembly: only bytes before the 11-byte holdback window echo.
+        let pending = "xxxxxx::ARGT";
+        assert_eq!(pending.len(), 12);
+        assert_eq!(eager_echo_len(pending, crate::RESULT_PREFIX), 1);
+    }
+
+    #[test]
+    fn eager_echo_never_splits_a_multibyte_char() {
+        // "X" + é (2 bytes) + 9 ASCII = 12 bytes; len - hold lands on é's
+        // second byte, which would panic `drain`. Must floor to 1.
+        let pending = "XéYYYYYYYYY";
+        assert_eq!(pending.len(), 12);
+        let n = eager_echo_len(pending, crate::RESULT_PREFIX);
+        assert_eq!(n, 1);
+        assert!(pending.is_char_boundary(n));
+        // Pure-ASCII equivalent echoes the full window.
+        assert_eq!(eager_echo_len("XAYYYYYYYYYY", crate::RESULT_PREFIX), 1);
     }
 
     #[test]
