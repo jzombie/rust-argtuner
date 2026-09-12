@@ -1632,7 +1632,7 @@ fn render_metric_charts(
                     rows,
                     &metric_keys[abs_idx],
                     rect,
-                    &x_axis,
+                    x_axis,
                     charts.chart_zoom,
                 );
             }
@@ -1642,7 +1642,7 @@ fn render_metric_charts(
                 handle.set_content_size(chart_area.width as usize, chart_area.height as usize);
             }
             let key = &metric_keys[charts.chart_selected];
-            render_metric_chart(backend, rows, key, chart_area, &x_axis, charts.chart_zoom);
+            render_metric_chart(backend, rows, key, chart_area, x_axis, charts.chart_zoom);
         }
     }
 
