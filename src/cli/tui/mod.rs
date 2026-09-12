@@ -165,6 +165,7 @@ enum ChartView {
 struct ChartsView {
     trials: Vec<TrialRow>,
     epoch_rows: BTreeMap<i64, Vec<TrialRow>>,
+    step_rows: BTreeMap<i64, Vec<TrialRow>>,
     chart_mode: ChartMode,
     chart_view: ChartView,
     chart_selected: usize,
@@ -550,6 +551,7 @@ impl AppState {
     fn push_data_to_components(&mut self) {
         let trials = self.trials.clone();
         let epochs = self.epoch_rows.clone();
+        let steps = self.step_rows.clone();
         let last_error = self.last_error.clone();
         let selected = self.selected_trial_idx();
         let axes = self.enabled_axes();
@@ -572,6 +574,7 @@ impl AppState {
             let mut c = sv.content.borrow_mut();
             c.trials = trials.clone();
             c.epoch_rows = epochs.clone();
+            c.step_rows = steps.clone();
             c.chart_mode = mode;
             c.last_error = last_error.clone();
             c.selected_trial_idx = selected;
@@ -635,6 +638,11 @@ impl AppState {
 
     fn refresh_trials(&mut self) {
         let mut saw_activity = false;
+        // Live step rows arriving over TCP since the last poll. Merged below
+        // after the DB snapshot replaces the map, skipping rows the DB
+        // already has (each flush writes the DB and pushes TCP together, so
+        // most live rows have a DB twin by poll time).
+        let mut live_step_rows: BTreeMap<i64, Vec<TrialRow>> = BTreeMap::new();
         while let Some(line) = self.step_subscriber.try_recv() {
             saw_activity = true;
             if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line)
@@ -660,7 +668,7 @@ impl AppState {
                         }
                     })
                     .collect();
-                self.step_rows.entry(trial_id).or_default().extend(rows);
+                live_step_rows.entry(trial_id).or_default().extend(rows);
             }
         }
         match load_trials(&self.db_path) {
@@ -672,8 +680,19 @@ impl AppState {
                 let prev_trial_id = self.trials.get(prev_sel).map(|t| t.trial_id);
                 self.trials = trials;
                 self.epoch_rows = epoch_rows;
-                for (trial_id, rows) in step_rows {
-                    self.step_rows.entry(trial_id).or_default().extend(rows);
+                // Replace (not extend): the DB snapshot is complete, so
+                // extending would duplicate every row on each poll cycle.
+                self.step_rows = step_rows;
+                // Re-apply live rows not yet covered by the snapshot. Field
+                // maps identify twins (subscriber rows carry elapsed_ms 0
+                // while their DB twins carry the real value).
+                for (trial_id, rows) in live_step_rows {
+                    let entry = self.step_rows.entry(trial_id).or_default();
+                    for row in rows {
+                        if !entry.iter().any(|r| r.fields == row.fields) {
+                            entry.push(row);
+                        }
+                    }
                 }
                 if self.trials.iter().any(|t| t.status == "running")
                     || self
@@ -967,6 +986,7 @@ fn mk_charts_window() -> ChartsWindow {
     let mut sv = ScrollViewComponent::new(ChartsView {
         trials: Vec::new(),
         epoch_rows: BTreeMap::new(),
+        step_rows: BTreeMap::new(),
         chart_mode: ChartMode::Metrics,
         chart_view: ChartView::Summary,
         chart_selected: 0,
@@ -1501,26 +1521,42 @@ fn render_charts_content(
         Paragraph::new("No trials loaded.").render(area, &mut backend.buffer);
         return;
     };
-    let epochs = charts
-        .epoch_rows
+    // Live step rows are the finest-grained live data (persisted ~1/sec while
+    // the trial runs); fall back to per-epoch rows when the trial emitted no
+    // steps (or finished before live streaming existed).
+    let steps = charts
+        .step_rows
         .get(&trial.trial_id)
         .cloned()
         .unwrap_or_default();
-    if epochs.is_empty() {
-        Paragraph::new("No epoch metrics for selected trial.").render(area, &mut backend.buffer);
+    let owned;
+    let rows: &[TrialRow] = if steps.is_empty() {
+        owned = charts
+            .epoch_rows
+            .get(&trial.trial_id)
+            .cloned()
+            .unwrap_or_default();
+        &owned
+    } else {
+        owned = steps;
+        &owned
+    };
+    if rows.is_empty() {
+        Paragraph::new("No epoch or step metrics for selected trial.")
+            .render(area, &mut backend.buffer);
         return;
     }
-    render_metric_charts(backend, charts, &epochs, area, ctx);
+    render_metric_charts(backend, charts, rows, area, ctx);
 }
 
 fn render_metric_charts(
     backend: &mut RatatuiBackend,
     charts: &mut ChartsView,
-    epochs: &[TrialRow],
+    rows: &[TrialRow],
     area: Rect,
     ctx: &ComponentContext,
 ) {
-    let metric_keys = collect_metric_keys_for_epochs(epochs);
+    let metric_keys = collect_metric_keys(rows);
     charts.metrics_len = metric_keys.len();
     if metric_keys.is_empty() {
         Paragraph::new("No numeric metric curves.").render(area, &mut backend.buffer);
@@ -1529,7 +1565,7 @@ fn render_metric_charts(
     if charts.chart_selected >= metric_keys.len() {
         charts.chart_selected = metric_keys.len().saturating_sub(1);
     }
-    let x_axis = select_x_axis_spec(epochs);
+    let x_axis = select_x_axis_spec(rows);
 
     // Always reserve the bottom row for the config-derived keybinding hint so
     // the zoom/view keys are discoverable. The keys only act while the Charts
@@ -1576,7 +1612,7 @@ fn render_metric_charts(
                 };
                 render_metric_chart(
                     backend,
-                    epochs,
+                    rows,
                     &metric_keys[abs_idx],
                     rect,
                     &x_axis,
@@ -1589,7 +1625,7 @@ fn render_metric_charts(
                 handle.set_content_size(chart_area.width as usize, chart_area.height as usize);
             }
             let key = &metric_keys[charts.chart_selected];
-            render_metric_chart(backend, epochs, key, chart_area, &x_axis, charts.chart_zoom);
+            render_metric_chart(backend, rows, key, chart_area, &x_axis, charts.chart_zoom);
         }
     }
 
@@ -1686,13 +1722,13 @@ fn render_hyperparam_space(backend: &mut RatatuiBackend, charts: &mut ChartsView
 
 fn render_metric_chart(
     backend: &mut RatatuiBackend,
-    epochs: &[TrialRow],
+    rows: &[TrialRow],
     key: &str,
     area: Rect,
     x_axis: &XAxisSpec,
     zoom: f64,
 ) {
-    let series = metric_series_for_key(epochs, key, x_axis);
+    let series = metric_series_for_key(rows, key, x_axis);
     let (min_x, max_x, min_y, max_y) = zoomed_series_bounds(&series, zoom);
     let x_labels = axis_labels(min_x, max_x);
     let y_labels = axis_labels(min_y, max_y);
@@ -1730,10 +1766,10 @@ fn render_metric_chart(
     chart.render(area, &mut backend.buffer);
 }
 
-fn collect_metric_keys_for_epochs(epochs: &[TrialRow]) -> Vec<String> {
+fn collect_metric_keys(rows: &[TrialRow]) -> Vec<String> {
     let mut keys = BTreeMap::new();
-    for epoch in epochs {
-        for (key, value) in &epoch.fields {
+    for row in rows {
+        for (key, value) in &row.fields {
             if !key.starts_with("metric.") || key.as_str() == "metric" {
                 continue;
             }
@@ -1745,20 +1781,20 @@ fn collect_metric_keys_for_epochs(epochs: &[TrialRow]) -> Vec<String> {
     keys.keys().cloned().collect()
 }
 
-fn metric_series_for_key(epochs: &[TrialRow], key: &str, x_axis: &XAxisSpec) -> Vec<(f64, f64)> {
-    let mut series = Vec::with_capacity(epochs.len());
-    for (idx, epoch) in epochs.iter().enumerate() {
-        let value = epoch.fields.get(key).and_then(|v| v.parse::<f64>().ok());
+fn metric_series_for_key(rows: &[TrialRow], key: &str, x_axis: &XAxisSpec) -> Vec<(f64, f64)> {
+    let mut series = Vec::with_capacity(rows.len());
+    for (idx, row) in rows.iter().enumerate() {
+        let value = row.fields.get(key).and_then(|v| v.parse::<f64>().ok());
         let Some(value) = value else {
             continue;
         };
-        let x = epoch_index(&epoch.fields, idx, x_axis);
+        let x = row_index(&row.fields, idx, x_axis);
         series.push((x, value));
     }
     series
 }
 
-fn epoch_index(fields: &BTreeMap<String, String>, fallback: usize, x_axis: &XAxisSpec) -> f64 {
+fn row_index(fields: &BTreeMap<String, String>, fallback: usize, x_axis: &XAxisSpec) -> f64 {
     if let Some(key) = x_axis.key
         && let Some(value) = fields.get(key)
         && let Ok(parsed) = value.parse::<f64>()
@@ -1854,7 +1890,7 @@ struct AxisKey {
     name: String,
 }
 
-fn select_x_axis_spec(epochs: &[TrialRow]) -> XAxisSpec {
+fn select_x_axis_spec(rows: &[TrialRow]) -> XAxisSpec {
     let candidates = [
         XAxisSpec {
             key: Some("metric.time_s"),
@@ -1905,9 +1941,8 @@ fn select_x_axis_spec(epochs: &[TrialRow]) -> XAxisSpec {
 
     for candidate in candidates {
         if let Some(key) = candidate.key
-            && epochs.iter().any(|epoch| {
-                epoch
-                    .fields
+            && rows.iter().any(|row| {
+                row.fields
                     .get(key)
                     .and_then(|value| value.parse::<f64>().ok())
                     .is_some()
