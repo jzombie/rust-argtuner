@@ -1918,16 +1918,6 @@ fn select_x_axis_spec(rows: &[TrialRow]) -> XAxisSpec {
             unit: "ms",
         },
         XAxisSpec {
-            key: Some("metric.epoch"),
-            label: "epoch",
-            unit: "epoch",
-        },
-        XAxisSpec {
-            key: Some("metric.last_epoch"),
-            label: "epoch",
-            unit: "epoch",
-        },
-        XAxisSpec {
             key: Some("metric.step"),
             label: "step",
             unit: "step",
@@ -1937,7 +1927,23 @@ fn select_x_axis_spec(rows: &[TrialRow]) -> XAxisSpec {
             label: "step",
             unit: "step",
         },
+        XAxisSpec {
+            key: Some("metric.epoch"),
+            label: "epoch",
+            unit: "epoch",
+        },
+        XAxisSpec {
+            key: Some("metric.last_epoch"),
+            label: "epoch",
+            unit: "epoch",
+        },
     ];
+
+    // NOTE: step precedes epoch deliberately. Step rows carry both fields,
+    // with epoch constant across the whole epoch — picking epoch as x would
+    // stack every step point onto one vertical line instead of drawing a
+    // left-to-right sparkline. Epoch rows carry no step field, so their
+    // axis choice is unaffected by this order.
 
     for candidate in candidates {
         if let Some(key) = candidate.key
