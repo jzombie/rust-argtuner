@@ -25,10 +25,15 @@ static FORCE_PIPES: AtomicBool = AtomicBool::new(false);
 /// before the wait is abandoned and reported as an error.
 const KILL_GRACE: Duration = Duration::from_secs(10);
 
-/// Options that supervise a trial subprocess. Both fields are advisory: the
-/// runner never clears `stop`, and a `timeout` is a hard deadline enforced on
-/// the whole process group.
-#[derive(Debug, Clone, Default)]
+/// Callback invoked once per complete `\n`-terminated child-stdout line while
+/// the subprocess runs. Used to stream-parse `::ARGTUNER::` protocol events
+/// (live TUI updates) without waiting for child exit.
+pub type LineCallback = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Options that supervise a trial subprocess. All fields are advisory, except
+/// `timeout` (a hard deadline enforced on the whole process group) and `stop`
+/// (the runner never clears it).
+#[derive(Clone, Default)]
 pub struct RunnerOptions {
     /// Hard deadline for the command. When it elapses the process group is
     /// killed and the result is marked `timed_out`.
@@ -36,6 +41,27 @@ pub struct RunnerOptions {
     /// When set, the process group is killed as soon as the flag flips (e.g.
     /// Ctrl-C). Unset means the command runs to completion.
     pub stop: Option<Arc<AtomicBool>>,
+    /// When set, invoked once per complete `\n`-terminated stdout line as it
+    /// arrives (a trailing unterminated fragment is delivered once at EOF).
+    /// Lines split across pipe/PTY read chunks are reassembled first.
+    pub on_line: Option<LineCallback>,
+    /// When true, stdout lines containing the `::ARGTUNER::` protocol prefix
+    /// are still accumulated into `CommandOutput.stdout` (so post-exit parsing
+    /// is unaffected) but are not echoed to the parent terminal. Progress-bar
+    /// fragments glued onto the same line (a `\r` update with no newline) are
+    /// suppressed along with it; the next bar update redraws the line.
+    pub suppress_protocol_echo: bool,
+}
+
+impl std::fmt::Debug for RunnerOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunnerOptions")
+            .field("timeout", &self.timeout)
+            .field("stop", &self.stop)
+            .field("on_line", &self.on_line.as_ref().map(|_| "LineCallback"))
+            .field("suppress_protocol_echo", &self.suppress_protocol_echo)
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -172,7 +198,7 @@ impl CommandResultPayload {
     }
 }
 
-fn payload_fields_from(data: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+pub(crate) fn payload_fields_from(data: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
     for (key, value) in data {
         if let Some((namespace, rest)) = key.split_once('.') {
@@ -238,8 +264,13 @@ fn run_piped(
         .stderr
         .take()
         .ok_or_else(|| "command stderr unavailable".to_string())?;
-    let stdout_handle = spawn_reader(child_stdout, false);
-    let stderr_handle = spawn_reader(child_stderr, true);
+    let stdout_handle = spawn_reader(
+        child_stdout,
+        false,
+        opts.on_line.clone(),
+        opts.suppress_protocol_echo,
+    );
+    let stderr_handle = spawn_reader(child_stderr, true, None, false);
     // Always join the reader threads first so their output has drained even
     // when the command was killed for a timeout or cancellation.
     let wait = wait_with_timeout(&mut child, opts);
@@ -428,7 +459,12 @@ fn run_pty(
         .master
         .take_writer()
         .map_err(|err| format!("pty writer failed: {err}"))?;
-    let output = spawn_reader(reader, false);
+    let output = spawn_reader(
+        reader,
+        false,
+        opts.on_line.clone(),
+        opts.suppress_protocol_echo,
+    );
 
     #[cfg(unix)]
     let input_guard = {
@@ -494,6 +530,8 @@ fn run_pty(
 fn spawn_reader<R: Read + Send + 'static>(
     mut reader: R,
     to_stderr: bool,
+    on_line: Option<LineCallback>,
+    suppress_protocol_echo: bool,
 ) -> thread::JoinHandle<String> {
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -512,15 +550,57 @@ fn spawn_reader<R: Read + Send + 'static>(
             }
         } else {
             let mut stdout = std::io::stdout();
+            // Pumps one complete line to the terminal echo and the live
+            // callback. `line` is verbatim (no trailing `\n`); the parser
+            // downstream tolerates a trailing `\r` (PTY `\r\n`, progress-bar
+            // `\r` fragments glued onto the same line).
+            let mut pump_line = |line: &str| {
+                if suppress_protocol_echo {
+                    match line.find(crate::RESULT_PREFIX) {
+                        // Echo any human-readable fragment glued before the
+                        // protocol payload (e.g. a `\r` progress-bar update)
+                        // so bars keep animating; the protocol JSON itself
+                        // stays out of the terminal. No trailing newline:
+                        // the next bar update overwrites this one in place.
+                        Some(idx) => {
+                            let pre = &line[..idx];
+                            if !pre.is_empty() {
+                                let _ = stdout.write_all(pre.as_bytes());
+                            }
+                        }
+                        None => {
+                            let _ = stdout.write_all(line.as_bytes());
+                            let _ = stdout.write_all(b"\n");
+                        }
+                    }
+                } else {
+                    let _ = stdout.write_all(line.as_bytes());
+                    let _ = stdout.write_all(b"\n");
+                }
+                if let Some(cb) = on_line.as_ref() {
+                    cb(line);
+                }
+                let _ = stdout.flush();
+            };
+            // `pending` reassembles lines split across read chunks (and holds
+            // `\r`-terminated progress-bar fragments until the next `\n`).
+            // `out` keeps the raw byte stream exactly as before.
+            let mut pending = String::new();
             loop {
                 let read = reader.read(&mut buf).unwrap_or(0);
                 if read == 0 {
                     break;
                 }
                 let chunk = String::from_utf8_lossy(&buf[..read]);
-                let _ = stdout.write_all(chunk.as_bytes());
-                let _ = stdout.flush();
                 out.push_str(&chunk);
+                pending.push_str(&chunk);
+                while let Some(pos) = pending.find('\n') {
+                    let line: String = pending.drain(..=pos).collect();
+                    pump_line(line.strip_suffix('\n').unwrap_or(&line));
+                }
+            }
+            if !pending.is_empty() {
+                pump_line(&pending);
             }
         }
         out
@@ -650,6 +730,7 @@ mod tests {
             RunnerOptions {
                 timeout: Some(Duration::from_secs(2)),
                 stop: None,
+                ..Default::default()
             },
         )
         .expect("run");
@@ -680,6 +761,7 @@ mod tests {
             RunnerOptions {
                 timeout: None,
                 stop: Some(stop),
+                ..Default::default()
             },
         )
         .expect("run");
@@ -716,6 +798,7 @@ mod tests {
             RunnerOptions {
                 timeout: Some(Duration::from_secs(2)),
                 stop: None,
+                ..Default::default()
             },
         )
         .expect("run");
@@ -734,5 +817,43 @@ mod tests {
             &heartbeat_path,
             Duration::from_millis(600),
         );
+    }
+
+    #[test]
+    fn on_line_receives_complete_lines_and_stdout_stays_intact() {
+        CommandRunner::force_pipes_for_tests();
+        // The mock only emits protocol lines when it sees the tuning marker.
+        let envs = BTreeMap::from([(
+            argtuner_common::TUNING_MARKER_ENV.to_string(),
+            argtuner_common::TUNING_MARKER_VALUE.to_string(),
+        )]);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen_cb = seen.clone();
+        let output = CommandRunner::run_with_options(
+            &crate::test_support::bin_command("mock_emit_result"),
+            &envs,
+            RunnerOptions {
+                timeout: None,
+                stop: None,
+                on_line: Some(std::sync::Arc::new(move |line: &str| {
+                    seen_cb.lock().unwrap().push(line.to_string());
+                })),
+                suppress_protocol_echo: true,
+            },
+        )
+        .expect("run");
+        assert_eq!(output.exit_code, 0);
+        // Accumulation is unaffected by echo suppression or the callback.
+        let payload = output.parse_payload(crate::RESULT_PREFIX).expect("payload");
+        assert_eq!(payload.get_metric("metric").expect("metric"), 0.42);
+        // Every delivered line is complete (reassembled across read chunks,
+        // no embedded newlines) and the protocol event arrived intact.
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter()
+                .any(|l| l.contains(argtuner_common::MODEL_EPOCH_END_EVENT)),
+            "callback must observe the epoch_end line: {seen:?}"
+        );
+        assert!(seen.iter().all(|l| !l.contains('\n')), "lines: {seen:?}");
     }
 }

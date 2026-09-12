@@ -1,11 +1,17 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
+use std::time::{Duration, Instant};
 
 use line_ending::LineEnding;
 
 use crate::{
     CommandTemplate, Goal, SearchSpace, TrialOverrides, TrialRecord, TrialStatus, TrialStore,
+    command::subprocess::{LineCallback, ParsedItem, parse_line, runner::payload_fields_from},
     constants::{
         DUPLICATE_CONFIG_PREFIX, FIELD_METRIC, FIELD_SCORE, FIELD_TRIAL_BUDGET_STEP,
         FIELD_TRIAL_BUDGET_TOTAL, FIELD_TRIAL_CONFIG_ID, FIELD_TRIAL_ELAPSED_MS, FIELD_TRIAL_ERROR,
@@ -52,6 +58,201 @@ struct Extracted {
     step_fields: Vec<BTreeMap<String, String>>,
 }
 
+/// Default minimum interval between live-persisted step rows for one trial.
+/// Bounds database growth on dense step streams (thousands of micro-batch
+/// `model.step_end` events per epoch): at most one step row per interval is
+/// written and pushed to the TUI, plus a flush of whatever is cached at each
+/// epoch end. Epoch rows are always written (there are few per trial).
+const DEFAULT_LIVE_STEP_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Record-building context shared by the live line handler and the post-exit
+/// pass so both produce identical trial/epoch/step rows.
+#[derive(Clone)]
+struct LiveRecordContext {
+    base_fields: BTreeMap<String, String>,
+    existing_fields: Option<BTreeMap<String, String>>,
+    objectives: Vec<crate::Objective>,
+    multi: bool,
+}
+
+fn build_step_record(
+    ctx: &LiveRecordContext,
+    row_fields: &BTreeMap<String, String>,
+    trial_id: usize,
+    elapsed_ms: u128,
+) -> TrialRecord {
+    let mut fields = ctx.base_fields.clone();
+    for (key, value) in row_fields {
+        fields.entry(key.clone()).or_insert(value.clone());
+    }
+    TrialRecord {
+        trial_id,
+        status: TrialStatus::Running,
+        elapsed_ms,
+        error: None,
+        fields,
+    }
+}
+
+fn build_epoch_record(
+    ctx: &LiveRecordContext,
+    epoch_result: &BTreeMap<String, String>,
+    epoch_row_fields: &BTreeMap<String, String>,
+    trial_id: usize,
+    elapsed_ms: u128,
+) -> Result<TrialRecord, String> {
+    let epoch_metrics = metrics_from_map(epoch_result, &ctx.objectives)
+        .map_err(|err| format!("epoch metric parse failed: {err}"))?;
+    let epoch_scores: Vec<f64> = ctx
+        .objectives
+        .iter()
+        .zip(epoch_metrics.iter())
+        .map(|(objective, metric)| match objective.goal {
+            Goal::Min => *metric,
+            Goal::Max => -*metric,
+        })
+        .collect();
+    let epoch_score = epoch_scores[ctx.objectives.iter().position(|o| o.primary).unwrap_or(0)];
+    let mut epoch_fields = ctx.base_fields.clone();
+    for (key, value) in epoch_row_fields {
+        epoch_fields.entry(key.clone()).or_insert(value.clone());
+    }
+    for (i, objective) in ctx.objectives.iter().enumerate() {
+        let metric_field = crate::trial::metric_value_field(&objective.name);
+        epoch_fields
+            .entry(metric_field)
+            .or_insert(epoch_metrics[i].to_string());
+        if ctx.multi {
+            epoch_fields.insert(
+                format!("score.{}", objective.name),
+                epoch_scores[i].to_string(),
+            );
+        }
+    }
+    epoch_fields.insert(
+        FIELD_METRIC.to_string(),
+        ctx.objectives
+            .iter()
+            .find(|o| o.primary)
+            .or(ctx.objectives.first())
+            .map(|o| o.name.clone())
+            .unwrap_or_default(),
+    );
+    epoch_fields.insert(FIELD_SCORE.to_string(), epoch_score.to_string());
+    crate::trial::enforce_hp_immutability(ctx.existing_fields.as_ref(), &mut epoch_fields);
+    Ok(TrialRecord {
+        trial_id,
+        status: TrialStatus::Running,
+        elapsed_ms,
+        error: None,
+        fields: epoch_fields,
+    })
+}
+
+/// Live protocol-event feed for one running trial.
+///
+/// The runner invokes the [`LineCallback`] once per complete stdout line; each
+/// `::ARGTUNER::` event is parsed and recorded immediately so `watch` shows
+/// metric curves while the trial runs instead of only at child exit:
+///
+/// - `model.epoch_end` → `append_epoch` + flush of cached steps.
+/// - `model.step_end` → throttled `cache_step` + `flush_steps` (at most one
+///   persisted/pushed step per [`LiveFeed::interval`], bounding DB growth).
+///
+/// Row construction is shared with the post-exit pass. The post-exit pass
+/// still parses the full output for scoring, but skips re-recording epochs
+/// (steps) once the live feed has recorded at least one of them; if the child
+/// emitted nothing parseable (crash before any event), the post-exit pass
+/// falls back to the legacy record-everything behavior.
+struct LiveFeed {
+    store: TrialStore,
+    trial_id: usize,
+    ctx: LiveRecordContext,
+    start: Instant,
+    interval: Duration,
+    live_epochs: AtomicUsize,
+    live_steps: AtomicUsize,
+    last_step_store: Mutex<Option<Instant>>,
+}
+
+impl LiveFeed {
+    fn callback(self: &Arc<Self>) -> LineCallback {
+        let feed = Arc::clone(self);
+        Arc::new(move |line: &str| feed.handle_line(line))
+    }
+
+    fn handle_line(&self, line: &str) {
+        let items = match parse_line(line, crate::RESULT_PREFIX) {
+            Ok(items) if !items.is_empty() => items,
+            _ => return,
+        };
+        for item in &items {
+            let ParsedItem::Event { name, fields } = item else {
+                continue;
+            };
+            match argtuner_common::EventKind::from_name(name) {
+                Some(argtuner_common::EventKind::EpochEnd) => self.handle_epoch(name, fields),
+                Some(argtuner_common::EventKind::StepEnd) => self.handle_step(name, fields),
+                _ => {}
+            }
+        }
+    }
+
+    fn handle_epoch(&self, name: &str, fields: &BTreeMap<String, String>) {
+        let mut entry = fields.clone();
+        entry.insert(name.to_string(), "true".to_string());
+        let row_fields = payload_fields_from(&entry);
+        let record = match build_epoch_record(
+            &self.ctx,
+            &entry,
+            &row_fields,
+            self.trial_id,
+            self.start.elapsed().as_millis(),
+        ) {
+            Ok(record) => record,
+            Err(_) => return,
+        };
+        if self.store.append_epoch(&record).is_err() {
+            return;
+        }
+        self.live_epochs.fetch_add(1, Ordering::Relaxed);
+        // Flush any throttled-cached steps so the epoch boundary is complete.
+        let _ = self.store.flush_steps(self.trial_id);
+    }
+
+    fn handle_step(&self, name: &str, fields: &BTreeMap<String, String>) {
+        let mut last = self.last_step_store.lock().unwrap();
+        let due = last.map(|t| t.elapsed() >= self.interval).unwrap_or(true);
+        if !due {
+            return;
+        }
+        *last = Some(Instant::now());
+        drop(last);
+        let mut entry = fields.clone();
+        entry.insert(name.to_string(), "true".to_string());
+        let row_fields = payload_fields_from(&entry);
+        let record = build_step_record(
+            &self.ctx,
+            &row_fields,
+            self.trial_id,
+            self.start.elapsed().as_millis(),
+        );
+        self.store.cache_step(self.trial_id, record);
+        self.live_steps.fetch_add(1, Ordering::Relaxed);
+        // Flush through so the TUI receives the throttled step live (TCP push)
+        // and the DB holds the same thinned sample, not every micro-batch.
+        let _ = self.store.flush_steps(self.trial_id);
+    }
+
+    fn live_epochs(&self) -> usize {
+        self.live_epochs.load(Ordering::Relaxed)
+    }
+
+    fn live_steps(&self) -> usize {
+        self.live_steps.load(Ordering::Relaxed)
+    }
+}
+
 pub struct CommandObjective {
     store: TrialStore,
     template: CommandTemplate,
@@ -65,6 +266,7 @@ pub struct CommandObjective {
     best_score: std::sync::Mutex<Option<f64>>,
     run_timeout: Option<std::time::Duration>,
     stop_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    live_step_interval: Duration,
 }
 
 impl CommandObjective {
@@ -92,6 +294,7 @@ impl CommandObjective {
             best_score: std::sync::Mutex::new(None),
             run_timeout: None,
             stop_flag: None,
+            live_step_interval: DEFAULT_LIVE_STEP_INTERVAL,
         }
     }
 
@@ -142,6 +345,15 @@ impl CommandObjective {
     ) -> Self {
         self.run_timeout = timeout;
         self.stop_flag = stop;
+        self
+    }
+
+    /// Minimum interval between live-persisted step rows for one trial
+    /// (default: 1s). `Duration::ZERO` persists every step (full fidelity,
+    /// unbounded growth on dense streams). Used by tests to assert exact
+    /// step-row contents.
+    pub fn with_live_step_interval(mut self, interval: Duration) -> Self {
+        self.live_step_interval = interval;
         self
     }
 
@@ -348,6 +560,27 @@ impl CommandObjective {
         eprintln!("Command: {}", command);
         let _ = std::io::stderr().flush();
         std::thread::sleep(std::time::Duration::from_millis(80));
+        // Live protocol-event feed: the runner invokes this once per complete
+        // stdout line, so epoch/step rows reach the store (and the TUI) while
+        // the trial runs. Protocol lines are suppressed from the terminal
+        // echo; human-readable output (progress bars, banners) still shows.
+        let objectives_effective = self.objectives_effective();
+        let multi_effective = objectives_effective.len() > 1;
+        let live_feed = Arc::new(LiveFeed {
+            store: self.store.clone(),
+            trial_id,
+            ctx: LiveRecordContext {
+                base_fields: rendered.fields.clone(),
+                existing_fields: existing_fields.clone(),
+                objectives: objectives_effective,
+                multi: multi_effective,
+            },
+            start,
+            interval: self.live_step_interval,
+            live_epochs: AtomicUsize::new(0),
+            live_steps: AtomicUsize::new(0),
+            last_step_store: Mutex::new(None),
+        });
         let result = (|| {
             let output = crate::command::CommandRunner::run_with_options(
                 &command,
@@ -355,6 +588,8 @@ impl CommandObjective {
                 crate::command::RunnerOptions {
                     timeout: self.run_timeout,
                     stop: self.stop_flag.clone(),
+                    on_line: Some(live_feed.callback()),
+                    suppress_protocol_echo: true,
                 },
             )
             .map_err(EvalError::Other)?;
@@ -477,75 +712,87 @@ impl CommandObjective {
                 );
                 out_fields.insert(FIELD_SCORE.to_string(), score.to_string());
                 crate::trial::enforce_hp_immutability(existing_fields.as_ref(), &mut out_fields);
+                // Row writes are owned by the live feed when it saw events as
+                // they arrived; the post-exit pass only backfills what live
+                // streaming did not cover (a child that emitted nothing
+                // parseable before exiting falls back to record-everything).
+                // Live step rows are throttled (see LiveFeed), so the
+                // post-exit pass must not re-add the thinned-out remainder.
+                let live_epochs = live_feed.live_epochs();
+                let live_steps = live_feed.live_steps();
                 // Cache step results in memory for this trial
-                for step_row_fields in &step_fields {
-                    let mut step_fields = base_fields.clone();
-                    for (key, value) in step_row_fields {
-                        step_fields.entry(key.clone()).or_insert(value.clone());
-                    }
-                    self.store.cache_step(
-                        trial_id,
-                        TrialRecord {
-                            trial_id,
-                            status: TrialStatus::Running,
-                            elapsed_ms: start.elapsed().as_millis(),
-                            error: None,
-                            fields: step_fields,
-                        },
-                    );
-                }
-                for (epoch_result, epoch_row_fields) in
-                    epoch_results.iter().zip(epoch_fields.iter())
-                {
-                    let epoch_metrics = metrics_from_map(epoch_result, &objectives)
-                        .map_err(|err| format!("epoch metric parse failed: {err}"))?;
-                    let epoch_scores: Vec<f64> = objectives
-                        .iter()
-                        .zip(epoch_metrics.iter())
-                        .map(|(objective, metric)| match objective.goal {
-                            Goal::Min => *metric,
-                            Goal::Max => -*metric,
-                        })
-                        .collect();
-                    let epoch_score = epoch_scores[primary_index];
-                    let mut epoch_fields = base_fields.clone();
-                    for (key, value) in epoch_row_fields {
-                        epoch_fields.entry(key.clone()).or_insert(value.clone());
-                    }
-                    for (i, objective) in objectives.iter().enumerate() {
-                        let metric_field = crate::trial::metric_value_field(&objective.name);
-                        epoch_fields
-                            .entry(metric_field)
-                            .or_insert(epoch_metrics[i].to_string());
-                        if multi {
-                            epoch_fields.insert(
-                                format!("score.{}", objective.name),
-                                epoch_scores[i].to_string(),
-                            );
+                if live_steps == 0 {
+                    for step_row_fields in &step_fields {
+                        let mut step_fields = base_fields.clone();
+                        for (key, value) in step_row_fields {
+                            step_fields.entry(key.clone()).or_insert(value.clone());
                         }
-                    }
-                    epoch_fields.insert(
-                        FIELD_METRIC.to_string(),
-                        objectives[primary_index].name.clone(),
-                    );
-                    epoch_fields.insert(FIELD_SCORE.to_string(), epoch_score.to_string());
-                    crate::trial::enforce_hp_immutability(
-                        existing_fields.as_ref(),
-                        &mut epoch_fields,
-                    );
-                    self.store
-                        .append_epoch(&TrialRecord {
+                        self.store.cache_step(
                             trial_id,
-                            status: TrialStatus::Running,
-                            elapsed_ms: start.elapsed().as_millis(),
-                            error: None,
-                            fields: epoch_fields,
-                        })
-                        .map_err(|err| format!("epoch log append failed: {err}"))?;
-                    // Flush cached steps at epoch end
-                    self.store
-                        .flush_steps(trial_id)
-                        .map_err(|err| format!("step flush failed: {err}"))?;
+                            TrialRecord {
+                                trial_id,
+                                status: TrialStatus::Running,
+                                elapsed_ms: start.elapsed().as_millis(),
+                                error: None,
+                                fields: step_fields,
+                            },
+                        );
+                    }
+                }
+                if live_epochs == 0 {
+                    for (epoch_result, epoch_row_fields) in
+                        epoch_results.iter().zip(epoch_fields.iter())
+                    {
+                        let epoch_metrics = metrics_from_map(epoch_result, &objectives)
+                            .map_err(|err| format!("epoch metric parse failed: {err}"))?;
+                        let epoch_scores: Vec<f64> = objectives
+                            .iter()
+                            .zip(epoch_metrics.iter())
+                            .map(|(objective, metric)| match objective.goal {
+                                Goal::Min => *metric,
+                                Goal::Max => -*metric,
+                            })
+                            .collect();
+                        let epoch_score = epoch_scores[primary_index];
+                        let mut epoch_fields = base_fields.clone();
+                        for (key, value) in epoch_row_fields {
+                            epoch_fields.entry(key.clone()).or_insert(value.clone());
+                        }
+                        for (i, objective) in objectives.iter().enumerate() {
+                            let metric_field = crate::trial::metric_value_field(&objective.name);
+                            epoch_fields
+                                .entry(metric_field)
+                                .or_insert(epoch_metrics[i].to_string());
+                            if multi {
+                                epoch_fields.insert(
+                                    format!("score.{}", objective.name),
+                                    epoch_scores[i].to_string(),
+                                );
+                            }
+                        }
+                        epoch_fields.insert(
+                            FIELD_METRIC.to_string(),
+                            objectives[primary_index].name.clone(),
+                        );
+                        epoch_fields.insert(FIELD_SCORE.to_string(), epoch_score.to_string());
+                        crate::trial::enforce_hp_immutability(
+                            existing_fields.as_ref(),
+                            &mut epoch_fields,
+                        );
+                        self.store
+                            .append_epoch(&TrialRecord {
+                                trial_id,
+                                status: TrialStatus::Running,
+                                elapsed_ms: start.elapsed().as_millis(),
+                                error: None,
+                                fields: epoch_fields,
+                            })
+                            .map_err(|err| format!("epoch log append failed: {err}"))?;
+                        // Flush cached steps at epoch end
+                        self.store
+                            .flush_steps(trial_id)
+                            .map_err(|err| format!("step flush failed: {err}"))?;
+                    }
                 }
                 // Flush any remaining cached steps at trial end
                 self.store
@@ -1577,5 +1824,56 @@ mod tests {
         );
         assert_eq!(fields.get(FIELD_SCORE).map(String::as_str), Some("1"));
         assert_eq!(fields.get(FIELD_METRIC).map(String::as_str), Some("loss"));
+    }
+
+    fn emit_series_command() -> String {
+        crate::test_support::bin_command("mock_emit_series")
+    }
+
+    /// The live feed must record each epoch exactly once (no double-up with
+    /// the post-exit pass) while step rows are thinned to bound DB growth.
+    #[test]
+    fn live_stream_records_epochs_once_and_thins_steps() {
+        // (interval, expected stored step rows): ZERO keeps full fidelity,
+        // a huge interval keeps only the first step of the burst.
+        for (interval, expected_steps) in [
+            (Duration::ZERO, 4_usize),
+            (Duration::from_secs(3600), 1_usize),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let template = crate::CommandTemplate::new(emit_series_command());
+            let store = crate::TrialStore::new(
+                dir.path().join(crate::TRIALS_CSV_FILENAME),
+                template.clone(),
+            );
+            let space = crate::SearchSpace { params: vec![] };
+            let objective = CommandObjective::new(
+                store,
+                template,
+                space,
+                dir.path().join("artifacts"),
+                "metric".to_string(),
+                crate::Goal::Min,
+                true,
+                0,
+            )
+            .with_live_step_interval(interval);
+            let score = objective.eval(&[]).expect("score");
+            // The last epoch (metric 0.1) drives the score in both modes.
+            assert!(
+                (score - 0.1).abs() < 1e-6,
+                "interval {interval:?}: score {score}"
+            );
+            let epochs = objective.store().load_epoch_rows().expect("epoch rows");
+            assert_eq!(epochs.len(), 3, "interval {interval:?}");
+            let steps = objective.store().load_step_rows().expect("step rows");
+            assert_eq!(steps.len(), expected_steps, "interval {interval:?}");
+            let fields = objective
+                .store()
+                .load_fields(0)
+                .expect("load fields")
+                .expect("fields row");
+            assert_eq!(fields.get("metric.metric").map(String::as_str), Some("0.1"));
+        }
     }
 }

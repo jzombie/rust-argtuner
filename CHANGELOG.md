@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/) and this project adheres to
 (or is loosely based on) Semantic Versioning.
 
+## [Unreleased]
+
+## Changes
+
+- **Live trial updates in `watch`:** the subprocess runner now invokes an `on_line` callback once per complete stdout line, and the trial evaluator stream-parses `::ARGTUNER::` events as they arrive — `model.epoch_end` rows reach `trials.sqlite` per epoch and throttled `model.step_end` rows reach the DB and the TUI step publisher about once per second, instead of everything landing at child exit. The post-exit pass still scores from the full output but no longer re-records live-covered rows (falls back to record-everything when the child emitted nothing parseable).
+- **Protocol lines no longer echo to the terminal:** `RunnerOptions.suppress_protocol_echo` (enabled for trial runs) keeps `::ARGTUNER::` lines — including ones glued onto `\r` progress-bar fragments — out of the parent terminal while leaving the accumulated stdout (and post-exit parsing) intact.
+
 ## [0.1.4-alpha] - 2026-09-03
 
 ## Changes
