@@ -166,6 +166,9 @@ struct ChartsView {
     trials: Vec<TrialRow>,
     epoch_rows: BTreeMap<i64, Vec<TrialRow>>,
     step_rows: BTreeMap<i64, Vec<TrialRow>>,
+    /// Remembered x-axis field per trial. Axis choice is sticky (see
+    /// [`resolve_x_axis`]); absence means re-evaluate on the next render.
+    x_axis_choice: BTreeMap<i64, String>,
     chart_mode: ChartMode,
     chart_view: ChartView,
     chart_selected: usize,
@@ -987,6 +990,7 @@ fn mk_charts_window() -> ChartsWindow {
         trials: Vec::new(),
         epoch_rows: BTreeMap::new(),
         step_rows: BTreeMap::new(),
+        x_axis_choice: BTreeMap::new(),
         chart_mode: ChartMode::Metrics,
         chart_view: ChartView::Summary,
         chart_selected: 0,
@@ -1546,13 +1550,27 @@ fn render_charts_content(
             .render(area, &mut backend.buffer);
         return;
     }
-    render_metric_charts(backend, charts, rows, area, ctx);
+    let remembered = charts
+        .x_axis_choice
+        .get(&trial.trial_id)
+        .map(String::as_str);
+    let (x_axis, remember) = resolve_x_axis(remembered, rows);
+    match remember {
+        Some(key) => {
+            charts.x_axis_choice.insert(trial.trial_id, key);
+        }
+        None => {
+            charts.x_axis_choice.remove(&trial.trial_id);
+        }
+    }
+    render_metric_charts(backend, charts, rows, &x_axis, area, ctx);
 }
 
 fn render_metric_charts(
     backend: &mut RatatuiBackend,
     charts: &mut ChartsView,
     rows: &[TrialRow],
+    x_axis: &XAxisSpec,
     area: Rect,
     ctx: &ComponentContext,
 ) {
@@ -1565,7 +1583,6 @@ fn render_metric_charts(
     if charts.chart_selected >= metric_keys.len() {
         charts.chart_selected = metric_keys.len().saturating_sub(1);
     }
-    let x_axis = select_x_axis_spec(rows);
 
     // Always reserve the bottom row for the config-derived keybinding hint so
     // the zoom/view keys are discoverable. The keys only act while the Charts
@@ -1890,39 +1907,63 @@ struct AxisKey {
     name: String,
 }
 
-/// Display names for known x-axis fields. Presentation only: axis *selection*
-/// never consults this map (see [`select_x_axis_spec`]).
-fn axis_display_name(key: &str) -> (String, String) {
+/// Build an axis spec for an already-chosen field key. Labels derive from
+/// the field name itself; there is no name table to keep in sync.
+fn spec_for_key(key: Option<&str>) -> XAxisSpec {
     match key {
-        "metric.time_s" | "metric.time_sec" | "metric.elapsed_s" => {
-            ("time".to_string(), "s".to_string())
-        }
-        "metric.time_ms" | "metric.elapsed_ms" => ("time".to_string(), "ms".to_string()),
-        _ => {
+        Some(key) => {
             let short = key.strip_prefix("metric.").unwrap_or(key).to_string();
-            (short.clone(), short)
+            XAxisSpec {
+                key: Some(key.to_string()),
+                label: short.clone(),
+                unit: short,
+            }
         }
+        None => XAxisSpec {
+            key: None,
+            label: "index".to_string(),
+            unit: "idx".to_string(),
+        },
     }
 }
 
-/// Pick the x-axis field for a row slice by data properties, not by a
-/// hardcoded name priority:
+/// Whether `key` parses numeric and takes ≥2 distinct values across `rows`.
+/// A field failing this can never be an axis (every point would stack onto
+/// one vertical line).
+fn field_spreads(rows: &[TrialRow], key: &str) -> bool {
+    let mut seen: Vec<u64> = Vec::new();
+    let mut count = 0;
+    for row in rows {
+        let Some(value) = row.fields.get(key).and_then(|v| v.parse::<f64>().ok()) else {
+            continue;
+        };
+        let bits = value.to_bits();
+        if !seen.contains(&bits) {
+            seen.push(bits);
+            count += 1;
+            if count > 1 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Pick the x-axis field key by data properties, not by a hardcoded name
+/// priority:
 ///
 /// 1. Only numeric fields are eligible.
-/// 2. A field constant across all rows can never be the axis (it would stack
-///    every point onto one vertical line) — it is dropped. This is what bit
-///    step rows carrying a constant `metric.epoch`.
+/// 2. A field constant across all rows is dropped (see [`field_spreads`]).
 /// 3. Among varying fields, strictly monotonically increasing ones (counters,
 ///    clocks) win, most distinct values first — a counter spreads points in
 ///    arrival order, which is what a live curve wants.
 /// 4. Then any varying field, most distinct values first.
 /// 5. Ties break by field name so the choice is deterministic.
-/// 6. No varying field at all (0–1 rows, or all constant) → row-index axis,
-///    which always spreads.
+/// 6. No varying field at all → `None` (the caller falls back to row index).
 ///
 /// Any new numeric field a binary emits is handled automatically; no name
 /// list to keep in sync.
-fn select_x_axis_spec(rows: &[TrialRow]) -> XAxisSpec {
+fn pick_x_axis_key(rows: &[TrialRow]) -> Option<String> {
     let mut numeric: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     for row in rows {
         for (key, value) in &row.fields {
@@ -1960,21 +2001,28 @@ fn select_x_axis_spec(rows: &[TrialRow]) -> XAxisSpec {
     // order-independent of how fields were emitted.
     varying.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)).then(a.0.cmp(b.0)));
 
-    match varying.first() {
-        Some((key, _, _)) => {
-            let (label, unit) = axis_display_name(key);
-            XAxisSpec {
-                key: Some(key.to_string()),
-                label,
-                unit,
-            }
-        }
-        None => XAxisSpec {
-            key: None,
-            label: "index".to_string(),
-            unit: "idx".to_string(),
-        },
+    varying.first().map(|(key, _, _)| key.to_string())
+}
+
+/// Resolve the x-axis for a trial's rows given the choice remembered from
+/// prior renders (if any).
+///
+/// The choice is sticky: once a field is picked it is kept for the rest of
+/// the session as long as it still spreads the current rows. Recomputing
+/// from scratch on every render flips the axis mid-run whenever the data
+/// shape changes — e.g. a per-epoch `step` counter resets to 0 at each
+/// epoch boundary, losing monotonicity and handing the axis to whatever
+/// metric happens to have the most distinct values (plotting loss-vs-loss
+/// reads as "loss increasing" no matter what training does).
+/// Returns the spec plus the key to remember (`None` = keep re-evaluating).
+fn resolve_x_axis(remembered: Option<&str>, rows: &[TrialRow]) -> (XAxisSpec, Option<String>) {
+    if let Some(key) = remembered
+        && field_spreads(rows, key)
+    {
+        return (spec_for_key(Some(key)), Some(key.to_string()));
     }
+    let key = pick_x_axis_key(rows);
+    (spec_for_key(key.as_deref()), key)
 }
 
 fn axis_labels(min: f64, max: f64) -> Vec<Line<'static>> {
@@ -2521,8 +2569,7 @@ mod view_tests {
                 ("metric.loss", "0.7"),
             ]),
         ];
-        let spec = select_x_axis_spec(&rows);
-        assert_eq!(spec.key.as_deref(), Some("metric.step"));
+        assert_eq!(pick_x_axis_key(&rows).as_deref(), Some("metric.step"));
     }
 
     #[test]
@@ -2532,8 +2579,7 @@ mod view_tests {
             axis_test_row(&[("metric.epoch", "2"), ("metric.val_loss", "0.3")]),
             axis_test_row(&[("metric.epoch", "3"), ("metric.val_loss", "0.1")]),
         ];
-        let spec = select_x_axis_spec(&rows);
-        assert_eq!(spec.key.as_deref(), Some("metric.epoch"));
+        assert_eq!(pick_x_axis_key(&rows).as_deref(), Some("metric.epoch"));
     }
 
     #[test]
@@ -2544,20 +2590,19 @@ mod view_tests {
             axis_test_row(&[("metric.step", "2"), ("metric.noise", "1.0")]),
             axis_test_row(&[("metric.step", "3"), ("metric.noise", "4.0")]),
         ];
-        let spec = select_x_axis_spec(&rows);
-        assert_eq!(spec.key.as_deref(), Some("metric.step"));
+        assert_eq!(pick_x_axis_key(&rows).as_deref(), Some("metric.step"));
     }
 
     #[test]
     fn x_axis_falls_back_to_index_without_varying_fields() {
         let single = vec![axis_test_row(&[("metric.loss", "0.5")])];
-        assert_eq!(select_x_axis_spec(&single).key, None);
+        assert_eq!(pick_x_axis_key(&single), None);
         // Every field constant across rows: nothing can spread the points.
         let constant = vec![
             axis_test_row(&[("metric.epoch", "0"), ("metric.loss", "0.5")]),
             axis_test_row(&[("metric.epoch", "0"), ("metric.loss", "0.5")]),
         ];
-        assert_eq!(select_x_axis_spec(&constant).key, None);
+        assert_eq!(pick_x_axis_key(&constant), None);
     }
 
     #[test]
@@ -2566,7 +2611,74 @@ mod view_tests {
             axis_test_row(&[("metric.step", "1"), ("note", "hello")]),
             axis_test_row(&[("metric.step", "2"), ("note", "world")]),
         ];
-        let spec = select_x_axis_spec(&rows);
+        assert_eq!(pick_x_axis_key(&rows).as_deref(), Some("metric.step"));
+    }
+
+    #[test]
+    fn x_axis_choice_is_sticky_across_epoch_rollover() {
+        // Epoch 1: step is monotonic, so it is picked and remembered.
+        let epoch1 = vec![
+            axis_test_row(&[
+                ("metric.epoch", "0"),
+                ("metric.step", "1"),
+                ("metric.loss", "0.9"),
+            ]),
+            axis_test_row(&[
+                ("metric.epoch", "0"),
+                ("metric.step", "2"),
+                ("metric.loss", "0.8"),
+            ]),
+            axis_test_row(&[
+                ("metric.epoch", "0"),
+                ("metric.step", "3"),
+                ("metric.loss", "0.7"),
+            ]),
+        ];
+        let (spec, remember) = resolve_x_axis(None, &epoch1);
+        assert_eq!(spec.key.as_deref(), Some("metric.step"));
+        let key = remember.expect("choice must be remembered");
+        // Epoch 2 resets the step counter while losses keep every value
+        // distinct: a fresh pick would hand the axis to metric.loss (more
+        // distinct values, alphabetical tiebreak) — plotting loss-vs-loss.
+        let mut rolled = epoch1.clone();
+        rolled.extend([
+            axis_test_row(&[
+                ("metric.epoch", "1"),
+                ("metric.step", "1"),
+                ("metric.loss", "0.6"),
+            ]),
+            axis_test_row(&[
+                ("metric.epoch", "1"),
+                ("metric.step", "2"),
+                ("metric.loss", "0.5"),
+            ]),
+            axis_test_row(&[
+                ("metric.epoch", "1"),
+                ("metric.step", "3"),
+                ("metric.loss", "0.4"),
+            ]),
+        ]);
+        assert_ne!(
+            pick_x_axis_key(&rolled).as_deref(),
+            Some("metric.step"),
+            "fresh pick flips after rollover (this is the bug being guarded)"
+        );
+        let (spec, remember) = resolve_x_axis(Some(&key), &rolled);
+        assert_eq!(spec.key.as_deref(), Some("metric.step"));
+        assert_eq!(remember.as_deref(), Some("metric.step"));
+    }
+
+    #[test]
+    fn x_axis_re_picks_when_remembered_key_stops_spreading() {
+        let rows = vec![
+            axis_test_row(&[("metric.step", "1"), ("metric.loss", "0.9")]),
+            axis_test_row(&[("metric.step", "2"), ("metric.loss", "0.8")]),
+        ];
+        let (_, remember) = resolve_x_axis(None, &rows);
+        assert_eq!(remember.as_deref(), Some("metric.step"));
+        // A stale key for a field that no longer varies is dropped and the
+        // choice re-evaluated instead of stacking points on one x.
+        let (spec, _) = resolve_x_axis(Some("metric.gone"), &rows);
         assert_eq!(spec.key.as_deref(), Some("metric.step"));
     }
 }
