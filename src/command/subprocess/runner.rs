@@ -550,10 +550,34 @@ fn eager_echo_len(pending: &str, prefix: &str) -> usize {
     end
 }
 
+/// Upper bound on unparsed buffered stdout before it is dropped with a
+/// warning. Genuine protocol lines are single short `println!`s, so anything
+/// this large without a newline is a runaway writer, not an event. Only
+/// reachable when the buffer contains protocol-looking content (prefix-free
+/// output is eagerly echoed away each chunk); any event spanning the dropped
+/// bytes is lost, and the warning says so.
+const MAX_PENDING_BYTES: usize = 1 << 20;
+
+/// Drop an overgrown reassembly buffer, warning loudly. Returns true when
+/// anything was dropped. Pure enough to unit-test (the warning goes to
+/// stderr, which libtest captures).
+fn enforce_pending_cap(pending: &mut String) -> bool {
+    if pending.len() > MAX_PENDING_BYTES {
+        eprintln!(
+            "warning: dropping {} bytes of newline-free subprocess output \
+             (exceeds {MAX_PENDING_BYTES} bytes); any protocol event spanning \
+             the dropped bytes is lost",
+            pending.len()
+        );
+        pending.clear();
+        true
+    } else {
+        false
+    }
+}
+
 /// Pumps one complete stdout line to the terminal echo and the live
-/// callback. `line` is verbatim (no trailing `\n`); the parser
-/// downstream tolerates a trailing `\r` (PTY `\r\n`, progress-bar
-/// `\r` fragments glued onto the same line).
+/// callback (see `spawn_reader`).
 fn pump_line(
     line: &str,
     stdout: &mut std::io::Stdout,
@@ -645,6 +669,10 @@ fn spawn_reader<R: Read + Send + 'static>(
                     let _ = stdout.write_all(fragment.as_bytes());
                     let _ = stdout.flush();
                 }
+                // Belt-and-braces bound (see `enforce_pending_cap`): with
+                // eager echo active this only trips on pathological
+                // newline-free output containing protocol-looking text.
+                enforce_pending_cap(&mut pending);
             }
             if !pending.is_empty() {
                 pump_line(&pending, &mut stdout, &on_line, suppress_protocol_echo);
@@ -864,6 +892,16 @@ mod tests {
             &heartbeat_path,
             Duration::from_millis(600),
         );
+    }
+
+    #[test]
+    fn pending_cap_drops_runaway_buffers_with_warning() {
+        let mut small = String::from("progress fragment");
+        assert!(!enforce_pending_cap(&mut small));
+        assert_eq!(small, "progress fragment");
+        let mut huge = "x".repeat((1 << 20) + 1);
+        assert!(enforce_pending_cap(&mut huge));
+        assert!(huge.is_empty());
     }
 
     #[test]

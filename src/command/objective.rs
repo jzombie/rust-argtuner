@@ -172,6 +172,10 @@ struct LiveFeed {
     interval: Duration,
     live_epochs: AtomicUsize,
     live_steps: AtomicUsize,
+    /// Protocol-looking lines that arrived but could not be recorded
+    /// (malformed JSON, or an epoch event missing the objective metric).
+    /// Reported once per trial so silent drops never go unnoticed.
+    skipped: AtomicUsize,
     last_step_store: Mutex<Option<Instant>>,
 }
 
@@ -184,7 +188,11 @@ impl LiveFeed {
     fn handle_line(&self, line: &str) {
         let items = match parse_line(line, crate::RESULT_PREFIX) {
             Ok(items) if !items.is_empty() => items,
-            _ => return,
+            Ok(_) => return,
+            Err(_) => {
+                self.skipped.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
         };
         for item in &items {
             let ParsedItem::Event { name, fields } = item else {
@@ -210,7 +218,10 @@ impl LiveFeed {
             self.start.elapsed().as_millis(),
         ) {
             Ok(record) => record,
-            Err(_) => return,
+            Err(_) => {
+                self.skipped.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
         };
         if self.store.append_epoch(&record).is_err() {
             return;
@@ -250,6 +261,10 @@ impl LiveFeed {
 
     fn live_steps(&self) -> usize {
         self.live_steps.load(Ordering::Relaxed)
+    }
+
+    fn skipped(&self) -> usize {
+        self.skipped.load(Ordering::Relaxed)
     }
 }
 
@@ -579,6 +594,7 @@ impl CommandObjective {
             interval: self.live_step_interval,
             live_epochs: AtomicUsize::new(0),
             live_steps: AtomicUsize::new(0),
+            skipped: AtomicUsize::new(0),
             last_step_store: Mutex::new(None),
         });
         let result = (|| {
@@ -593,6 +609,13 @@ impl CommandObjective {
                 },
             )
             .map_err(EvalError::Other)?;
+            let skipped = live_feed.skipped();
+            if skipped > 0 {
+                eprintln!(
+                    "warning: trial {trial_id}: skipped {skipped} malformed protocol line(s) \
+                     during live parsing; scored from the remaining output"
+                );
+            }
             if output.timed_out {
                 let seconds = self.run_timeout.map(|d| d.as_secs()).unwrap_or_default();
                 return Err(EvalError::Other(format!(
@@ -1824,6 +1847,51 @@ mod tests {
         );
         assert_eq!(fields.get(FIELD_SCORE).map(String::as_str), Some("1"));
         assert_eq!(fields.get(FIELD_METRIC).map(String::as_str), Some("loss"));
+    }
+
+    #[test]
+    fn live_feed_counts_skipped_malformed_lines() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let template = crate::CommandTemplate::new("mock-cmd".to_string());
+        let store = crate::TrialStore::new(dir.path().join(crate::TRIALS_CSV_FILENAME), template);
+        let feed = LiveFeed {
+            store,
+            trial_id: 0,
+            ctx: LiveRecordContext {
+                base_fields: BTreeMap::new(),
+                existing_fields: None,
+                objectives: vec![crate::Objective {
+                    name: "metric".to_string(),
+                    goal: crate::Goal::Min,
+                    primary: true,
+                }],
+                multi: false,
+            },
+            start: Instant::now(),
+            interval: Duration::from_secs(3600),
+            live_epochs: AtomicUsize::new(0),
+            live_steps: AtomicUsize::new(0),
+            skipped: AtomicUsize::new(0),
+            last_step_store: Mutex::new(None),
+        };
+        // Plain log output: ignored, not counted.
+        feed.handle_line("info: still running");
+        assert_eq!(feed.skipped(), 0);
+        // Malformed protocol line: counted.
+        feed.handle_line("::ARGTUNER::{not json");
+        assert_eq!(feed.skipped(), 1);
+        // Epoch event missing the objective metric: counted, not recorded.
+        feed.handle_line(
+            "::ARGTUNER::{\"type\":\"event\",\"name\":\"model.epoch_end\",\"fields\":{\"other\":\"1\"}}",
+        );
+        assert_eq!(feed.skipped(), 2);
+        assert_eq!(feed.live_epochs(), 0);
+        // Valid epoch: recorded, counter untouched.
+        feed.handle_line(
+            "::ARGTUNER::{\"type\":\"event\",\"name\":\"model.epoch_end\",\"fields\":{\"metric\":\"0.5\"}}",
+        );
+        assert_eq!(feed.live_epochs(), 1);
+        assert_eq!(feed.skipped(), 2);
     }
 
     fn emit_series_command() -> String {

@@ -68,14 +68,26 @@ pub fn parse_line(line: &str, prefix: &str) -> Result<Vec<ParsedItem>, String> {
 
 /// Parse each matching prefixed line into its own list of `ParsedItem`s and
 /// return a vector where each element corresponds to a matched line in order.
+///
+/// Robustness-first: a line carrying the prefix but failing JSON parse (a log
+/// line that merely mentions the prefix, PTY-interleaved stream garbage) is
+/// skipped with a stderr warning instead of failing the whole payload. A
+/// trial whose output is *entirely* unparseable still fails downstream at
+/// metric extraction, so leniency can never score a trial on nothing.
 pub fn parse_prefix_lines(output: &str, prefix: &str) -> Result<Vec<Vec<ParsedItem>>, String> {
     let mut lines_items: Vec<Vec<ParsedItem>> = Vec::new();
     for line in output.lines() {
-        let v = parse_line(line, prefix)?;
-        if v.is_empty() {
+        let items = match parse_line(line, prefix) {
+            Ok(items) => items,
+            Err(err) => {
+                eprintln!("warning: skipping malformed protocol line: {err}");
+                continue;
+            }
+        };
+        if items.is_empty() {
             continue;
         }
-        lines_items.push(v);
+        lines_items.push(items);
     }
     Ok(lines_items)
 }
@@ -182,5 +194,31 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn parse_prefix_lines_skips_malformed_instead_of_failing() {
+        // A log line mentioning the prefix, or stream garbage glued onto one,
+        // must not fail the whole payload: it is skipped, valid lines parse.
+        let output = format!(
+            "info: start\n{PREFIX}{{\"type\":\"event\",\"name\":\"model.epoch_end\",\"fields\":{{\"metric\":\"0.5\"}}}}\nsee {PREFIX} docs for details\n{PREFIX}{{{{not json\ninfo: done\n"
+        );
+        let lines = parse_prefix_lines(&output, PREFIX).unwrap();
+        assert_eq!(lines.len(), 1);
+        match &lines[0][0] {
+            ParsedItem::Event { name, fields } => {
+                assert_eq!(name, "model.epoch_end");
+                assert_eq!(fields.get("metric").map(String::as_str), Some("0.5"));
+            }
+            other => panic!("expected event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_prefix_lines_all_garbage_yields_empty_not_error() {
+        // Nothing parseable: Ok(empty). Scoring still fails downstream at
+        // metric extraction, so a garbage-only trial errors loudly there.
+        let lines = parse_prefix_lines(&format!("{PREFIX}{{{{nope\n"), PREFIX).unwrap();
+        assert!(lines.is_empty());
     }
 }
