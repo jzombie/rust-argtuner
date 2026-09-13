@@ -99,6 +99,15 @@ impl SuccessiveHalvingScheduler {
 
     fn promote(&mut self) {
         if self.pending.is_empty() && self.rung + 1 < self.budgets.len() {
+            // TODO: make the promotion criterion configurable instead of
+            // hardcoded single-score sort. Short-horizon bias: raw-score
+            // promotion keeps fast starters and kills slow starters that
+            // would overtake given budget. The harness emits per-epoch
+            // `metric.mrr_velocity` (slope of in-batch MRR); a config-level
+            // criterion (e.g. velocity gate via `Pruner`, or multi-metric
+            // blend over `objectives`) should decide promotion — not a
+            // baked-in formula here. Needs per-epoch metric histories (not
+            // just rung aggregates) plumbed into `scores`.
             let mut scored = self
                 .current
                 .iter()
