@@ -7,6 +7,8 @@
 
 fn main() {
     println!("see ::ARGTUNER:: docs for the event protocol");
-    println!("::ARGTUNER::{{\"type\":\"event\",\"name\":\"model.epoch_end\",\"fields\":{{\"metric\":");
+    println!(
+        "::ARGTUNER::{{\"type\":\"event\",\"name\":\"model.epoch_end\",\"fields\":{{\"metric\":"
+    );
     println!("training done");
 }
