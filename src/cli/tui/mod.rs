@@ -94,7 +94,6 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         step_subscriber,
         last_error: None,
         chart_mode: ChartMode::Metrics,
-        chart_source: ChartSource::Steps,
         last_selected_trial: usize::MAX,
         trials_key,
         charts_key,
@@ -240,6 +239,16 @@ impl Component<TermWmAction> for ChartsView {
             {
                 return EventResult::Action(action);
             }
+        }
+        // Record-source toggle (steps vs epochs) — chart-layer key like the
+        // other chart keys, so it only fires while the Charts window holds
+        // focus. Selection resets: the two streams expose different keys.
+        if kb.matches(TermWmAction::Custom(2), key) {
+            self.chart_source = match self.chart_source {
+                ChartSource::Steps => ChartSource::Epochs,
+                ChartSource::Epochs => ChartSource::Steps,
+            };
+            self.chart_selected = 0;
         }
         EventResult::Ignored
     }
@@ -446,7 +455,6 @@ struct AppState {
     step_subscriber: StepSubscriber,
     last_error: Option<String>,
     chart_mode: ChartMode,
-    chart_source: ChartSource,
     last_selected_trial: usize,
     trials_key: WindowKey,
     charts_key: WindowKey,
@@ -577,7 +585,6 @@ impl AppState {
         let selected = self.selected_trial_idx();
         let axes = self.enabled_axes();
         let mode = self.chart_mode;
-        let source = self.chart_source;
 
         // Scroll charts/details back to top when the selected trial changes.
         if self.last_selected_trial != selected {
@@ -598,7 +605,6 @@ impl AppState {
             c.epoch_rows = epochs.clone();
             c.step_rows = steps.clone();
             c.chart_mode = mode;
-            c.chart_source = source;
             c.last_error = last_error.clone();
             c.selected_trial_idx = selected;
             c.enabled_axes = axes.clone();
@@ -636,7 +642,10 @@ impl AppState {
             None => (ChartView::Summary, 0, 0),
         };
         let trial_id = trials.get(selected).map(|t| t.trial_id);
-        let source = self.chart_source;
+        let source = self
+            .charts_sv()
+            .map(|sv| sv.content.borrow().chart_source)
+            .unwrap_or(ChartSource::Steps);
         let wm = self.inner.wm();
         wm.set_window_title(self.trials_key, "Trials");
         wm.set_window_title(
@@ -790,15 +799,6 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
                 self.apply_chart_mode();
                 return true;
             }
-            // Chart record-source toggle (Metrics mode): step rows carry
-            // `model.step_end.*`, epoch rows carry `model.epoch_end.*`.
-            if kb.matches(TermWmAction::Custom(2), key) {
-                self.chart_source = match self.chart_source {
-                    ChartSource::Steps => ChartSource::Epochs,
-                    ChartSource::Epochs => ChartSource::Steps,
-                };
-                return true;
-            }
         }
         self.inner.handle_app_event(event)
     }
@@ -914,7 +914,14 @@ fn chart_keybindings_hint(kb: &KeyBindings) -> String {
         .first()
         .cloned()
         .unwrap_or_default();
-    format!("[{zoom_in}] zoom in    [{zoom_out}] zoom out    [{reset}] reset    [{list}] list view")
+    let source = kb
+        .combos_for(TermWmAction::Custom(2))
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    format!(
+        "[{zoom_in}] zoom in    [{zoom_out}] zoom out    [{reset}] reset    [{list}] list view    [{source}] steps/epochs"
+    )
 }
 
 /// Returns the pressed key for key events; None for repeat/release or
