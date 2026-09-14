@@ -94,6 +94,7 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         step_subscriber,
         last_error: None,
         chart_mode: ChartMode::Metrics,
+        chart_source: ChartSource::Steps,
         last_selected_trial: usize::MAX,
         trials_key,
         charts_key,
@@ -156,6 +157,24 @@ enum ChartMode {
     HyperParams,
 }
 
+/// Which record stream the metric charts sweep. Step rows carry per-step
+/// fields (`model.step_end.*`); epoch rows carry per-epoch fields
+/// (`model.epoch_end.*`). Shared `metric.*` keys may exist on either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChartSource {
+    Steps,
+    Epochs,
+}
+
+impl ChartSource {
+    fn label(self) -> &'static str {
+        match self {
+            ChartSource::Steps => "steps",
+            ChartSource::Epochs => "epochs",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChartView {
     Summary,
@@ -167,6 +186,7 @@ struct ChartsView {
     epoch_rows: BTreeMap<i64, Vec<TrialRow>>,
     step_rows: BTreeMap<i64, Vec<TrialRow>>,
     chart_mode: ChartMode,
+    chart_source: ChartSource,
     chart_view: ChartView,
     chart_selected: usize,
     metrics_len: usize,
@@ -426,6 +446,7 @@ struct AppState {
     step_subscriber: StepSubscriber,
     last_error: Option<String>,
     chart_mode: ChartMode,
+    chart_source: ChartSource,
     last_selected_trial: usize,
     trials_key: WindowKey,
     charts_key: WindowKey,
@@ -556,6 +577,7 @@ impl AppState {
         let selected = self.selected_trial_idx();
         let axes = self.enabled_axes();
         let mode = self.chart_mode;
+        let source = self.chart_source;
 
         // Scroll charts/details back to top when the selected trial changes.
         if self.last_selected_trial != selected {
@@ -576,6 +598,7 @@ impl AppState {
             c.epoch_rows = epochs.clone();
             c.step_rows = steps.clone();
             c.chart_mode = mode;
+            c.chart_source = source;
             c.last_error = last_error.clone();
             c.selected_trial_idx = selected;
             c.enabled_axes = axes.clone();
@@ -613,6 +636,7 @@ impl AppState {
             None => (ChartView::Summary, 0, 0),
         };
         let trial_id = trials.get(selected).map(|t| t.trial_id);
+        let source = self.chart_source;
         let wm = self.inner.wm();
         wm.set_window_title(self.trials_key, "Trials");
         wm.set_window_title(
@@ -624,7 +648,7 @@ impl AppState {
         );
         wm.set_window_title(
             self.charts_key,
-            charts_window_title(mode, cv, cs, ml, charts_focused, trial_id),
+            charts_window_title(mode, source, cv, cs, ml, charts_focused, trial_id),
         );
         wm.set_window_title(
             self.frontier_key,
@@ -766,6 +790,15 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
                 self.apply_chart_mode();
                 return true;
             }
+            // Chart record-source toggle (Metrics mode): step rows carry
+            // `model.step_end.*`, epoch rows carry `model.epoch_end.*`.
+            if kb.matches(TermWmAction::Custom(2), key) {
+                self.chart_source = match self.chart_source {
+                    ChartSource::Steps => ChartSource::Epochs,
+                    ChartSource::Epochs => ChartSource::Steps,
+                };
+                return true;
+            }
         }
         self.inner.handle_app_event(event)
     }
@@ -821,24 +854,28 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
 
 fn charts_window_title(
     chart_mode: ChartMode,
+    chart_source: ChartSource,
     chart_view: ChartView,
     chart_selected: usize,
     metrics_len: usize,
     charts_focused: bool,
     trial_id: Option<i64>,
 ) -> String {
+    // The source suffix answers "step or epoch?": step rows sweep
+    // `model.step_end.*`, epoch rows sweep `model.epoch_end.*`.
+    let src = chart_source.label();
     match chart_mode {
         ChartMode::Metrics if charts_focused && chart_view == ChartView::Focused => {
             let total = metrics_len;
             let current = chart_selected.saturating_add(1);
             match trial_id {
-                Some(id) => format!("Trial {id} - Metric Curve {current}/{total}"),
-                None => format!("Metric Curve {current}/{total}"),
+                Some(id) => format!("Trial {id} - Metric Curve {current}/{total} [{src}]"),
+                None => format!("Metric Curve {current}/{total} [{src}]"),
             }
         }
         ChartMode::Metrics => match trial_id {
-            Some(id) => format!("Trial {id} - Metric Curves"),
-            None => "Metric Curves".to_string(),
+            Some(id) => format!("Trial {id} - Metric Curves [{src}]"),
+            None => format!("Metric Curves [{src}]"),
         },
         ChartMode::HyperParams if charts_focused => match trial_id {
             Some(id) => format!("Trial {id} - Hyperparameter Space"),
@@ -900,6 +937,11 @@ fn argtuner_keybindings() -> KeyBindings {
     kb.add(
         TermWmAction::Custom(1),
         KeyCombo::new(KeyCode::Char('h'), KeyModifiers::NONE),
+    );
+    // Chart record-source toggle (steps vs epochs).
+    kb.add(
+        TermWmAction::Custom(2),
+        KeyCombo::new(KeyCode::Char('e'), KeyModifiers::NONE),
     );
     // Chart view toggle (Metrics mode).
     kb.add(
@@ -988,6 +1030,7 @@ fn mk_charts_window() -> ChartsWindow {
         epoch_rows: BTreeMap::new(),
         step_rows: BTreeMap::new(),
         chart_mode: ChartMode::Metrics,
+        chart_source: ChartSource::Steps,
         chart_view: ChartView::Summary,
         chart_selected: 0,
         metrics_len: 0,
@@ -1522,24 +1565,34 @@ fn render_charts_content(
         return;
     };
     // Live step rows are the finest-grained live data (persisted ~1/sec while
-    // the trial runs); fall back to per-epoch rows when the trial emitted no
-    // steps (or finished before live streaming existed).
+    // the trial runs); the source toggle picks which stream the charts sweep,
+    // falling back to the other when the selected one is empty (e.g. epochs
+    // for a trial that emitted no steps). Never merged: shared `metric.*`
+    // keys hold different values per stream (step loss vs epoch val_loss).
     let steps = charts
         .step_rows
         .get(&trial.trial_id)
         .cloned()
         .unwrap_or_default();
+    let epochs = charts
+        .epoch_rows
+        .get(&trial.trial_id)
+        .cloned()
+        .unwrap_or_default();
     let owned;
-    let rows: &[TrialRow] = if steps.is_empty() {
-        owned = charts
-            .epoch_rows
-            .get(&trial.trial_id)
-            .cloned()
-            .unwrap_or_default();
-        &owned
-    } else {
-        owned = steps;
-        &owned
+    let rows: &[TrialRow] = match charts.chart_source {
+        ChartSource::Steps if !steps.is_empty() => {
+            owned = steps;
+            &owned
+        }
+        ChartSource::Epochs if !epochs.is_empty() => {
+            owned = epochs;
+            &owned
+        }
+        _ => {
+            owned = if !steps.is_empty() { steps } else { epochs };
+            &owned
+        }
     };
     if rows.is_empty() {
         Paragraph::new("No epoch or step metrics for selected trial.")
