@@ -588,15 +588,15 @@ fn enforce_pending_cap(pending: &mut String) -> bool {
 /// Fit an echo fragment to the live viewport so in-place redraws never wrap:
 /// a redraw wider than the terminal wraps to two rows, and the next erase
 /// (`\x1b[2K\r`) clears only one — heads of lines appear truncated. Only
-/// fragments carrying `\r` (in-place updates) are ever cut; plain
-/// `\n`-terminated lines wrap harmlessly and stay whole (they may be the
-/// only record: info lines live on the terminal, not in the DB). Pure
-/// display: stored output and the `on_line` callback keep every byte.
-/// Untouched when our stdout is not a terminal (piped/logged: the echo IS
-/// the log) or the width is unknown. Re-queried per write, so resizes
-/// apply immediately with no contracts and no child cooperation.
+/// fragments carrying the erase sequence (transient bars, rewritten on the
+/// next update) are ever cut; one-shot `\r` records (epoch summaries) and
+/// plain `\n` lines wrap harmlessly and stay whole — they may be the only
+/// record. Pure display: stored output and the `on_line` callback keep every
+/// byte. Untouched when our stdout is not a terminal (piped/logged: the
+/// echo IS the log) or the width is unknown. Re-queried per write, so
+/// resizes apply immediately with no contracts and no child cooperation.
 fn fit_echo(fragment: &str, live_cols: Option<u16>) -> &str {
-    if !fragment.contains('\r') {
+    if !fragment.contains("\x1b[2K") {
         return fragment;
     }
     let max = match live_cols {
@@ -1031,12 +1031,14 @@ mod tests {
     }
 
     #[test]
-    fn fit_echo_cuts_only_carriage_return_lines_to_live_width() {
-        // No `\r`: untouched at any width — plain lines wrap harmlessly
-        // whole and may be the only record.
+    fn fit_echo_cuts_only_erase_sequence_redraws_to_live_width() {
+        // No erase sequence: untouched at any width — plain and one-shot
+        // `\r` lines wrap harmlessly whole and may be the only record.
         let plain = "model_dim=768 layers=6 heads=8 out_dim=768 max_seq_len=512";
         assert_eq!(fit_echo(plain, Some(80)), plain);
         assert_eq!(fit_echo(plain, None), plain);
+        let record = "\repoch 0: train_loss=0.5 collapse=0.8 structure=0.1";
+        assert_eq!(fit_echo(record, Some(20)), record);
         // `\r` redraw fitting in width: untouched.
         let bar = "\x1b[2K\rok step 1/22";
         assert_eq!(fit_echo(bar, Some(80)), bar);
@@ -1046,7 +1048,7 @@ mod tests {
         assert_eq!(fitted.chars().count(), 79);
         assert!(fitted.starts_with("\x1b[2K\r"));
         // Multibyte near the cut: never split a char.
-        let uni = format!("\r{}", "é".repeat(50));
+        let uni = format!("\x1b[2K\r{}", "é".repeat(50));
         let fitted_uni = fit_echo(&uni, Some(10));
         assert_eq!(fitted_uni.chars().count(), 9);
         assert!(fitted_uni.ends_with('é'));
