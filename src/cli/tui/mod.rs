@@ -614,7 +614,7 @@ impl AppState {
             let text = match trials.get(idx) {
                 Some(trial) => {
                     let epoch_rows = epochs.get(&trial.trial_id).cloned().unwrap_or_default();
-                    Text::from(trial_detail_lines(trial, &epoch_rows))
+                    Text::from(trial_detail_lines(trial, &epoch_rows, &trials[..]))
                 }
                 None => Text::from(vec![Line::from("No trial selected.")]),
             };
@@ -1366,9 +1366,28 @@ fn build_trial_items(trials: &[TrialRow]) -> Vec<String> {
             } else {
                 ""
             };
+            // Lineage annotation: which hyperparameter config this trial
+            // belongs to and which rung it ran. Promotion chains read as
+            // cfg3: t3(r0) → t5(r1) → t8(r2). Order untouched (selection
+            // indexes self.trials positionally).
+            let cfg = trial
+                .fields
+                .get("trial.config_id")
+                .map(String::as_str)
+                .unwrap_or("?");
+            let rung = trial
+                .fields
+                .get("trial.rung")
+                .map(String::as_str)
+                .unwrap_or("?");
+            let budget = trial
+                .fields
+                .get("trial.budget_epochs")
+                .map(String::as_str)
+                .unwrap_or("?");
             format!(
-                "trial {:>3}  {:<7}  {:<5}  {}",
-                trial.trial_id, trial.status, tag, metric_text
+                "trial {:>3}  {:<7}  {:<5}  cfg={:<4} r{rung}/{budget}  {}",
+                trial.trial_id, trial.status, tag, cfg, metric_text
             )
         })
         .collect()
@@ -1571,36 +1590,68 @@ fn render_charts_content(
         Paragraph::new("No trials loaded.").render(area, &mut backend.buffer);
         return;
     };
+    // Lineage: same-config trials up to the selected trial's rung,
+    // ordered oldest-first, so a promoted trial's curve continues its
+    // ancestors instead of restarting at x=0 — and never leaks in later
+    // rungs the selected trial hasn't reached. Rows keep arrival-position
+    // x across the concatenation (rungs are chronological), so curves
+    // still never fold. Falls back to the selected trial alone when it
+    // has no config key or no siblings.
+    let selected_rung: i64 = trial
+        .fields
+        .get("trial.rung")
+        .and_then(|r| r.parse::<i64>().ok())
+        .unwrap_or(i64::MAX);
+    let mut chain: Vec<&TrialRow> = charts
+        .trials
+        .iter()
+        .filter(|t| {
+            trial
+                .fields
+                .get("trial.config_id")
+                .is_some_and(|c| t.fields.get("trial.config_id") == Some(c))
+                && t.fields
+                    .get("trial.rung")
+                    .and_then(|r| r.parse::<i64>().ok())
+                    .is_some_and(|r| r <= selected_rung)
+        })
+        .collect();
+    chain.sort_by_key(|t| {
+        t.fields
+            .get("trial.rung")
+            .and_then(|r| r.parse::<i64>().ok())
+            .unwrap_or(i64::MAX)
+    });
+    if chain.is_empty() {
+        chain.push(trial);
+    }
     // Live step rows are the finest-grained live data (persisted ~1/sec while
     // the trial runs); the source toggle picks which stream the charts sweep,
     // falling back to the other when the selected one is empty (e.g. epochs
     // for a trial that emitted no steps). Never merged: shared `metric.*`
     // keys hold different values per stream (step loss vs epoch val_loss).
-    let steps = charts
-        .step_rows
-        .get(&trial.trial_id)
-        .cloned()
-        .unwrap_or_default();
-    let epochs = charts
-        .epoch_rows
-        .get(&trial.trial_id)
-        .cloned()
-        .unwrap_or_default();
-    let owned;
-    let rows: &[TrialRow] = match charts.chart_source {
-        ChartSource::Steps if !steps.is_empty() => {
-            owned = steps;
-            &owned
+    // Selection applies per chain link, then links concatenate in rung order.
+    let mut owned: Vec<TrialRow> = Vec::new();
+    for link in &chain {
+        let steps = charts
+            .step_rows
+            .get(&link.trial_id)
+            .cloned()
+            .unwrap_or_default();
+        let epochs = charts
+            .epoch_rows
+            .get(&link.trial_id)
+            .cloned()
+            .unwrap_or_default();
+        match charts.chart_source {
+            ChartSource::Steps if !steps.is_empty() => owned.extend(steps),
+            ChartSource::Epochs if !epochs.is_empty() => owned.extend(epochs),
+            _ => {
+                owned.extend(if !steps.is_empty() { steps } else { epochs });
+            }
         }
-        ChartSource::Epochs if !epochs.is_empty() => {
-            owned = epochs;
-            &owned
-        }
-        _ => {
-            owned = if !steps.is_empty() { steps } else { epochs };
-            &owned
-        }
-    };
+    }
+    let rows: &[TrialRow] = &owned;
     if rows.is_empty() {
         Paragraph::new("No epoch or step metrics for selected trial.")
             .render(area, &mut backend.buffer);
@@ -2147,10 +2198,50 @@ fn project_info_lines(project: &Project, poll_ms: u128) -> Vec<Line<'static>> {
     ]
 }
 
-fn trial_detail_lines(trial: &TrialRow, epochs: &[TrialRow]) -> Vec<Line<'static>> {
+fn trial_detail_lines(
+    trial: &TrialRow,
+    epochs: &[TrialRow],
+    all: &[TrialRow],
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     lines.push(Line::from(format!("trial_id: {}", trial.trial_id)));
     lines.push(Line::from(format!("status: {}", trial.status)));
+    // Promotion chain: siblings sharing this trial's config, ordered by
+    // rung, so a resumed trial shows where it came from and where it sits.
+    if let Some(cfg) = trial.fields.get("trial.config_id") {
+        let mut chain: Vec<&TrialRow> = all
+            .iter()
+            .filter(|t| t.fields.get("trial.config_id") == Some(cfg))
+            .collect();
+        chain.sort_by_key(|t| {
+            t.fields
+                .get("trial.rung")
+                .and_then(|r| r.parse::<i64>().ok())
+                .unwrap_or(i64::MAX)
+        });
+        if chain.len() > 1 {
+            let parts: Vec<String> = chain
+                .iter()
+                .map(|t| {
+                    let r = t
+                        .fields
+                        .get("trial.rung")
+                        .map(String::as_str)
+                        .unwrap_or("?");
+                    let here = if t.trial_id == trial.trial_id {
+                        " ← selected"
+                    } else {
+                        ""
+                    };
+                    format!("t{}(r{}, {}){}", t.trial_id, r, t.status, here)
+                })
+                .collect();
+            lines.push(Line::from(format!(
+                "chain(cfg {cfg}): {}",
+                parts.join(" → ")
+            )));
+        }
+    }
     lines.push(Line::from(format!("elapsed_ms: {}", trial.elapsed_ms)));
     lines.push(Line::from(format!("epochs_logged: {}", epochs.len())));
     if let Some(error) = &trial.error {
