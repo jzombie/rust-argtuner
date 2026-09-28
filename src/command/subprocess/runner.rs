@@ -436,10 +436,16 @@ fn run_pty(
         return Err("command is empty".to_string());
     }
     let pty_system = native_pty_system();
+    // Size the PTY to the real terminal so downstream sees the truth:
+    // width-aware children format for the watched screen, not a hardcoded
+    // 120 columns. Display stays correct across resizes regardless (echo
+    // fitting re-queries live per write); this keeps the child's own
+    // formatting honest from spawn.
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 24));
     let pair = pty_system
         .openpty(PtySize {
-            rows: 24,
-            cols: 120,
+            rows,
+            cols,
             pixel_width: 0,
             pixel_height: 0,
         })
