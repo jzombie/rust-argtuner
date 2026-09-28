@@ -28,6 +28,13 @@ const KILL_GRACE: Duration = Duration::from_secs(10);
 /// Callback invoked once per complete `\n`-terminated child-stdout line while
 /// the subprocess runs. Used to stream-parse `::ARGTUNER::` protocol events
 /// (live TUI updates) without waiting for child exit.
+///
+/// Delivery guarantee: lines carrying the protocol prefix always arrive
+/// whole, however the reads split them (eager echo holds back while the
+/// prefix is in flight). Long *non-protocol* lines (progress bars) may
+/// arrive as the tail only — their head was already echoed to the terminal
+/// eagerly and is not replayed here. The post-exit `CommandOutput.stdout`
+/// always carries the complete raw stream regardless.
 pub type LineCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Options that supervise a trial subprocess. All fields are advisory, except
@@ -248,6 +255,11 @@ fn run_piped(
     for (key, value) in envs {
         cmd.env(key, value);
     }
+    if !envs.contains_key("COLUMNS")
+        && let Some((key, value)) = columns_env_for(crossterm::terminal::size().ok())
+    {
+        cmd.env(key, value);
+    }
     // Spawn into a dedicated process group so a timeout or cancellation can
     // terminate the whole tree; the group leader is the child itself.
     let mut child = cmd
@@ -428,13 +440,15 @@ fn run_pty(
         return Err("command is empty".to_string());
     }
     let pty_system = native_pty_system();
+    // Mirror our own terminal size so children that format to terminal width
+    // (e.g. training progress bars truncated to `cols - 1`) fit the screen
+    // the user actually watches. A hardcoded size lies to the child: it
+    // emits lines wider than the real terminal, they wrap, and the next
+    // in-place redraw (`\x1b[2K\r`) erases only one visual row — heads of
+    // lines appear truncated. Falls back to the historical 120x24 when our
+    // stdout is not a terminal (piped/logged) or the query fails.
     let pair = pty_system
-        .openpty(PtySize {
-            rows: 24,
-            cols: 120,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
+        .openpty(resolve_pty_size(crossterm::terminal::size().ok()))
         .map_err(|err| format!("pty open failed: {err}"))?;
     let mut cmd = CommandBuilder::new(&parts[0]);
     let cwd = std::env::current_dir().map_err(|err| format!("command cwd failed: {err}"))?;
@@ -443,6 +457,11 @@ fn run_pty(
         cmd.args(&parts[1..]);
     }
     for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    if !envs.contains_key("COLUMNS")
+        && let Some((key, value)) = columns_env_for(crossterm::terminal::size().ok())
+    {
         cmd.env(key, value);
     }
     let mut child = pair
@@ -511,6 +530,32 @@ fn run_pty(
 
     #[cfg(not(any(unix, windows)))]
     let input_guard: Option<InputGuard> = None;
+    // Forward terminal resizes to the child PTY: the child formats to the
+    // PTY width, so a shrink without propagation reintroduces wrapped bars
+    // and eaten line heads until the trial ends. Polls (no signal-hook dep);
+    // the kernel SIGWINCHes the child on resize, and width-aware children
+    // re-query per render. Stops itself shortly after the wait below.
+    #[cfg(not(windows))]
+    let resize_stop = Arc::new(AtomicBool::new(false));
+    #[cfg(not(windows))]
+    let _resize_watcher = {
+        let stop = resize_stop.clone();
+        let master = pair.master;
+        thread::spawn(move || {
+            let mut last = resolve_pty_size(crossterm::terminal::size().ok());
+            loop {
+                thread::sleep(Duration::from_millis(500));
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let size = resolve_pty_size(crossterm::terminal::size().ok());
+                if size != last {
+                    let _ = master.resize(size);
+                    last = size;
+                }
+            }
+        })
+    };
     let wait = wait_with_timeout(&mut child, opts);
     let stdout = output
         .join()
@@ -518,6 +563,8 @@ fn run_pty(
     if let Some(mut guard) = input_guard {
         guard.stop();
     }
+    #[cfg(not(windows))]
+    resize_stop.store(true, Ordering::Relaxed);
     let (exit_code, timed_out) = wait?;
     Ok(CommandOutput {
         stdout,
@@ -525,6 +572,34 @@ fn run_pty(
         exit_code,
         timed_out,
     })
+}
+
+/// PTY dimensions for a spawned child: mirror the queried terminal size so
+/// width-aware children fit the watched screen, falling back to the
+/// historical 120x24 when the size is unknown (piped/logged parent).
+/// Values pass through untouched: a zero-size PTY is valid for `openpty`,
+/// and width-aware children clamp for themselves where it matters.
+#[cfg(not(windows))]
+fn resolve_pty_size(queried: Option<(u16, u16)>) -> PtySize {
+    let (cols, rows) = queried.unwrap_or((120, 24));
+    PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
+/// `COLUMNS` value to stamp onto a spawned child: our own terminal width as
+/// a plain decimal string, or `None` when unknown (or degenerate zero).
+/// Width-aware children truncate human lines (progress bars) to it. This is
+/// what carries display width over pipes — Windows always, forced-pipes
+/// elsewhere — where there is no TTY for the child to query. Set
+/// automatically by the runner; never overrides an explicitly provided
+/// value, and the child's live TTY query always wins where one exists.
+fn columns_env_for(queried: Option<(u16, u16)>) -> Option<(String, String)> {
+    let (cols, _) = queried?;
+    (cols > 0).then(|| ("COLUMNS".to_string(), cols.to_string()))
 }
 
 /// Byte count of `pending` safe to echo eagerly (see the call site).
@@ -614,6 +689,43 @@ fn pump_line(
     let _ = stdout.flush();
 }
 
+/// Decode freshly-read bytes incrementally: a multibyte UTF-8 sequence may
+/// straddle two reads, and decoding each read with `from_utf8_lossy` would
+/// emit U+FFFD for each half — corrupting non-ASCII bar text and, worse, any
+/// split multibyte inside protocol JSON (a parse error that drops the whole
+/// event). A truncated trailing sequence is retained in `carry` for the next
+/// read; genuinely invalid bytes still become U+FFFD.
+fn decode_chunk(carry: &mut Vec<u8>, fresh: &[u8]) -> String {
+    carry.extend_from_slice(fresh);
+    let mut chunk = String::new();
+    let mut idx = 0;
+    while idx < carry.len() {
+        match std::str::from_utf8(&carry[idx..]) {
+            Ok(valid) => {
+                chunk.push_str(valid);
+                idx = carry.len();
+            }
+            Err(e) => {
+                let up_to = e.valid_up_to();
+                chunk
+                    .push_str(std::str::from_utf8(&carry[idx..idx + up_to]).expect("valid prefix"));
+                match e.error_len() {
+                    Some(len) => {
+                        chunk.push('\u{FFFD}');
+                        idx += up_to + len;
+                    }
+                    None => {
+                        idx += up_to;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    carry.drain(..idx);
+    chunk
+}
+
 fn spawn_reader<R: Read + Send + 'static>(
     mut reader: R,
     to_stderr: bool,
@@ -625,15 +737,22 @@ fn spawn_reader<R: Read + Send + 'static>(
         let mut out = String::new();
         if to_stderr {
             let mut stderr = std::io::stderr();
+            let mut carry = Vec::new();
             loop {
                 let read = reader.read(&mut buf).unwrap_or(0);
                 if read == 0 {
                     break;
                 }
-                let chunk = String::from_utf8_lossy(&buf[..read]);
+                let chunk = decode_chunk(&mut carry, &buf[..read]);
                 let _ = stderr.write_all(chunk.as_bytes());
                 let _ = stderr.flush();
                 out.push_str(&chunk);
+            }
+            if !carry.is_empty() {
+                let tail = String::from_utf8_lossy(&carry);
+                let _ = stderr.write_all(tail.as_bytes());
+                let _ = stderr.flush();
+                out.push_str(&tail);
             }
         } else {
             let mut stdout = std::io::stdout();
@@ -641,12 +760,13 @@ fn spawn_reader<R: Read + Send + 'static>(
             // `\r`-terminated progress-bar fragments until the next `\n`).
             // `out` keeps the raw byte stream exactly as before.
             let mut pending = String::new();
+            let mut carry = Vec::new();
             loop {
                 let read = reader.read(&mut buf).unwrap_or(0);
                 if read == 0 {
                     break;
                 }
-                let chunk = String::from_utf8_lossy(&buf[..read]);
+                let chunk = decode_chunk(&mut carry, &buf[..read]);
                 out.push_str(&chunk);
                 pending.push_str(&chunk);
                 while let Some(pos) = pending.find('\n') {
@@ -673,6 +793,13 @@ fn spawn_reader<R: Read + Send + 'static>(
                 // eager echo active this only trips on pathological
                 // newline-free output containing protocol-looking text.
                 enforce_pending_cap(&mut pending);
+            }
+            // EOF with a retained partial sequence (child died mid-char):
+            // emit lossily rather than dropping bytes.
+            if !carry.is_empty() {
+                let tail = String::from_utf8_lossy(&carry);
+                out.push_str(&tail);
+                pending.push_str(&tail);
             }
             if !pending.is_empty() {
                 pump_line(&pending, &mut stdout, &on_line, suppress_protocol_echo);
@@ -902,6 +1029,119 @@ mod tests {
         let mut huge = "x".repeat((1 << 20) + 1);
         assert!(enforce_pending_cap(&mut huge));
         assert!(huge.is_empty());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn pty_size_mirrors_terminal_and_falls_back() {
+        let fallback = resolve_pty_size(None);
+        assert_eq!((fallback.cols, fallback.rows), (120, 24));
+        let mirrored = resolve_pty_size(Some((80, 24)));
+        assert_eq!((mirrored.cols, mirrored.rows), (80, 24));
+        let zero = resolve_pty_size(Some((0, 0)));
+        assert_eq!((zero.cols, zero.rows), (0, 0));
+    }
+
+    #[test]
+    fn columns_env_carries_width_never_zero_or_unknown() {
+        assert_eq!(columns_env_for(None), None);
+        assert_eq!(columns_env_for(Some((0, 24))), None);
+        assert_eq!(
+            columns_env_for(Some((80, 24))),
+            Some(("COLUMNS".to_string(), "80".to_string()))
+        );
+    }
+
+    #[test]
+    fn decode_chunk_retains_split_multibyte_sequences() {
+        let approx = "≈".as_bytes(); // E2 89 88
+        let mut carry = Vec::new();
+        assert_eq!(decode_chunk(&mut carry, &approx[..2]), "");
+        assert_eq!(carry, approx[..2]);
+        assert_eq!(decode_chunk(&mut carry, &approx[2..]), "≈");
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn long_lines_survive_chunked_reads_and_parse_cleanly() {
+        use super::super::ipc::{ParsedItem, parse_prefix_lines};
+        use std::io::Read;
+        use std::sync::Mutex;
+
+        /// Reader yielding at most `chunk` bytes per call, splitting lines
+        /// (and multibyte sequences) mid-flight the way OS pipes do.
+        struct ChunkReader {
+            data: Vec<u8>,
+            pos: usize,
+            chunk: usize,
+        }
+        impl Read for ChunkReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.pos >= self.data.len() {
+                    return Ok(0);
+                }
+                let n = self.chunk.min(buf.len()).min(self.data.len() - self.pos);
+                buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+                self.pos += n;
+                Ok(n)
+            }
+        }
+
+        // A long in-place bar: ANSI wipe + `\r` redraws, non-ASCII tail, no
+        // newline until the end — the exact soup that used to eat line heads.
+        let mut bar = String::from("\x1b[2K\rtrain accum[1/88] step 0/22 dropout=0.000 bytes≈100");
+        for i in 2..=88u32 {
+            bar.push_str(&format!(
+                "\rtrain accum[{i}/88] step 0/22 dropout=0.000 bytes≈100"
+            ));
+        }
+        // A long protocol line: epoch event with a wide metric map.
+        let mut fields = String::new();
+        for i in 0..200u32 {
+            fields.push_str(&format!(r#""metric.m{i}":"{i}","#));
+        }
+        fields.pop();
+        let proto = format!(r#"{{"type":"event","name":"model.epoch_end","fields":{{{fields}}}}}"#);
+        let proto = format!("{}{proto}", crate::RESULT_PREFIX);
+        let soup = format!("info: start\n{bar}\n{proto}\ninfo: done\n");
+
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        let callback: LineCallback = Arc::new(move |line: &str| {
+            seen_cb.lock().unwrap().push(line.to_string());
+        });
+        let reader = ChunkReader {
+            data: soup.as_bytes().to_vec(),
+            pos: 0,
+            chunk: 7,
+        };
+        let handle = spawn_reader(reader, false, Some(callback), true);
+        let out = handle.join().unwrap();
+
+        // Raw stream round-trips byte-exactly, however the reads split it.
+        assert_eq!(out, soup);
+        // Callback delivery: short lines whole; the long protocol line
+        // whole (the guarantee the live parser relies on); the long
+        // non-protocol bar as its tail (its head went to terminal echo).
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 4);
+        assert_eq!(seen[0], "info: start");
+        assert!(bar.ends_with(&seen[1]), "bar tail: {}", seen[1]);
+        assert_eq!(seen[2], proto);
+        assert_eq!(seen[3], "info: done");
+        drop(seen);
+        // And the long protocol line parses without errors while the bar
+        // line yields no items (also without errors).
+        let parsed = parse_prefix_lines(&out, crate::RESULT_PREFIX).unwrap();
+        assert_eq!(parsed.len(), 1, "parsed: {parsed:?}");
+        assert!(
+            parsed[0].iter().any(|item| matches!(
+                item,
+                ParsedItem::Event { name, .. } if name == "model.epoch_end"
+            )),
+            "parsed: {:?}",
+            parsed[0]
+        );
     }
 
     #[test]
