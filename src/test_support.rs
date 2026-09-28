@@ -93,6 +93,10 @@ pub const SELF_ROLE_ENV: &str = "ARGTUNER_SELF_ROLE";
 /// Env var carrying the path where a `grandchild`-role helper writes its pid.
 pub const SELF_PID_FILE_ENV: &str = "ARGTUNER_SELF_PID_FILE";
 
+/// Env var carrying the path where a `print_columns`-role helper writes the
+/// observed `COLUMNS` value (or `unset`).
+pub const SELF_COLUMNS_FILE_ENV: &str = "ARGTUNER_SELF_COLUMNS_FILE";
+
 /// Env var carrying the path where a `grandchild`-role helper writes a
 /// heartbeat while it is running (its liveness signal).
 pub const SELF_HEARTBEAT_ENV: &str = "ARGTUNER_SELF_HEARTBEAT";
@@ -117,6 +121,10 @@ pub fn self_invoking_command() -> String {
 /// - `grandchild`: writes its pid to [`SELF_PID_FILE_ENV`], then advances a
 ///   heartbeat in [`SELF_HEARTBEAT_ENV`] until killed (liveness signal).
 /// - `child`: spawns a `grandchild` and waits for it (group-kill target).
+/// - `print_columns`: writes the `COLUMNS` env var (or `unset`) to
+///   [`SELF_COLUMNS_FILE_ENV`] (display-width propagation target: the runner
+///   stamps it, the child reads it; a file because libtest captures helper
+///   stdout).
 #[cfg_attr(test, test)]
 pub fn self_invoking_helper() {
     match std::env::var(SELF_ROLE_ENV).as_deref() {
@@ -157,6 +165,14 @@ pub fn self_invoking_helper() {
                 );
             let mut child = cmd.spawn().expect("spawn grandchild");
             let _ = child.wait();
+        }
+        Ok("print_columns") => {
+            if let Ok(path) = std::env::var(SELF_COLUMNS_FILE_ENV) {
+                let _ = std::fs::write(
+                    path,
+                    std::env::var("COLUMNS").unwrap_or_else(|_| "unset".to_string()),
+                );
+            }
         }
         _ => {}
     }

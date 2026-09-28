@@ -1053,6 +1053,40 @@ mod tests {
     }
 
     #[test]
+    fn piped_child_observes_runner_stamped_columns() {
+        // The Windows path (pipes everywhere, no TTY on either side): the
+        // child must observe exactly the width the runner observes.
+        // Subprocess-free of platform specifics — runs identically on
+        // Windows, macOS, and Linux.
+        let path = std::env::temp_dir().join(format!("argtuner-columns-{}", std::process::id()));
+        let envs = BTreeMap::from([
+            (
+                crate::test_support::SELF_ROLE_ENV.to_string(),
+                "print_columns".to_string(),
+            ),
+            (
+                crate::test_support::SELF_COLUMNS_FILE_ENV.to_string(),
+                path.to_string_lossy().to_string(),
+            ),
+        ]);
+        let output = run_piped(
+            &crate::test_support::self_invoking_command(),
+            &envs,
+            &RunnerOptions::default(),
+        )
+        .expect("run");
+        assert_eq!(output.exit_code, 0);
+        let observed = std::fs::read_to_string(&path).expect("child writes observed COLUMNS");
+        let _ = std::fs::remove_file(&path);
+        let expected = crossterm::terminal::size()
+            .ok()
+            .filter(|(cols, _)| *cols > 0)
+            .map(|(cols, _)| cols.to_string())
+            .unwrap_or_else(|| "unset".to_string());
+        assert_eq!(observed, expected);
+    }
+
+    #[test]
     fn decode_chunk_retains_split_multibyte_sequences() {
         let approx = "≈".as_bytes(); // E2 89 88
         let mut carry = Vec::new();
