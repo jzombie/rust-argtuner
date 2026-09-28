@@ -255,11 +255,6 @@ fn run_piped(
     for (key, value) in envs {
         cmd.env(key, value);
     }
-    if !envs.contains_key("COLUMNS")
-        && let Some((key, value)) = columns_env_for(crossterm::terminal::size().ok())
-    {
-        cmd.env(key, value);
-    }
     // Spawn into a dedicated process group so a timeout or cancellation can
     // terminate the whole tree; the group leader is the child itself.
     let mut child = cmd
@@ -440,15 +435,13 @@ fn run_pty(
         return Err("command is empty".to_string());
     }
     let pty_system = native_pty_system();
-    // Mirror our own terminal size so children that format to terminal width
-    // (e.g. training progress bars truncated to `cols - 1`) fit the screen
-    // the user actually watches. A hardcoded size lies to the child: it
-    // emits lines wider than the real terminal, they wrap, and the next
-    // in-place redraw (`\x1b[2K\r`) erases only one visual row — heads of
-    // lines appear truncated. Falls back to the historical 120x24 when our
-    // stdout is not a terminal (piped/logged) or the query fails.
     let pair = pty_system
-        .openpty(resolve_pty_size(crossterm::terminal::size().ok()))
+        .openpty(PtySize {
+            rows: 24,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|err| format!("pty open failed: {err}"))?;
     let mut cmd = CommandBuilder::new(&parts[0]);
     let cwd = std::env::current_dir().map_err(|err| format!("command cwd failed: {err}"))?;
@@ -457,11 +450,6 @@ fn run_pty(
         cmd.args(&parts[1..]);
     }
     for (key, value) in envs {
-        cmd.env(key, value);
-    }
-    if !envs.contains_key("COLUMNS")
-        && let Some((key, value)) = columns_env_for(crossterm::terminal::size().ok())
-    {
         cmd.env(key, value);
     }
     let mut child = pair
@@ -530,32 +518,6 @@ fn run_pty(
 
     #[cfg(not(any(unix, windows)))]
     let input_guard: Option<InputGuard> = None;
-    // Forward terminal resizes to the child PTY: the child formats to the
-    // PTY width, so a shrink without propagation reintroduces wrapped bars
-    // and eaten line heads until the trial ends. Polls (no signal-hook dep);
-    // the kernel SIGWINCHes the child on resize, and width-aware children
-    // re-query per render. Stops itself shortly after the wait below.
-    #[cfg(not(windows))]
-    let resize_stop = Arc::new(AtomicBool::new(false));
-    #[cfg(not(windows))]
-    let _resize_watcher = {
-        let stop = resize_stop.clone();
-        let master = pair.master;
-        thread::spawn(move || {
-            let mut last = resolve_pty_size(crossterm::terminal::size().ok());
-            loop {
-                thread::sleep(Duration::from_millis(500));
-                if stop.load(Ordering::Relaxed) {
-                    break;
-                }
-                let size = resolve_pty_size(crossterm::terminal::size().ok());
-                if size != last {
-                    let _ = master.resize(size);
-                    last = size;
-                }
-            }
-        })
-    };
     let wait = wait_with_timeout(&mut child, opts);
     let stdout = output
         .join()
@@ -563,8 +525,6 @@ fn run_pty(
     if let Some(mut guard) = input_guard {
         guard.stop();
     }
-    #[cfg(not(windows))]
-    resize_stop.store(true, Ordering::Relaxed);
     let (exit_code, timed_out) = wait?;
     Ok(CommandOutput {
         stdout,
@@ -572,34 +532,6 @@ fn run_pty(
         exit_code,
         timed_out,
     })
-}
-
-/// PTY dimensions for a spawned child: mirror the queried terminal size so
-/// width-aware children fit the watched screen, falling back to the
-/// historical 120x24 when the size is unknown (piped/logged parent).
-/// Values pass through untouched: a zero-size PTY is valid for `openpty`,
-/// and width-aware children clamp for themselves where it matters.
-#[cfg(not(windows))]
-fn resolve_pty_size(queried: Option<(u16, u16)>) -> PtySize {
-    let (cols, rows) = queried.unwrap_or((120, 24));
-    PtySize {
-        rows,
-        cols,
-        pixel_width: 0,
-        pixel_height: 0,
-    }
-}
-
-/// `COLUMNS` value to stamp onto a spawned child: our own terminal width as
-/// a plain decimal string, or `None` when unknown (or degenerate zero).
-/// Width-aware children truncate human lines (progress bars) to it. This is
-/// what carries display width over pipes — Windows always, forced-pipes
-/// elsewhere — where there is no TTY for the child to query. Set
-/// automatically by the runner; never overrides an explicitly provided
-/// value, and the child's live TTY query always wins where one exists.
-fn columns_env_for(queried: Option<(u16, u16)>) -> Option<(String, String)> {
-    let (cols, _) = queried?;
-    (cols > 0).then(|| ("COLUMNS".to_string(), cols.to_string()))
 }
 
 /// Byte count of `pending` safe to echo eagerly (see the call site).
@@ -651,6 +583,45 @@ fn enforce_pending_cap(pending: &mut String) -> bool {
     }
 }
 
+/// Fit an echo fragment to the live viewport so in-place redraws never wrap:
+/// a redraw wider than the terminal wraps to two rows, and the next erase
+/// (`\x1b[2K\r`) clears only one — heads of lines appear truncated. Only
+/// fragments carrying `\r` (in-place updates) are ever cut; plain
+/// `\n`-terminated lines wrap harmlessly and stay whole (they may be the
+/// only record: info lines live on the terminal, not in the DB). Pure
+/// display: stored output and the `on_line` callback keep every byte.
+/// Untouched when our stdout is not a terminal (piped/logged: the echo IS
+/// the log) or the width is unknown. Re-queried per write, so resizes
+/// apply immediately with no contracts and no child cooperation.
+fn fit_echo(fragment: &str, live_cols: Option<u16>) -> &str {
+    if !fragment.contains('\r') {
+        return fragment;
+    }
+    let max = match live_cols {
+        Some(cols) if cols > 0 => (cols as usize).saturating_sub(1),
+        _ => return fragment,
+    };
+    if fragment.chars().count() <= max {
+        return fragment;
+    }
+    let end = fragment
+        .char_indices()
+        .nth(max)
+        .map(|(i, _)| i)
+        .unwrap_or(fragment.len());
+    &fragment[..end]
+}
+
+/// Live viewport width for echo fitting: our own terminal columns, or
+/// `None` when piped/logged (echo must stay whole) or unknown.
+fn live_echo_cols() -> Option<u16> {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return None;
+    }
+    crossterm::terminal::size().ok().map(|(cols, _)| cols)
+}
+
 /// Pumps one complete stdout line to the terminal echo and the live
 /// callback (see `spawn_reader`).
 fn pump_line(
@@ -671,16 +642,18 @@ fn pump_line(
             Some(idx) => {
                 let pre = &line[..idx];
                 if !pre.is_empty() {
-                    let _ = stdout.write_all(pre.as_bytes());
+                    let _ = stdout.write_all(fit_echo(pre, live_echo_cols()).as_bytes());
                 }
             }
             None => {
-                let _ = stdout.write_all(line.as_bytes());
+                let fitted = fit_echo(line, live_echo_cols());
+                let _ = stdout.write_all(fitted.as_bytes());
                 let _ = stdout.write_all(b"\n");
             }
         }
     } else {
-        let _ = stdout.write_all(line.as_bytes());
+        let fitted = fit_echo(line, live_echo_cols());
+        let _ = stdout.write_all(fitted.as_bytes());
         let _ = stdout.write_all(b"\n");
     }
     if let Some(cb) = on_line.as_ref() {
@@ -786,7 +759,8 @@ fn spawn_reader<R: Read + Send + 'static>(
                 let echo_up_to = eager_echo_len(&pending, crate::RESULT_PREFIX);
                 if echo_up_to > 0 {
                     let fragment: String = pending.drain(..echo_up_to).collect();
-                    let _ = stdout.write_all(fragment.as_bytes());
+                    let fitted = fit_echo(&fragment, live_echo_cols());
+                    let _ = stdout.write_all(fitted.as_bytes());
                     let _ = stdout.flush();
                 }
                 // Belt-and-braces bound (see `enforce_pending_cap`): with
@@ -1031,61 +1005,6 @@ mod tests {
         assert!(huge.is_empty());
     }
 
-    #[cfg(not(windows))]
-    #[test]
-    fn pty_size_mirrors_terminal_and_falls_back() {
-        let fallback = resolve_pty_size(None);
-        assert_eq!((fallback.cols, fallback.rows), (120, 24));
-        let mirrored = resolve_pty_size(Some((80, 24)));
-        assert_eq!((mirrored.cols, mirrored.rows), (80, 24));
-        let zero = resolve_pty_size(Some((0, 0)));
-        assert_eq!((zero.cols, zero.rows), (0, 0));
-    }
-
-    #[test]
-    fn columns_env_carries_width_never_zero_or_unknown() {
-        assert_eq!(columns_env_for(None), None);
-        assert_eq!(columns_env_for(Some((0, 24))), None);
-        assert_eq!(
-            columns_env_for(Some((80, 24))),
-            Some(("COLUMNS".to_string(), "80".to_string()))
-        );
-    }
-
-    #[test]
-    fn piped_child_observes_runner_stamped_columns() {
-        // The Windows path (pipes everywhere, no TTY on either side): the
-        // child must observe exactly the width the runner observes.
-        // Subprocess-free of platform specifics — runs identically on
-        // Windows, macOS, and Linux.
-        let path = std::env::temp_dir().join(format!("argtuner-columns-{}", std::process::id()));
-        let envs = BTreeMap::from([
-            (
-                crate::test_support::SELF_ROLE_ENV.to_string(),
-                "print_columns".to_string(),
-            ),
-            (
-                crate::test_support::SELF_COLUMNS_FILE_ENV.to_string(),
-                path.to_string_lossy().to_string(),
-            ),
-        ]);
-        let output = run_piped(
-            &crate::test_support::self_invoking_command(),
-            &envs,
-            &RunnerOptions::default(),
-        )
-        .expect("run");
-        assert_eq!(output.exit_code, 0);
-        let observed = std::fs::read_to_string(&path).expect("child writes observed COLUMNS");
-        let _ = std::fs::remove_file(&path);
-        let expected = crossterm::terminal::size()
-            .ok()
-            .filter(|(cols, _)| *cols > 0)
-            .map(|(cols, _)| cols.to_string())
-            .unwrap_or_else(|| "unset".to_string());
-        assert_eq!(observed, expected);
-    }
-
     #[test]
     fn decode_chunk_retains_split_multibyte_sequences() {
         let approx = "≈".as_bytes(); // E2 89 88
@@ -1094,6 +1013,31 @@ mod tests {
         assert_eq!(carry, approx[..2]);
         assert_eq!(decode_chunk(&mut carry, &approx[2..]), "≈");
         assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn fit_echo_cuts_only_carriage_return_lines_to_live_width() {
+        // No `\r`: untouched at any width — plain lines wrap harmlessly
+        // whole and may be the only record.
+        let plain = "model_dim=768 layers=6 heads=8 out_dim=768 max_seq_len=512";
+        assert_eq!(fit_echo(plain, Some(80)), plain);
+        assert_eq!(fit_echo(plain, None), plain);
+        // `\r` redraw fitting in width: untouched.
+        let bar = "\x1b[2K\rok step 1/22";
+        assert_eq!(fit_echo(bar, Some(80)), bar);
+        // Over-wide redraw: cut to width-1, head escapes intact.
+        let long_bar = format!("\x1b[2K\r{}", "x".repeat(100));
+        let fitted = fit_echo(&long_bar, Some(80));
+        assert_eq!(fitted.chars().count(), 79);
+        assert!(fitted.starts_with("\x1b[2K\r"));
+        // Multibyte near the cut: never split a char.
+        let uni = format!("\r{}", "é".repeat(50));
+        let fitted_uni = fit_echo(&uni, Some(10));
+        assert_eq!(fitted_uni.chars().count(), 9);
+        assert!(fitted_uni.ends_with('é'));
+        // Unknown, zero, or non-terminal width: untouched.
+        assert_eq!(fit_echo(&long_bar, None), long_bar.as_str());
+        assert_eq!(fit_echo(&long_bar, Some(0)), long_bar.as_str());
     }
 
     #[test]
