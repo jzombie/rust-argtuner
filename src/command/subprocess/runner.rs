@@ -276,8 +276,9 @@ fn run_piped(
         false,
         opts.on_line.clone(),
         opts.suppress_protocol_echo,
+        None,
     );
-    let stderr_handle = spawn_reader(child_stderr, true, None, false);
+    let stderr_handle = spawn_reader(child_stderr, true, None, false, None);
     // Always join the reader threads first so their output has drained even
     // when the command was killed for a timeout or cancellation.
     let wait = wait_with_timeout(&mut child, opts);
@@ -471,6 +472,7 @@ fn run_pty(
         false,
         opts.on_line.clone(),
         opts.suppress_protocol_echo,
+        None,
     );
 
     #[cfg(unix)]
@@ -626,10 +628,14 @@ fn live_echo_cols() -> Option<u16> {
 /// callback (see `spawn_reader`).
 fn pump_line(
     line: &str,
-    stdout: &mut std::io::Stdout,
+    echo: &mut dyn Write,
     on_line: &Option<LineCallback>,
     suppress_protocol_echo: bool,
+    echo_cols: Option<u16>,
 ) {
+    // `None` resolves live per write, so terminal resizes apply to the very
+    // next redraw; tests inject a fixed width instead.
+    let cols = echo_cols.or_else(live_echo_cols);
     if suppress_protocol_echo {
         match line.find(crate::RESULT_PREFIX) {
             // Echo any human-readable fragment glued before the
@@ -642,24 +648,24 @@ fn pump_line(
             Some(idx) => {
                 let pre = &line[..idx];
                 if !pre.is_empty() {
-                    let _ = stdout.write_all(fit_echo(pre, live_echo_cols()).as_bytes());
+                    let _ = echo.write_all(fit_echo(pre, cols).as_bytes());
                 }
             }
             None => {
-                let fitted = fit_echo(line, live_echo_cols());
-                let _ = stdout.write_all(fitted.as_bytes());
-                let _ = stdout.write_all(b"\n");
+                let fitted = fit_echo(line, cols);
+                let _ = echo.write_all(fitted.as_bytes());
+                let _ = echo.write_all(b"\n");
             }
         }
     } else {
-        let fitted = fit_echo(line, live_echo_cols());
-        let _ = stdout.write_all(fitted.as_bytes());
-        let _ = stdout.write_all(b"\n");
+        let fitted = fit_echo(line, cols);
+        let _ = echo.write_all(fitted.as_bytes());
+        let _ = echo.write_all(b"\n");
     }
     if let Some(cb) = on_line.as_ref() {
         cb(line);
     }
-    let _ = stdout.flush();
+    let _ = echo.flush();
 }
 
 /// Decode freshly-read bytes incrementally: a multibyte UTF-8 sequence may
@@ -704,6 +710,7 @@ fn spawn_reader<R: Read + Send + 'static>(
     to_stderr: bool,
     on_line: Option<LineCallback>,
     suppress_protocol_echo: bool,
+    echo_cols: Option<u16>,
 ) -> thread::JoinHandle<String> {
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -749,6 +756,7 @@ fn spawn_reader<R: Read + Send + 'static>(
                         &mut stdout,
                         &on_line,
                         suppress_protocol_echo,
+                        echo_cols,
                     );
                 }
                 // Eagerly echo output that hasn't formed a line yet (e.g. `\r`
@@ -759,7 +767,8 @@ fn spawn_reader<R: Read + Send + 'static>(
                 let echo_up_to = eager_echo_len(&pending, crate::RESULT_PREFIX);
                 if echo_up_to > 0 {
                     let fragment: String = pending.drain(..echo_up_to).collect();
-                    let fitted = fit_echo(&fragment, live_echo_cols());
+                    let cols = echo_cols.or_else(live_echo_cols);
+                    let fitted = fit_echo(&fragment, cols);
                     let _ = stdout.write_all(fitted.as_bytes());
                     let _ = stdout.flush();
                 }
@@ -776,7 +785,13 @@ fn spawn_reader<R: Read + Send + 'static>(
                 pending.push_str(&tail);
             }
             if !pending.is_empty() {
-                pump_line(&pending, &mut stdout, &on_line, suppress_protocol_echo);
+                pump_line(
+                    &pending,
+                    &mut stdout,
+                    &on_line,
+                    suppress_protocol_echo,
+                    echo_cols,
+                );
             }
         }
         out
@@ -1041,6 +1056,39 @@ mod tests {
     }
 
     #[test]
+    fn pump_line_fits_redraws_to_injected_width_keeping_bytes_intact() {
+        use std::sync::Mutex;
+
+        // Wiring proof, sink-injected: over-wide `\r` redraws echo fitted
+        // to the injected width on every path, plain lines echo whole, and
+        // the callback keeps the full line either way.
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        let callback: Option<LineCallback> = Some(Arc::new(move |line: &str| {
+            seen_cb.lock().unwrap().push(line.to_string());
+        }));
+
+        // Suppressed-protocol path, full line: 5 head chars + 100 body.
+        let long_bar = format!("\x1b[2K\r{}", "x".repeat(100));
+        let mut echo = Vec::new();
+        pump_line(&long_bar, &mut echo, &callback, true, Some(20));
+        assert_eq!(echo, format!("{}\n", &long_bar[..19]).as_bytes());
+        assert_eq!(*seen.lock().unwrap(), vec![long_bar.clone()]);
+
+        // Unsuppressed path, same line: identical fitting.
+        let mut echo_plain = Vec::new();
+        pump_line(&long_bar, &mut echo_plain, &None, false, Some(20));
+        assert_eq!(echo_plain, format!("{}\n", &long_bar[..19]).as_bytes());
+
+        // Plain line (no `\r`): echoed whole even past the width, callback
+        // whole as always.
+        let mut echo_info = Vec::new();
+        let info = "model_dim=768 layers=6 heads=8 out_dim=768 max_seq_len=512";
+        pump_line(info, &mut echo_info, &None, true, Some(20));
+        assert_eq!(echo_info, format!("{info}\n").as_bytes());
+    }
+
+    #[test]
     fn long_lines_survive_chunked_reads_and_parse_cleanly() {
         use super::super::ipc::{ParsedItem, parse_prefix_lines};
         use std::io::Read;
@@ -1093,7 +1141,7 @@ mod tests {
             pos: 0,
             chunk: 7,
         };
-        let handle = spawn_reader(reader, false, Some(callback), true);
+        let handle = spawn_reader(reader, false, Some(callback), true, None);
         let out = handle.join().unwrap();
 
         // Raw stream round-trips byte-exactly, however the reads split it.
