@@ -25,10 +25,22 @@ static FORCE_PIPES: AtomicBool = AtomicBool::new(false);
 /// before the wait is abandoned and reported as an error.
 const KILL_GRACE: Duration = Duration::from_secs(10);
 
-/// Options that supervise a trial subprocess. Both fields are advisory: the
-/// runner never clears `stop`, and a `timeout` is a hard deadline enforced on
-/// the whole process group.
-#[derive(Debug, Clone, Default)]
+/// Callback invoked once per complete `\n`-terminated child-stdout line while
+/// the subprocess runs. Used to stream-parse `::ARGTUNER::` protocol events
+/// (live TUI updates) without waiting for child exit.
+///
+/// Delivery guarantee: lines carrying the protocol prefix always arrive
+/// whole, however the reads split them (eager echo holds back while the
+/// prefix is in flight). Long *non-protocol* lines (progress bars) may
+/// arrive as the tail only — their head was already echoed to the terminal
+/// eagerly and is not replayed here. The post-exit `CommandOutput.stdout`
+/// always carries the complete raw stream regardless.
+pub type LineCallback = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Options that supervise a trial subprocess. All fields are advisory, except
+/// `timeout` (a hard deadline enforced on the whole process group) and `stop`
+/// (the runner never clears it).
+#[derive(Clone, Default)]
 pub struct RunnerOptions {
     /// Hard deadline for the command. When it elapses the process group is
     /// killed and the result is marked `timed_out`.
@@ -36,6 +48,27 @@ pub struct RunnerOptions {
     /// When set, the process group is killed as soon as the flag flips (e.g.
     /// Ctrl-C). Unset means the command runs to completion.
     pub stop: Option<Arc<AtomicBool>>,
+    /// When set, invoked once per complete `\n`-terminated stdout line as it
+    /// arrives (a trailing unterminated fragment is delivered once at EOF).
+    /// Lines split across pipe/PTY read chunks are reassembled first.
+    pub on_line: Option<LineCallback>,
+    /// When true, stdout lines containing the `::ARGTUNER::` protocol prefix
+    /// are still accumulated into `CommandOutput.stdout` (so post-exit parsing
+    /// is unaffected) but are not echoed to the parent terminal. Progress-bar
+    /// fragments glued onto the same line (a `\r` update with no newline) are
+    /// suppressed along with it; the next bar update redraws the line.
+    pub suppress_protocol_echo: bool,
+}
+
+impl std::fmt::Debug for RunnerOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunnerOptions")
+            .field("timeout", &self.timeout)
+            .field("stop", &self.stop)
+            .field("on_line", &self.on_line.as_ref().map(|_| "LineCallback"))
+            .field("suppress_protocol_echo", &self.suppress_protocol_echo)
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -172,7 +205,7 @@ impl CommandResultPayload {
     }
 }
 
-fn payload_fields_from(data: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+pub(crate) fn payload_fields_from(data: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
     for (key, value) in data {
         if let Some((namespace, rest)) = key.split_once('.') {
@@ -238,8 +271,14 @@ fn run_piped(
         .stderr
         .take()
         .ok_or_else(|| "command stderr unavailable".to_string())?;
-    let stdout_handle = spawn_reader(child_stdout, false);
-    let stderr_handle = spawn_reader(child_stderr, true);
+    let stdout_handle = spawn_reader(
+        child_stdout,
+        false,
+        opts.on_line.clone(),
+        opts.suppress_protocol_echo,
+        None,
+    );
+    let stderr_handle = spawn_reader(child_stderr, true, None, false, None);
     // Always join the reader threads first so their output has drained even
     // when the command was killed for a timeout or cancellation.
     let wait = wait_with_timeout(&mut child, opts);
@@ -397,10 +436,16 @@ fn run_pty(
         return Err("command is empty".to_string());
     }
     let pty_system = native_pty_system();
+    // Size the PTY to the real terminal so downstream sees the truth:
+    // width-aware children format for the watched screen, not a hardcoded
+    // 120 columns. Display stays correct across resizes regardless (echo
+    // fitting re-queries live per write); this keeps the child's own
+    // formatting honest from spawn.
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 24));
     let pair = pty_system
         .openpty(PtySize {
-            rows: 24,
-            cols: 120,
+            rows,
+            cols,
             pixel_width: 0,
             pixel_height: 0,
         })
@@ -428,7 +473,13 @@ fn run_pty(
         .master
         .take_writer()
         .map_err(|err| format!("pty writer failed: {err}"))?;
-    let output = spawn_reader(reader, false);
+    let output = spawn_reader(
+        reader,
+        false,
+        opts.on_line.clone(),
+        opts.suppress_protocol_echo,
+        None,
+    );
 
     #[cfg(unix)]
     let input_guard = {
@@ -491,36 +542,262 @@ fn run_pty(
     })
 }
 
+/// Byte count of `pending` safe to echo eagerly (see the call site).
+/// Returns 0 while the buffer contains a protocol line, and always holds
+/// back the trailing bytes: they could be the head of a prefix split across
+/// read chunks, and a split prefix must reach the callback intact.
+/// (`hold` is `len(prefix) - 1`, which covers every completable split: any
+/// split head is shorter than the prefix itself.) The returned index is
+/// always a char boundary — slicing a multibyte UTF-8 sequence would panic
+/// in `drain`, and barnetext may be non-ASCII on any platform.
+fn eager_echo_len(pending: &str, prefix: &str) -> usize {
+    if pending.contains(prefix) {
+        return 0;
+    }
+    let hold = prefix.len().saturating_sub(1);
+    if pending.len() <= hold {
+        return 0;
+    }
+    let mut end = pending.len() - hold;
+    while !pending.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
+}
+
+/// Upper bound on unparsed buffered stdout before it is dropped with a
+/// warning. Genuine protocol lines are single short `println!`s, so anything
+/// this large without a newline is a runaway writer, not an event. Only
+/// reachable when the buffer contains protocol-looking content (prefix-free
+/// output is eagerly echoed away each chunk); any event spanning the dropped
+/// bytes is lost, and the warning says so.
+const MAX_PENDING_BYTES: usize = 1 << 20;
+
+/// Drop an overgrown reassembly buffer, warning loudly. Returns true when
+/// anything was dropped. Pure enough to unit-test (the warning goes to
+/// stderr, which libtest captures).
+fn enforce_pending_cap(pending: &mut String) -> bool {
+    if pending.len() > MAX_PENDING_BYTES {
+        eprintln!(
+            "warning: dropping {} bytes of newline-free subprocess output \
+             (exceeds {MAX_PENDING_BYTES} bytes); any protocol event spanning \
+             the dropped bytes is lost",
+            pending.len()
+        );
+        pending.clear();
+        true
+    } else {
+        false
+    }
+}
+
+/// Fit an echo fragment to the live viewport so in-place redraws never wrap:
+/// a redraw wider than the terminal wraps to two rows, and the next erase
+/// (`\x1b[2K\r`) clears only one — heads of lines appear truncated. Only
+/// fragments carrying the erase sequence (transient bars, rewritten on the
+/// next update) are ever cut; one-shot `\r` records (epoch summaries) and
+/// plain `\n` lines wrap harmlessly and stay whole — they may be the only
+/// record. Pure display: stored output and the `on_line` callback keep every
+/// byte. Untouched when our stdout is not a terminal (piped/logged: the
+/// echo IS the log) or the width is unknown. Re-queried per write, so
+/// resizes apply immediately with no contracts and no child cooperation.
+fn fit_echo(fragment: &str, live_cols: Option<u16>) -> &str {
+    if !fragment.contains("\x1b[2K") {
+        return fragment;
+    }
+    let max = match live_cols {
+        Some(cols) if cols > 0 => (cols as usize).saturating_sub(1),
+        _ => return fragment,
+    };
+    if fragment.chars().count() <= max {
+        return fragment;
+    }
+    let end = fragment
+        .char_indices()
+        .nth(max)
+        .map(|(i, _)| i)
+        .unwrap_or(fragment.len());
+    &fragment[..end]
+}
+
+/// Live viewport width for echo fitting: our own terminal columns, or
+/// `None` when piped/logged (echo must stay whole) or unknown.
+fn live_echo_cols() -> Option<u16> {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return None;
+    }
+    crossterm::terminal::size().ok().map(|(cols, _)| cols)
+}
+
+/// Pumps one complete stdout line to the terminal echo and the live
+/// callback (see `spawn_reader`).
+fn pump_line(
+    line: &str,
+    echo: &mut dyn Write,
+    on_line: &Option<LineCallback>,
+    suppress_protocol_echo: bool,
+    echo_cols: Option<u16>,
+) {
+    // `None` resolves live per write, so terminal resizes apply to the very
+    // next redraw; tests inject a fixed width instead.
+    let cols = echo_cols.or_else(live_echo_cols);
+    if suppress_protocol_echo {
+        match line.find(crate::RESULT_PREFIX) {
+            // Echo any human-readable fragment glued before the
+            // protocol payload (e.g. a `\r` progress-bar update)
+            // so bars keep animating; the protocol JSON itself
+            // stays out of the terminal. No trailing newline:
+            // the next bar update overwrites this one in place.
+            // (Heads of such lines may already have been echoed eagerly;
+            // re-emitting the fragment is a harmless in-place redraw.)
+            Some(idx) => {
+                let pre = &line[..idx];
+                if !pre.is_empty() {
+                    let _ = echo.write_all(fit_echo(pre, cols).as_bytes());
+                }
+            }
+            None => {
+                let fitted = fit_echo(line, cols);
+                let _ = echo.write_all(fitted.as_bytes());
+                let _ = echo.write_all(b"\n");
+            }
+        }
+    } else {
+        let fitted = fit_echo(line, cols);
+        let _ = echo.write_all(fitted.as_bytes());
+        let _ = echo.write_all(b"\n");
+    }
+    if let Some(cb) = on_line.as_ref() {
+        cb(line);
+    }
+    let _ = echo.flush();
+}
+
+/// Decode freshly-read bytes incrementally: a multibyte UTF-8 sequence may
+/// straddle two reads, and decoding each read with `from_utf8_lossy` would
+/// emit U+FFFD for each half — corrupting non-ASCII bar text and, worse, any
+/// split multibyte inside protocol JSON (a parse error that drops the whole
+/// event). A truncated trailing sequence is retained in `carry` for the next
+/// read; genuinely invalid bytes still become U+FFFD.
+fn decode_chunk(carry: &mut Vec<u8>, fresh: &[u8]) -> String {
+    carry.extend_from_slice(fresh);
+    let mut chunk = String::new();
+    let mut idx = 0;
+    while idx < carry.len() {
+        match std::str::from_utf8(&carry[idx..]) {
+            Ok(valid) => {
+                chunk.push_str(valid);
+                idx = carry.len();
+            }
+            Err(e) => {
+                let up_to = e.valid_up_to();
+                chunk
+                    .push_str(std::str::from_utf8(&carry[idx..idx + up_to]).expect("valid prefix"));
+                match e.error_len() {
+                    Some(len) => {
+                        chunk.push('\u{FFFD}');
+                        idx += up_to + len;
+                    }
+                    None => {
+                        idx += up_to;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    carry.drain(..idx);
+    chunk
+}
+
 fn spawn_reader<R: Read + Send + 'static>(
     mut reader: R,
     to_stderr: bool,
+    on_line: Option<LineCallback>,
+    suppress_protocol_echo: bool,
+    echo_cols: Option<u16>,
 ) -> thread::JoinHandle<String> {
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
         let mut out = String::new();
         if to_stderr {
             let mut stderr = std::io::stderr();
+            let mut carry = Vec::new();
             loop {
                 let read = reader.read(&mut buf).unwrap_or(0);
                 if read == 0 {
                     break;
                 }
-                let chunk = String::from_utf8_lossy(&buf[..read]);
+                let chunk = decode_chunk(&mut carry, &buf[..read]);
                 let _ = stderr.write_all(chunk.as_bytes());
                 let _ = stderr.flush();
                 out.push_str(&chunk);
             }
+            if !carry.is_empty() {
+                let tail = String::from_utf8_lossy(&carry);
+                let _ = stderr.write_all(tail.as_bytes());
+                let _ = stderr.flush();
+                out.push_str(&tail);
+            }
         } else {
             let mut stdout = std::io::stdout();
+            // `pending` reassembles lines split across read chunks (and holds
+            // `\r`-terminated progress-bar fragments until the next `\n`).
+            // `out` keeps the raw byte stream exactly as before.
+            let mut pending = String::new();
+            let mut carry = Vec::new();
             loop {
                 let read = reader.read(&mut buf).unwrap_or(0);
                 if read == 0 {
                     break;
                 }
-                let chunk = String::from_utf8_lossy(&buf[..read]);
-                let _ = stdout.write_all(chunk.as_bytes());
-                let _ = stdout.flush();
+                let chunk = decode_chunk(&mut carry, &buf[..read]);
                 out.push_str(&chunk);
+                pending.push_str(&chunk);
+                while let Some(pos) = pending.find('\n') {
+                    let line: String = pending.drain(..=pos).collect();
+                    pump_line(
+                        line.strip_suffix('\n').unwrap_or(&line),
+                        &mut stdout,
+                        &on_line,
+                        suppress_protocol_echo,
+                        echo_cols,
+                    );
+                }
+                // Eagerly echo output that hasn't formed a line yet (e.g. `\r`
+                // progress-bar updates during long stretches with no `\n`,
+                // such as grad-accum windows of hundreds of micro-batches or
+                // long eval phases). See `eager_echo_len` for the safety
+                // rules (protocol hold-back, char boundaries).
+                let echo_up_to = eager_echo_len(&pending, crate::RESULT_PREFIX);
+                if echo_up_to > 0 {
+                    let fragment: String = pending.drain(..echo_up_to).collect();
+                    let cols = echo_cols.or_else(live_echo_cols);
+                    let fitted = fit_echo(&fragment, cols);
+                    let _ = stdout.write_all(fitted.as_bytes());
+                    let _ = stdout.flush();
+                }
+                // Belt-and-braces bound (see `enforce_pending_cap`): with
+                // eager echo active this only trips on pathological
+                // newline-free output containing protocol-looking text.
+                enforce_pending_cap(&mut pending);
+            }
+            // EOF with a retained partial sequence (child died mid-char):
+            // emit lossily rather than dropping bytes.
+            if !carry.is_empty() {
+                let tail = String::from_utf8_lossy(&carry);
+                out.push_str(&tail);
+                pending.push_str(&tail);
+            }
+            if !pending.is_empty() {
+                pump_line(
+                    &pending,
+                    &mut stdout,
+                    &on_line,
+                    suppress_protocol_echo,
+                    echo_cols,
+                );
             }
         }
         out
@@ -650,6 +927,7 @@ mod tests {
             RunnerOptions {
                 timeout: Some(Duration::from_secs(2)),
                 stop: None,
+                ..Default::default()
             },
         )
         .expect("run");
@@ -680,6 +958,7 @@ mod tests {
             RunnerOptions {
                 timeout: None,
                 stop: Some(stop),
+                ..Default::default()
             },
         )
         .expect("run");
@@ -716,6 +995,7 @@ mod tests {
             RunnerOptions {
                 timeout: Some(Duration::from_secs(2)),
                 stop: None,
+                ..Default::default()
             },
         )
         .expect("run");
@@ -734,5 +1014,237 @@ mod tests {
             &heartbeat_path,
             Duration::from_millis(600),
         );
+    }
+
+    #[test]
+    fn pending_cap_drops_runaway_buffers_with_warning() {
+        let mut small = String::from("progress fragment");
+        assert!(!enforce_pending_cap(&mut small));
+        assert_eq!(small, "progress fragment");
+        let mut huge = "x".repeat((1 << 20) + 1);
+        assert!(enforce_pending_cap(&mut huge));
+        assert!(huge.is_empty());
+    }
+
+    #[test]
+    fn decode_chunk_retains_split_multibyte_sequences() {
+        let approx = "≈".as_bytes(); // E2 89 88
+        let mut carry = Vec::new();
+        assert_eq!(decode_chunk(&mut carry, &approx[..2]), "");
+        assert_eq!(carry, approx[..2]);
+        assert_eq!(decode_chunk(&mut carry, &approx[2..]), "≈");
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn fit_echo_cuts_only_erase_sequence_redraws_to_live_width() {
+        // No erase sequence: untouched at any width — plain and one-shot
+        // `\r` lines wrap harmlessly whole and may be the only record.
+        let plain = "model_dim=768 layers=6 heads=8 out_dim=768 max_seq_len=512";
+        assert_eq!(fit_echo(plain, Some(80)), plain);
+        assert_eq!(fit_echo(plain, None), plain);
+        let record = "\repoch 0: train_loss=0.5 collapse=0.8 structure=0.1";
+        assert_eq!(fit_echo(record, Some(20)), record);
+        // `\r` redraw fitting in width: untouched.
+        let bar = "\x1b[2K\rok step 1/22";
+        assert_eq!(fit_echo(bar, Some(80)), bar);
+        // Over-wide redraw: cut to width-1, head escapes intact.
+        let long_bar = format!("\x1b[2K\r{}", "x".repeat(100));
+        let fitted = fit_echo(&long_bar, Some(80));
+        assert_eq!(fitted.chars().count(), 79);
+        assert!(fitted.starts_with("\x1b[2K\r"));
+        // Multibyte near the cut: never split a char.
+        let uni = format!("\x1b[2K\r{}", "é".repeat(50));
+        let fitted_uni = fit_echo(&uni, Some(10));
+        assert_eq!(fitted_uni.chars().count(), 9);
+        assert!(fitted_uni.ends_with('é'));
+        // Unknown, zero, or non-terminal width: untouched.
+        assert_eq!(fit_echo(&long_bar, None), long_bar.as_str());
+        assert_eq!(fit_echo(&long_bar, Some(0)), long_bar.as_str());
+    }
+
+    #[test]
+    fn pump_line_fits_redraws_to_injected_width_keeping_bytes_intact() {
+        use std::sync::Mutex;
+
+        // Wiring proof, sink-injected: over-wide `\r` redraws echo fitted
+        // to the injected width on every path, plain lines echo whole, and
+        // the callback keeps the full line either way.
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        let callback: Option<LineCallback> = Some(Arc::new(move |line: &str| {
+            seen_cb.lock().unwrap().push(line.to_string());
+        }));
+
+        // Suppressed-protocol path, full line: 5 head chars + 100 body.
+        let long_bar = format!("\x1b[2K\r{}", "x".repeat(100));
+        let mut echo = Vec::new();
+        pump_line(&long_bar, &mut echo, &callback, true, Some(20));
+        assert_eq!(echo, format!("{}\n", &long_bar[..19]).as_bytes());
+        assert_eq!(*seen.lock().unwrap(), vec![long_bar.clone()]);
+
+        // Unsuppressed path, same line: identical fitting.
+        let mut echo_plain = Vec::new();
+        pump_line(&long_bar, &mut echo_plain, &None, false, Some(20));
+        assert_eq!(echo_plain, format!("{}\n", &long_bar[..19]).as_bytes());
+
+        // Plain line (no `\r`): echoed whole even past the width, callback
+        // whole as always.
+        let mut echo_info = Vec::new();
+        let info = "model_dim=768 layers=6 heads=8 out_dim=768 max_seq_len=512";
+        pump_line(info, &mut echo_info, &None, true, Some(20));
+        assert_eq!(echo_info, format!("{info}\n").as_bytes());
+    }
+
+    #[test]
+    fn long_lines_survive_chunked_reads_and_parse_cleanly() {
+        use super::super::ipc::{ParsedItem, parse_prefix_lines};
+        use std::io::Read;
+        use std::sync::Mutex;
+
+        /// Reader yielding at most `chunk` bytes per call, splitting lines
+        /// (and multibyte sequences) mid-flight the way OS pipes do.
+        struct ChunkReader {
+            data: Vec<u8>,
+            pos: usize,
+            chunk: usize,
+        }
+        impl Read for ChunkReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.pos >= self.data.len() {
+                    return Ok(0);
+                }
+                let n = self.chunk.min(buf.len()).min(self.data.len() - self.pos);
+                buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+                self.pos += n;
+                Ok(n)
+            }
+        }
+
+        // A long in-place bar: ANSI wipe + `\r` redraws, non-ASCII tail, no
+        // newline until the end — the exact soup that used to eat line heads.
+        let mut bar = String::from("\x1b[2K\rtrain accum[1/88] step 0/22 dropout=0.000 bytes≈100");
+        for i in 2..=88u32 {
+            bar.push_str(&format!(
+                "\rtrain accum[{i}/88] step 0/22 dropout=0.000 bytes≈100"
+            ));
+        }
+        // A long protocol line: epoch event with a wide metric map.
+        let mut fields = String::new();
+        for i in 0..200u32 {
+            fields.push_str(&format!(r#""metric.m{i}":"{i}","#));
+        }
+        fields.pop();
+        let proto = format!(r#"{{"type":"event","name":"model.epoch_end","fields":{{{fields}}}}}"#);
+        let proto = format!("{}{proto}", crate::RESULT_PREFIX);
+        let soup = format!("info: start\n{bar}\n{proto}\ninfo: done\n");
+
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        let callback: LineCallback = Arc::new(move |line: &str| {
+            seen_cb.lock().unwrap().push(line.to_string());
+        });
+        let reader = ChunkReader {
+            data: soup.as_bytes().to_vec(),
+            pos: 0,
+            chunk: 7,
+        };
+        let handle = spawn_reader(reader, false, Some(callback), true, None);
+        let out = handle.join().unwrap();
+
+        // Raw stream round-trips byte-exactly, however the reads split it.
+        assert_eq!(out, soup);
+        // Callback delivery: short lines whole; the long protocol line
+        // whole (the guarantee the live parser relies on); the long
+        // non-protocol bar as its tail (its head went to terminal echo).
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 4);
+        assert_eq!(seen[0], "info: start");
+        assert!(bar.ends_with(&seen[1]), "bar tail: {}", seen[1]);
+        assert_eq!(seen[2], proto);
+        assert_eq!(seen[3], "info: done");
+        drop(seen);
+        // And the long protocol line parses without errors while the bar
+        // line yields no items (also without errors).
+        let parsed = parse_prefix_lines(&out, crate::RESULT_PREFIX).unwrap();
+        assert_eq!(parsed.len(), 1, "parsed: {parsed:?}");
+        assert!(
+            parsed[0].iter().any(|item| matches!(
+                item,
+                ParsedItem::Event { name, .. } if name == "model.epoch_end"
+            )),
+            "parsed: {:?}",
+            parsed[0]
+        );
+    }
+
+    #[test]
+    fn eager_echo_holds_short_buffers_and_protocol_lines() {
+        // Too short to hold anything back: nothing echoable.
+        assert_eq!(eager_echo_len("", crate::RESULT_PREFIX), 0);
+        assert_eq!(eager_echo_len("short", crate::RESULT_PREFIX), 0);
+        // A complete protocol line anywhere suppresses eager echo.
+        let with_prefix = format!("bar {} {{}}", crate::RESULT_PREFIX);
+        assert_eq!(eager_echo_len(&with_prefix, crate::RESULT_PREFIX), 0);
+    }
+
+    #[test]
+    fn eager_echo_holds_prefix_head_split_across_chunks() {
+        // Trailing partial prefix ("::ARGT", 6 of 12 bytes) must survive for
+        // reassembly: only bytes before the 11-byte holdback window echo.
+        let pending = "xxxxxx::ARGT";
+        assert_eq!(pending.len(), 12);
+        assert_eq!(eager_echo_len(pending, crate::RESULT_PREFIX), 1);
+    }
+
+    #[test]
+    fn eager_echo_never_splits_a_multibyte_char() {
+        // "X" + é (2 bytes) + 9 ASCII = 12 bytes; len - hold lands on é's
+        // second byte, which would panic `drain`. Must floor to 1.
+        let pending = "XéYYYYYYYYY";
+        assert_eq!(pending.len(), 12);
+        let n = eager_echo_len(pending, crate::RESULT_PREFIX);
+        assert_eq!(n, 1);
+        assert!(pending.is_char_boundary(n));
+        // Pure-ASCII equivalent echoes the full window.
+        assert_eq!(eager_echo_len("XAYYYYYYYYYY", crate::RESULT_PREFIX), 1);
+    }
+
+    #[test]
+    fn on_line_receives_complete_lines_and_stdout_stays_intact() {
+        CommandRunner::force_pipes_for_tests();
+        // The mock only emits protocol lines when it sees the tuning marker.
+        let envs = BTreeMap::from([(
+            argtuner_common::TUNING_MARKER_ENV.to_string(),
+            argtuner_common::TUNING_MARKER_VALUE.to_string(),
+        )]);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen_cb = seen.clone();
+        let output = CommandRunner::run_with_options(
+            &crate::test_support::bin_command("mock_emit_result"),
+            &envs,
+            RunnerOptions {
+                timeout: None,
+                stop: None,
+                on_line: Some(std::sync::Arc::new(move |line: &str| {
+                    seen_cb.lock().unwrap().push(line.to_string());
+                })),
+                suppress_protocol_echo: true,
+            },
+        )
+        .expect("run");
+        assert_eq!(output.exit_code, 0);
+        // Accumulation is unaffected by echo suppression or the callback.
+        let payload = output.parse_payload(crate::RESULT_PREFIX).expect("payload");
+        assert_eq!(payload.get_metric("metric").expect("metric"), 0.42);
+        // Every delivered line is complete (reassembled across read chunks,
+        // no embedded newlines) and the protocol event arrived intact.
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter()
+                .any(|l| l.contains(argtuner_common::MODEL_EPOCH_END_EVENT)),
+            "callback must observe the epoch_end line: {seen:?}"
+        );
+        assert!(seen.iter().all(|l| !l.contains('\n')), "lines: {seen:?}");
     }
 }
