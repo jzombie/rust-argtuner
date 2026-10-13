@@ -82,7 +82,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -93,7 +93,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -952,7 +952,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2003,7 +2003,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2925,7 +2925,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3337,17 +3337,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "term-clipboard"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b095d2c934cce1a428d3c49da9cb340f085e678434747e7a35df3934e840470"
+checksum = "7b962ef2c61a98c5dcde01ae5b04eb3757803eda2c0ec4ba29709b5b6184b018"
 dependencies = [
  "arboard",
  "base64 0.23.1",
@@ -3359,9 +3359,9 @@ dependencies = [
 
 [[package]]
 name = "term-logging"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0ecc9544ecf2d4eba30b7903ba99a025de82fa8a752d33819064f100e3a6055"
+checksum = "0aba78d4eb67f5165aa0387c2e913ab7303a50b23865ed70053012961693e678"
 dependencies = [
  "file-rotate",
  "libc",
@@ -3375,9 +3375,9 @@ dependencies = [
 
 [[package]]
 name = "term-sys-io"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "addaf579d6938d2a380da6b9f34264e74a4c73b8af83740b38becc835446a52d"
+checksum = "635dc0a512b75a3dc956baa36569ed557c8b07567fd9adf09374d8a0a5f0061e"
 dependencies = [
  "libc",
  "tracing",
@@ -3385,9 +3385,9 @@ dependencies = [
 
 [[package]]
 name = "term-wm"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cd7d0e1440c7f016618996fb163dce9a8b06675d9f8ed64c5e6026ea9bfb351"
+checksum = "e513604fd777bab91dec0ad2e2ce4c970849ff77bc027d4e5b42187a8cf98108"
 dependencies = [
  "anyhow",
  "clap",
@@ -3419,15 +3419,15 @@ dependencies = [
 
 [[package]]
 name = "term-wm-config"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3f5fa0200cbf17f80df909886b88d0515e01f2ad7efc94b8ebc0366a7e78a26"
+checksum = "651d6c60c0052ee7f5c4f8c42aefb5a39096388123ea75fe2901d02aa53f9982"
 
 [[package]]
 name = "term-wm-console"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a565ebe80ec279a8613dc48817b63c22d3f60e6657c8c569d0b1e70e1d0ce4d8"
+checksum = "0b183be021654abf25c49842b6f5a00c7a339ef81055d0a86b4becaa220f0e20"
 dependencies = [
  "crossbeam-channel",
  "crossterm",
@@ -3442,9 +3442,9 @@ dependencies = [
 
 [[package]]
 name = "term-wm-core"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93c38e595efd68a5e12f32260a8102c17f917b8f5a6e9310ed8b997d7d1c1402"
+checksum = "beb7c323ba2240b2ebe94d8ce5f152cb93bf6389baf4a4789e73b22a512292d4"
 dependencies = [
  "bitflags 2.13.1",
  "console",
@@ -3472,9 +3472,9 @@ dependencies = [
 
 [[package]]
 name = "term-wm-crossterm-adapter"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bc3faa4a63e6c25d05848c13f926520ee4d38681996f09c7621b51a7a0ef079"
+checksum = "1dd10f34ef68498700c0c7fe39ff6af862ec91319388c54a0a9f4fa4247bed14"
 dependencies = [
  "crossterm",
  "term-wm-events",
@@ -3482,9 +3482,9 @@ dependencies = [
 
 [[package]]
 name = "term-wm-events"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33346ddcdcf7cac56769e30aadb5818abe59bdbe7e4439f94f881860689a5120"
+checksum = "f3c0e9f4649ff3f7280de06f09525b6412ff5a7101df82c6b6fea944c62a3cc2"
 dependencies = [
  "bitcode",
  "term-wm-layout-engine",
@@ -3492,15 +3492,15 @@ dependencies = [
 
 [[package]]
 name = "term-wm-layout-engine"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04af77d31b60f69226a772b41c8479059d0559a5a6bbf146c6708d5fc0a42e16"
+checksum = "1f542b7731dd4252e79bd5ea6595cc310ccff42972db75bfb8a76e634efecd42"
 
 [[package]]
 name = "term-wm-pty-engine"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "734c250c6d2688aea68226d3612346f04d6be5f0c208b1ac9b3b725c282ab5b2"
+checksum = "738af2f09f90a5f75ad63a75793c0fc7ed8eac56a2388f6da629030a9fae8f51"
 dependencies = [
  "ctrlc",
  "libc",
@@ -3519,15 +3519,15 @@ dependencies = [
 
 [[package]]
 name = "term-wm-render"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ef3185ac01e2c8b5e60bd4125eac12da819948c9f3a5b51bda18190ad07267c"
+checksum = "59666b1e8a5dbe9ef3fac6d72f6841c51c4d935a4253c7129068311169caea45"
 
 [[package]]
 name = "term-wm-sys-ui-components"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db25f4542e85381e2f8011d4a8e02c0c10bdd5901aa6d183869454848c0045cc"
+checksum = "56bb9f5c25f35824564f93ac5078a4c500c03e8431b39e4ccc7f1998b477352a"
 dependencies = [
  "crossterm",
  "ratatui",
@@ -3543,9 +3543,9 @@ dependencies = [
 
 [[package]]
 name = "term-wm-ui-components"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05895891a7a81e8f8353c71da5112d7625a4fb2cfa1e8a91c49b0509ea49c3d1"
+checksum = "64cc966007f5dc336ec1bb3c703d7b482ad6fd8f367f7e3e66c8ab96e03a9fef"
 dependencies = [
  "crossterm",
  "indoc",
@@ -3570,9 +3570,9 @@ dependencies = [
 
 [[package]]
 name = "term-wm-ui-facade"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd0a1bf2f3155de4ccec39f95f9968d40f2a5921f8c9f2247efb1d49b41e66f2"
+checksum = "28919e9c4640bdedb544592fba3b99b2eda8a233350d9cae1b4b41d10b4b815d"
 dependencies = [
  "term-wm-core",
  "term-wm-render",
@@ -3582,16 +3582,15 @@ dependencies = [
 
 [[package]]
 name = "term-wm-view"
-version = "0.10.10-alpha"
+version = "0.10.15-alpha"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bac4f088c0d5dcbb0fe3b13e0d090e4c4562eda5b6cc07707f5b121936824efa"
+checksum = "325375a9a8916d261f1a4ac985dd70974294dd9a55d9a87f65a0c2551a0ca928"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
  "rstml",
  "syn 3.0.8",
- "term-wm-core",
 ]
 
 [[package]]
@@ -3615,7 +3614,7 @@ dependencies = [
  "parking_lot",
  "rustix",
  "signal-hook",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4348,7 +4347,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
