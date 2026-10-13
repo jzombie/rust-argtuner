@@ -306,6 +306,11 @@ impl TrialStore {
         self.db.load_step_records()
     }
 
+    /// Load all epoch records from the DB.
+    pub fn load_epoch_rows(&self) -> std::io::Result<Vec<TrialRecord>> {
+        self.db.load_epoch_records()
+    }
+
     /// Access the step cache (used by StepPublisher for catchup on new TUI connections).
     pub fn step_cache_handle(&self) -> Arc<Mutex<HashMap<usize, Vec<TrialRecord>>>> {
         self.step_cache.clone()

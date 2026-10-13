@@ -156,6 +156,24 @@ enum ChartMode {
     HyperParams,
 }
 
+/// Which record stream the metric charts sweep. Step rows carry per-step
+/// fields (`model.step_end.*`); epoch rows carry per-epoch fields
+/// (`model.epoch_end.*`). Shared `metric.*` keys may exist on either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChartSource {
+    Steps,
+    Epochs,
+}
+
+impl ChartSource {
+    fn label(self) -> &'static str {
+        match self {
+            ChartSource::Steps => "steps",
+            ChartSource::Epochs => "epochs",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChartView {
     Summary,
@@ -165,7 +183,9 @@ enum ChartView {
 struct ChartsView {
     trials: Vec<TrialRow>,
     epoch_rows: BTreeMap<i64, Vec<TrialRow>>,
+    step_rows: BTreeMap<i64, Vec<TrialRow>>,
     chart_mode: ChartMode,
+    chart_source: ChartSource,
     chart_view: ChartView,
     chart_selected: usize,
     metrics_len: usize,
@@ -219,6 +239,16 @@ impl Component<TermWmAction> for ChartsView {
             {
                 return EventResult::Action(action);
             }
+        }
+        // Record-source toggle (steps vs epochs) — chart-layer key like the
+        // other chart keys, so it only fires while the Charts window holds
+        // focus. Selection resets: the two streams expose different keys.
+        if kb.matches(TermWmAction::Custom(2), key) {
+            self.chart_source = match self.chart_source {
+                ChartSource::Steps => ChartSource::Epochs,
+                ChartSource::Epochs => ChartSource::Steps,
+            };
+            self.chart_selected = 0;
         }
         EventResult::Ignored
     }
@@ -550,6 +580,7 @@ impl AppState {
     fn push_data_to_components(&mut self) {
         let trials = self.trials.clone();
         let epochs = self.epoch_rows.clone();
+        let steps = self.step_rows.clone();
         let last_error = self.last_error.clone();
         let selected = self.selected_trial_idx();
         let axes = self.enabled_axes();
@@ -572,6 +603,7 @@ impl AppState {
             let mut c = sv.content.borrow_mut();
             c.trials = trials.clone();
             c.epoch_rows = epochs.clone();
+            c.step_rows = steps.clone();
             c.chart_mode = mode;
             c.last_error = last_error.clone();
             c.selected_trial_idx = selected;
@@ -582,7 +614,7 @@ impl AppState {
             let text = match trials.get(idx) {
                 Some(trial) => {
                     let epoch_rows = epochs.get(&trial.trial_id).cloned().unwrap_or_default();
-                    Text::from(trial_detail_lines(trial, &epoch_rows))
+                    Text::from(trial_detail_lines(trial, &epoch_rows, &trials[..]))
                 }
                 None => Text::from(vec![Line::from("No trial selected.")]),
             };
@@ -610,6 +642,10 @@ impl AppState {
             None => (ChartView::Summary, 0, 0),
         };
         let trial_id = trials.get(selected).map(|t| t.trial_id);
+        let source = self
+            .charts_sv()
+            .map(|sv| sv.content.borrow().chart_source)
+            .unwrap_or(ChartSource::Steps);
         let wm = self.inner.wm();
         wm.set_window_title(self.trials_key, "Trials");
         wm.set_window_title(
@@ -621,7 +657,7 @@ impl AppState {
         );
         wm.set_window_title(
             self.charts_key,
-            charts_window_title(mode, cv, cs, ml, charts_focused, trial_id),
+            charts_window_title(mode, source, cv, cs, ml, charts_focused, trial_id),
         );
         wm.set_window_title(
             self.frontier_key,
@@ -635,6 +671,11 @@ impl AppState {
 
     fn refresh_trials(&mut self) {
         let mut saw_activity = false;
+        // Live step rows arriving over TCP since the last poll. Merged below
+        // after the DB snapshot replaces the map, skipping rows the DB
+        // already has (each flush writes the DB and pushes TCP together, so
+        // most live rows have a DB twin by poll time).
+        let mut live_step_rows: BTreeMap<i64, Vec<TrialRow>> = BTreeMap::new();
         while let Some(line) = self.step_subscriber.try_recv() {
             saw_activity = true;
             if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line)
@@ -660,7 +701,7 @@ impl AppState {
                         }
                     })
                     .collect();
-                self.step_rows.entry(trial_id).or_default().extend(rows);
+                live_step_rows.entry(trial_id).or_default().extend(rows);
             }
         }
         match load_trials(&self.db_path) {
@@ -672,8 +713,19 @@ impl AppState {
                 let prev_trial_id = self.trials.get(prev_sel).map(|t| t.trial_id);
                 self.trials = trials;
                 self.epoch_rows = epoch_rows;
-                for (trial_id, rows) in step_rows {
-                    self.step_rows.entry(trial_id).or_default().extend(rows);
+                // Replace (not extend): the DB snapshot is complete, so
+                // extending would duplicate every row on each poll cycle.
+                self.step_rows = step_rows;
+                // Re-apply live rows not yet covered by the snapshot. Field
+                // maps identify twins (subscriber rows carry elapsed_ms 0
+                // while their DB twins carry the real value).
+                for (trial_id, rows) in live_step_rows {
+                    let entry = self.step_rows.entry(trial_id).or_default();
+                    for row in rows {
+                        if !entry.iter().any(|r| r.fields == row.fields) {
+                            entry.push(row);
+                        }
+                    }
                 }
                 if self.trials.iter().any(|t| t.status == "running")
                     || self
@@ -802,24 +854,28 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
 
 fn charts_window_title(
     chart_mode: ChartMode,
+    chart_source: ChartSource,
     chart_view: ChartView,
     chart_selected: usize,
     metrics_len: usize,
     charts_focused: bool,
     trial_id: Option<i64>,
 ) -> String {
+    // The source suffix answers "step or epoch?": step rows sweep
+    // `model.step_end.*`, epoch rows sweep `model.epoch_end.*`.
+    let src = chart_source.label();
     match chart_mode {
         ChartMode::Metrics if charts_focused && chart_view == ChartView::Focused => {
             let total = metrics_len;
             let current = chart_selected.saturating_add(1);
             match trial_id {
-                Some(id) => format!("Trial {id} - Metric Curve {current}/{total}"),
-                None => format!("Metric Curve {current}/{total}"),
+                Some(id) => format!("Trial {id} - Metric Curve {current}/{total} [{src}]"),
+                None => format!("Metric Curve {current}/{total} [{src}]"),
             }
         }
         ChartMode::Metrics => match trial_id {
-            Some(id) => format!("Trial {id} - Metric Curves"),
-            None => "Metric Curves".to_string(),
+            Some(id) => format!("Trial {id} - Metric Curves [{src}]"),
+            None => format!("Metric Curves [{src}]"),
         },
         ChartMode::HyperParams if charts_focused => match trial_id {
             Some(id) => format!("Trial {id} - Hyperparameter Space"),
@@ -858,7 +914,14 @@ fn chart_keybindings_hint(kb: &KeyBindings) -> String {
         .first()
         .cloned()
         .unwrap_or_default();
-    format!("[{zoom_in}] zoom in    [{zoom_out}] zoom out    [{reset}] reset    [{list}] list view")
+    let source = kb
+        .combos_for(TermWmAction::Custom(2))
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    format!(
+        "[{zoom_in}] zoom in    [{zoom_out}] zoom out    [{reset}] reset    [{list}] list view    [{source}] steps/epochs"
+    )
 }
 
 /// Returns the pressed key for key events; None for repeat/release or
@@ -881,6 +944,11 @@ fn argtuner_keybindings() -> KeyBindings {
     kb.add(
         TermWmAction::Custom(1),
         KeyCombo::new(KeyCode::Char('h'), KeyModifiers::NONE),
+    );
+    // Chart record-source toggle (steps vs epochs).
+    kb.add(
+        TermWmAction::Custom(2),
+        KeyCombo::new(KeyCode::Char('e'), KeyModifiers::NONE),
     );
     // Chart view toggle (Metrics mode).
     kb.add(
@@ -967,7 +1035,9 @@ fn mk_charts_window() -> ChartsWindow {
     let mut sv = ScrollViewComponent::new(ChartsView {
         trials: Vec::new(),
         epoch_rows: BTreeMap::new(),
+        step_rows: BTreeMap::new(),
         chart_mode: ChartMode::Metrics,
+        chart_source: ChartSource::Steps,
         chart_view: ChartView::Summary,
         chart_selected: 0,
         metrics_len: 0,
@@ -1296,9 +1366,28 @@ fn build_trial_items(trials: &[TrialRow]) -> Vec<String> {
             } else {
                 ""
             };
+            // Lineage annotation: which hyperparameter config this trial
+            // belongs to and which rung it ran. Promotion chains read as
+            // cfg3: t3(r0) → t5(r1) → t8(r2). Order untouched (selection
+            // indexes self.trials positionally).
+            let cfg = trial
+                .fields
+                .get("trial.config_id")
+                .map(String::as_str)
+                .unwrap_or("?");
+            let rung = trial
+                .fields
+                .get("trial.rung")
+                .map(String::as_str)
+                .unwrap_or("?");
+            let budget = trial
+                .fields
+                .get("trial.budget_epochs")
+                .map(String::as_str)
+                .unwrap_or("?");
             format!(
-                "trial {:>3}  {:<7}  {:<5}  {}",
-                trial.trial_id, trial.status, tag, metric_text
+                "trial {:>3}  {:<7}  {:<5}  cfg={:<4} r{rung}/{budget}  {}",
+                trial.trial_id, trial.status, tag, cfg, metric_text
             )
         })
         .collect()
@@ -1501,26 +1590,87 @@ fn render_charts_content(
         Paragraph::new("No trials loaded.").render(area, &mut backend.buffer);
         return;
     };
-    let epochs = charts
-        .epoch_rows
-        .get(&trial.trial_id)
-        .cloned()
-        .unwrap_or_default();
-    if epochs.is_empty() {
-        Paragraph::new("No epoch metrics for selected trial.").render(area, &mut backend.buffer);
+    // Lineage: same-config trials up to the selected trial's rung,
+    // ordered oldest-first, so a promoted trial's curve continues its
+    // ancestors instead of restarting at x=0 — and never leaks in later
+    // rungs the selected trial hasn't reached. Rows keep arrival-position
+    // x across the concatenation (rungs are chronological), so curves
+    // still never fold. Falls back to the selected trial alone when it
+    // has no config key or no siblings.
+    let selected_rung: i64 = trial
+        .fields
+        .get("trial.rung")
+        .and_then(|r| r.parse::<i64>().ok())
+        .unwrap_or(i64::MAX);
+    let mut chain: Vec<&TrialRow> = charts
+        .trials
+        .iter()
+        .filter(|t| {
+            trial
+                .fields
+                .get("trial.config_id")
+                .is_some_and(|c| t.fields.get("trial.config_id") == Some(c))
+                && t.fields
+                    .get("trial.rung")
+                    .and_then(|r| r.parse::<i64>().ok())
+                    .is_some_and(|r| r <= selected_rung)
+        })
+        .collect();
+    chain.sort_by_key(|t| {
+        t.fields
+            .get("trial.rung")
+            .and_then(|r| r.parse::<i64>().ok())
+            .unwrap_or(i64::MAX)
+    });
+    if chain.is_empty() {
+        chain.push(trial);
+    }
+    // Live step rows are the finest-grained live data (persisted ~1/sec while
+    // the trial runs); the source toggle picks which stream the charts sweep,
+    // falling back to the other when the selected one is empty (e.g. epochs
+    // for a trial that emitted no steps). Never merged: shared `metric.*`
+    // keys hold different values per stream (step loss vs epoch val_loss).
+    // Selection applies per chain link, then links concatenate in rung order.
+    let mut owned: Vec<TrialRow> = Vec::new();
+    for link in &chain {
+        let steps = charts
+            .step_rows
+            .get(&link.trial_id)
+            .cloned()
+            .unwrap_or_default();
+        let epochs = charts
+            .epoch_rows
+            .get(&link.trial_id)
+            .cloned()
+            .unwrap_or_default();
+        match charts.chart_source {
+            ChartSource::Steps if !steps.is_empty() => owned.extend(steps),
+            ChartSource::Epochs if !epochs.is_empty() => owned.extend(epochs),
+            _ => {
+                owned.extend(if !steps.is_empty() { steps } else { epochs });
+            }
+        }
+    }
+    let rows: &[TrialRow] = &owned;
+    if rows.is_empty() {
+        Paragraph::new("No epoch or step metrics for selected trial.")
+            .render(area, &mut backend.buffer);
         return;
     }
-    render_metric_charts(backend, charts, &epochs, area, ctx);
+    // x is always the row's arrival position (1-based). Rows arrive in
+    // chronological order, so the curve can never fold back on itself, flip
+    // mid-run, or depend on field names in any way.
+    render_metric_charts(backend, charts, rows, area, ctx);
 }
 
 fn render_metric_charts(
     backend: &mut RatatuiBackend,
     charts: &mut ChartsView,
-    epochs: &[TrialRow],
+    rows: &[TrialRow],
     area: Rect,
     ctx: &ComponentContext,
 ) {
-    let metric_keys = collect_metric_keys_for_epochs(epochs);
+    let metric_keys = collect_metric_keys(rows);
     charts.metrics_len = metric_keys.len();
     if metric_keys.is_empty() {
         Paragraph::new("No numeric metric curves.").render(area, &mut backend.buffer);
@@ -1529,7 +1679,6 @@ fn render_metric_charts(
     if charts.chart_selected >= metric_keys.len() {
         charts.chart_selected = metric_keys.len().saturating_sub(1);
     }
-    let x_axis = select_x_axis_spec(epochs);
 
     // Always reserve the bottom row for the config-derived keybinding hint so
     // the zoom/view keys are discoverable. The keys only act while the Charts
@@ -1576,10 +1725,9 @@ fn render_metric_charts(
                 };
                 render_metric_chart(
                     backend,
-                    epochs,
+                    rows,
                     &metric_keys[abs_idx],
                     rect,
-                    &x_axis,
                     charts.chart_zoom,
                 );
             }
@@ -1589,7 +1737,7 @@ fn render_metric_charts(
                 handle.set_content_size(chart_area.width as usize, chart_area.height as usize);
             }
             let key = &metric_keys[charts.chart_selected];
-            render_metric_chart(backend, epochs, key, chart_area, &x_axis, charts.chart_zoom);
+            render_metric_chart(backend, rows, key, chart_area, charts.chart_zoom);
         }
     }
 
@@ -1686,21 +1834,15 @@ fn render_hyperparam_space(backend: &mut RatatuiBackend, charts: &mut ChartsView
 
 fn render_metric_chart(
     backend: &mut RatatuiBackend,
-    epochs: &[TrialRow],
+    rows: &[TrialRow],
     key: &str,
     area: Rect,
-    x_axis: &XAxisSpec,
     zoom: f64,
 ) {
-    let series = metric_series_for_key(epochs, key, x_axis);
+    let series = metric_series_for_key(rows, key);
     let (min_x, max_x, min_y, max_y) = zoomed_series_bounds(&series, zoom);
     let x_labels = axis_labels(min_x, max_x);
     let y_labels = axis_labels(min_y, max_y);
-    let x_title = if x_axis.label == x_axis.unit {
-        x_axis.label.to_string()
-    } else {
-        format!("{} ({})", x_axis.label, x_axis.unit)
-    };
     let y_title = metric_axis_title(key);
     let title = if let Some(last) = series.last().map(|point| point.1) {
         format!("{key}  last={last:.4}")
@@ -1717,7 +1859,7 @@ fn render_metric_chart(
         .block(Block::default().borders(Borders::ALL).title(title))
         .x_axis(
             Axis::default()
-                .title(x_title)
+                .title("record")
                 .bounds([min_x, max_x])
                 .labels(x_labels),
         )
@@ -1730,10 +1872,13 @@ fn render_metric_chart(
     chart.render(area, &mut backend.buffer);
 }
 
-fn collect_metric_keys_for_epochs(epochs: &[TrialRow]) -> Vec<String> {
+/// Every numeric `metric.*` field gets its own chart. That is the entire
+/// rule: no variance tests, no exclusions, no name lists. A constant field
+/// draws a flat line, a counter draws a staircase — both are data, both plot.
+fn collect_metric_keys(rows: &[TrialRow]) -> Vec<String> {
     let mut keys = BTreeMap::new();
-    for epoch in epochs {
-        for (key, value) in &epoch.fields {
+    for row in rows {
+        for (key, value) in &row.fields {
             if !key.starts_with("metric.") || key.as_str() == "metric" {
                 continue;
             }
@@ -1742,30 +1887,19 @@ fn collect_metric_keys_for_epochs(epochs: &[TrialRow]) -> Vec<String> {
             }
         }
     }
-    keys.keys().cloned().collect()
+    keys.into_keys().collect()
 }
 
-fn metric_series_for_key(epochs: &[TrialRow], key: &str, x_axis: &XAxisSpec) -> Vec<(f64, f64)> {
-    let mut series = Vec::with_capacity(epochs.len());
-    for (idx, epoch) in epochs.iter().enumerate() {
-        let value = epoch.fields.get(key).and_then(|v| v.parse::<f64>().ok());
+fn metric_series_for_key(rows: &[TrialRow], key: &str) -> Vec<(f64, f64)> {
+    let mut series = Vec::with_capacity(rows.len());
+    for (idx, row) in rows.iter().enumerate() {
+        let value = row.fields.get(key).and_then(|v| v.parse::<f64>().ok());
         let Some(value) = value else {
             continue;
         };
-        let x = epoch_index(&epoch.fields, idx, x_axis);
-        series.push((x, value));
+        series.push(((idx + 1) as f64, value));
     }
     series
-}
-
-fn epoch_index(fields: &BTreeMap<String, String>, fallback: usize, x_axis: &XAxisSpec) -> f64 {
-    if let Some(key) = x_axis.key
-        && let Some(value) = fields.get(key)
-        && let Ok(parsed) = value.parse::<f64>()
-    {
-        return parsed;
-    }
-    (fallback + 1) as f64
 }
 
 fn series_bounds(series: &[(f64, f64)]) -> (f64, f64, f64, f64) {
@@ -1836,13 +1970,6 @@ fn series_y_bounds_in_range(series: &[(f64, f64)], min_x: f64, max_x: f64) -> Op
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct XAxisSpec {
-    key: Option<&'static str>,
-    label: &'static str,
-    unit: &'static str,
-}
-
 #[derive(Debug, Clone)]
 enum ParamDomain {
     Numeric { min: f64, max: f64 },
@@ -1852,76 +1979,6 @@ enum ParamDomain {
 #[derive(Debug, Clone)]
 struct AxisKey {
     name: String,
-}
-
-fn select_x_axis_spec(epochs: &[TrialRow]) -> XAxisSpec {
-    let candidates = [
-        XAxisSpec {
-            key: Some("metric.time_s"),
-            label: "time",
-            unit: "s",
-        },
-        XAxisSpec {
-            key: Some("metric.time_sec"),
-            label: "time",
-            unit: "s",
-        },
-        XAxisSpec {
-            key: Some("metric.elapsed_s"),
-            label: "time",
-            unit: "s",
-        },
-        XAxisSpec {
-            key: Some("metric.time_ms"),
-            label: "time",
-            unit: "ms",
-        },
-        XAxisSpec {
-            key: Some("metric.elapsed_ms"),
-            label: "time",
-            unit: "ms",
-        },
-        XAxisSpec {
-            key: Some("metric.epoch"),
-            label: "epoch",
-            unit: "epoch",
-        },
-        XAxisSpec {
-            key: Some("metric.last_epoch"),
-            label: "epoch",
-            unit: "epoch",
-        },
-        XAxisSpec {
-            key: Some("metric.step"),
-            label: "step",
-            unit: "step",
-        },
-        XAxisSpec {
-            key: Some("metric.step_idx"),
-            label: "step",
-            unit: "step",
-        },
-    ];
-
-    for candidate in candidates {
-        if let Some(key) = candidate.key
-            && epochs.iter().any(|epoch| {
-                epoch
-                    .fields
-                    .get(key)
-                    .and_then(|value| value.parse::<f64>().ok())
-                    .is_some()
-            })
-        {
-            return candidate;
-        }
-    }
-
-    XAxisSpec {
-        key: None,
-        label: "index",
-        unit: "idx",
-    }
 }
 
 fn axis_labels(min: f64, max: f64) -> Vec<Line<'static>> {
@@ -2141,10 +2198,50 @@ fn project_info_lines(project: &Project, poll_ms: u128) -> Vec<Line<'static>> {
     ]
 }
 
-fn trial_detail_lines(trial: &TrialRow, epochs: &[TrialRow]) -> Vec<Line<'static>> {
+fn trial_detail_lines(
+    trial: &TrialRow,
+    epochs: &[TrialRow],
+    all: &[TrialRow],
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     lines.push(Line::from(format!("trial_id: {}", trial.trial_id)));
     lines.push(Line::from(format!("status: {}", trial.status)));
+    // Promotion chain: siblings sharing this trial's config, ordered by
+    // rung, so a resumed trial shows where it came from and where it sits.
+    if let Some(cfg) = trial.fields.get("trial.config_id") {
+        let mut chain: Vec<&TrialRow> = all
+            .iter()
+            .filter(|t| t.fields.get("trial.config_id") == Some(cfg))
+            .collect();
+        chain.sort_by_key(|t| {
+            t.fields
+                .get("trial.rung")
+                .and_then(|r| r.parse::<i64>().ok())
+                .unwrap_or(i64::MAX)
+        });
+        if chain.len() > 1 {
+            let parts: Vec<String> = chain
+                .iter()
+                .map(|t| {
+                    let r = t
+                        .fields
+                        .get("trial.rung")
+                        .map(String::as_str)
+                        .unwrap_or("?");
+                    let here = if t.trial_id == trial.trial_id {
+                        " ← selected"
+                    } else {
+                        ""
+                    };
+                    format!("t{}(r{}, {}){}", t.trial_id, r, t.status, here)
+                })
+                .collect();
+            lines.push(Line::from(format!(
+                "chain(cfg {cfg}): {}",
+                parts.join(" → ")
+            )));
+        }
+    }
     lines.push(Line::from(format!("elapsed_ms: {}", trial.elapsed_ms)));
     lines.push(Line::from(format!("epochs_logged: {}", epochs.len())));
     if let Some(error) = &trial.error {
@@ -2432,5 +2529,77 @@ mod view_tests {
         assert_eq!(root.active, child.active);
         assert_eq!(root.dragging, child.dragging);
         assert_eq!(text.selection_text(), text.sv.selection_text());
+    }
+
+    fn axis_test_row(pairs: &[(&str, &str)]) -> TrialRow {
+        TrialRow {
+            trial_id: 0,
+            status: "running".to_string(),
+            elapsed_ms: 0,
+            error: None,
+            fields: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn series_uses_arrival_position_as_x() {
+        // x is always 1-based arrival position: it cannot collapse, flip, or
+        // depend on field names. Counter resets just draw over earlier x.
+        let rows = vec![
+            axis_test_row(&[("metric.step", "3"), ("metric.loss", "0.9")]),
+            axis_test_row(&[("metric.step", "1"), ("metric.loss", "0.8")]),
+            axis_test_row(&[("metric.step", "2"), ("metric.loss", "0.7")]),
+        ];
+        assert_eq!(
+            metric_series_for_key(&rows, "metric.loss"),
+            vec![(1.0, 0.9), (2.0, 0.8), (3.0, 0.7)]
+        );
+    }
+
+    #[test]
+    fn series_skips_rows_missing_the_key() {
+        let rows = vec![
+            axis_test_row(&[("metric.loss", "0.9")]),
+            axis_test_row(&[("metric.other", "1.0")]),
+            axis_test_row(&[("metric.loss", "0.7")]),
+        ];
+        // Position counts rows, not points: the curve keeps true spacing.
+        assert_eq!(
+            metric_series_for_key(&rows, "metric.loss"),
+            vec![(1.0, 0.9), (3.0, 0.7)]
+        );
+    }
+
+    #[test]
+    fn chart_keys_include_every_numeric_metric_field() {
+        // No filtering: constant lr and counters chart alongside loss.
+        // What you see is everything the trial emitted, nothing curated.
+        let rows = vec![
+            axis_test_row(&[
+                ("metric.loss", "0.9"),
+                ("metric.lr", "0.00005"),
+                ("metric.step", "1"),
+                ("hp.lr", "0.00005"),
+                ("note", "hello"),
+            ]),
+            axis_test_row(&[
+                ("metric.loss", "0.8"),
+                ("metric.lr", "0.00005"),
+                ("metric.step", "2"),
+                ("hp.lr", "0.00005"),
+                ("note", "world"),
+            ]),
+        ];
+        assert_eq!(
+            collect_metric_keys(&rows),
+            vec![
+                "metric.loss".to_string(),
+                "metric.lr".to_string(),
+                "metric.step".to_string()
+            ]
+        );
     }
 }
