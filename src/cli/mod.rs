@@ -61,7 +61,9 @@ pub enum Commands {
     },
     /// Re-run an interrupted trial in its existing artifact dir (no sweep,
     /// no wipe). The trial command re-renders from the stored row and the
-    /// training binary resumes from its latest checkpoint.
+    /// training binary resumes from its latest checkpoint. History is
+    /// append-only: rows already logged stay, so purge unwanted epochs
+    /// first or the new run's rows will sit alongside the old ones.
     ResumeTrial {
         /// Path to the project directory
         #[arg(value_name = "PROJECT_DIR")]
@@ -145,27 +147,33 @@ pub fn run() {
                     std::process::exit(1);
                 }
             };
-            let config = match project.load_config() {
-                Ok(config) => config,
+            // Single read of the unified config: raw text first (for the
+            // snapshot comparison), then parse from the same bytes. This
+            // avoids re-reading the file for config/template/space/store
+            // separately (and the TOCTOU window between those reads);
+            // template/space/store construction from the parsed value is
+            // infallible.
+            let config_text = match std::fs::read_to_string(project.unified_config_path()) {
+                Ok(text) => text,
                 Err(e) => {
                     eprintln!("Error: failed to load config: {e}");
                     std::process::exit(1);
                 }
             };
-            let template = match project.read_template() {
-                Ok(template) => template,
+            let unified: crate::project::UnifiedConfig = match toml::from_str(&config_text) {
+                Ok(unified) => unified,
                 Err(e) => {
-                    eprintln!("Error: failed to read template: {e}");
+                    eprintln!("Error: failed to load config: {e}");
                     std::process::exit(1);
                 }
             };
-            let space = match project.read_space() {
-                Ok(space) => space,
-                Err(e) => {
-                    eprintln!("Error: failed to read search space: {e}");
-                    std::process::exit(1);
-                }
-            };
+            let config = crate::project::ProjectConfig::from_sections(
+                unified.project,
+                unified.sampler,
+                unified.scheduler,
+            );
+            let template = crate::command::CommandTemplate::new(unified.template);
+            let space = unified.space;
             if let Err(err) = validate_project_config(
                 &config,
                 &template,
@@ -175,20 +183,8 @@ pub fn run() {
                 eprintln!("Error: {err}");
                 std::process::exit(1);
             }
-            let config_text = match project.read_unified_config_text() {
-                Ok(text) => text,
-                Err(e) => {
-                    eprintln!("Error: failed to read unified config: {e}");
-                    std::process::exit(1);
-                }
-            };
-            let store = match project.store() {
-                Ok(store) => store,
-                Err(e) => {
-                    eprintln!("Error: failed to open trial store: {e}");
-                    std::process::exit(1);
-                }
-            };
+            let store =
+                crate::trial::store::TrialStore::new(project.trials_path(), template.clone());
             if let Err(e) = store.ensure_project_config(&config_text, false) {
                 eprintln!("Error: {e}");
                 std::process::exit(1);

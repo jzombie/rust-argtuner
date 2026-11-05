@@ -525,40 +525,42 @@ impl CommandObjective {
     /// preserves everything on disk: checkpoints, optimizer state, logs.
     /// The training binary itself resumes from its latest checkpoint.
     /// Refuses completed trials and trials whose dir is gone.
+    ///
+    /// History is append-only: already-logged epoch/step rows are kept,
+    /// so purge unwanted epochs before resuming or the new run's rows
+    /// will sit alongside the old ones.
     pub fn resume_trial(&self, trial_id: usize) -> Result<f64, String> {
+        // Single error format for every refusal below.
+        let fail = |why: &dyn std::fmt::Display| format!("trial {trial_id}: {why}");
         let stored = self
             .store
             .load_fields(trial_id)
             .map_err(|e| format!("trial log load failed: {e}"))?
-            .ok_or_else(|| format!("no trial {trial_id} in the store"))?;
+            .ok_or_else(|| fail(&"not present in the store"))?;
         match stored
             .get(crate::constants::FIELD_TRIAL_STATUS)
             .and_then(|s| s.parse::<TrialStatus>().ok())
         {
             Some(TrialStatus::Running) | Some(TrialStatus::Error) => {}
             Some(TrialStatus::Ok) => {
-                return Err(format!(
-                    "trial {trial_id} already completed; nothing to resume"
-                ));
+                return Err(fail(&"already completed; nothing to resume"));
             }
             None => {
-                return Err(format!(
-                    "trial {trial_id} has no parseable status; refusing to resume"
-                ));
+                return Err(fail(&"has no parseable status; refusing to resume"));
             }
         }
         let trial_dir = self.artifacts_dir.join(format!("trial_{trial_id}"));
         if !trial_dir.is_dir() {
-            return Err(format!(
-                "trial {trial_id} dir is gone ({}); resume needs its checkpoints",
+            return Err(fail(&format_args!(
+                "dir is gone ({}); resume needs its checkpoints",
                 trial_dir.display()
-            ));
+            )));
         }
         let (command, _) = self
             .store
             .render_command_with_values(trial_id)
             .map_err(|e| format!("trial command render failed: {e}"))?
-            .ok_or_else(|| format!("trial {trial_id} has no stored command"))?;
+            .ok_or_else(|| fail(&"has no stored command"))?;
         // Base fields: the stored row minus result and row-level columns,
         // so the new run's metrics land fresh instead of inheriting stale
         // values through `or_insert` merges (and stale status shadowing the
@@ -1276,7 +1278,10 @@ mod tests {
         let err = objective.resume_trial(0).expect_err("completed trial");
         assert!(err.contains("already completed"), "unexpected error: {err}");
         let err = objective.resume_trial(99).expect_err("missing trial");
-        assert!(err.contains("no trial 99"), "unexpected error: {err}");
+        assert!(
+            err.contains("not present in the store"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -1289,6 +1294,42 @@ mod tests {
 
         let err = objective.resume_trial(0).expect_err("dir gone");
         assert!(err.contains("dir is gone"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resume_trial_refuses_unparseable_status() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (objective, _) = resume_test_objective(&dir);
+        let _ = objective.eval(&[]).expect("eval");
+
+        // A row-level `status` that isn't a TrialStatus shadows the record's
+        // status column on load (fields merge last in `record_to_map`), so
+        // resume sees no parseable status at all.
+        let mut fields = objective
+            .store()
+            .load_fields(0)
+            .expect("load fields")
+            .expect("fields row");
+        fields.insert(
+            crate::FIELD_TRIAL_STATUS.to_string(),
+            "not-a-status".to_string(),
+        );
+        objective
+            .store()
+            .update(&crate::TrialRecord {
+                trial_id: 0,
+                status: crate::TrialStatus::Running,
+                elapsed_ms: 0,
+                error: None,
+                fields,
+            })
+            .expect("update");
+
+        let err = objective.resume_trial(0).expect_err("unparseable status");
+        assert!(
+            err.contains("no parseable status"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

@@ -23,7 +23,10 @@ pub struct TrialOverrides {
 /// stale values through `or_insert` merges. Single source of truth — every
 /// place that separates trial inputs from trial outputs uses this.
 pub fn is_result_field(key: &str) -> bool {
-    key.starts_with(&format!("{METRIC_NAMESPACE}."))
+    // Zero-alloc prefix check: `metric.` without formatting a new string
+    // per call (this runs per key inside `retain`).
+    key.strip_prefix(METRIC_NAMESPACE)
+        .is_some_and(|rest| rest.starts_with('.'))
         || key.starts_with("score.")
         || key == crate::constants::FIELD_METRIC
         || key == crate::constants::FIELD_SCORE
@@ -44,8 +47,10 @@ pub fn fill_trial_env(
     trial_id: usize,
     trial_dir: Option<&Path>,
 ) {
+    // Identity is unconditional: every managed subprocess knows its trial,
+    // whether or not it got a checkpoint dir. Only the dir is conditional.
+    env.insert(ENV_TRIAL_ID.to_string(), trial_id.to_string());
     if let Some(dir) = trial_dir {
-        env.insert(ENV_TRIAL_ID.to_string(), trial_id.to_string());
         env.entry(ENV_TRIAL_DIR.to_string())
             .or_insert_with(|| dir.to_string_lossy().to_string());
     }
@@ -203,6 +208,21 @@ pub fn enforce_hp_immutability(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trial_env_exports_identity_without_checkpoint_dir() {
+        // Identity must not depend on filesystem provisioning: even with no
+        // trial dir, the subprocess learns its trial id (DIR stays absent).
+        let mut env = BTreeMap::new();
+        super::fill_trial_env(&mut env, 7, None);
+        assert_eq!(env.get(ENV_TRIAL_ID).map(String::as_str), Some("7"));
+        assert!(!env.contains_key(ENV_TRIAL_DIR));
+        assert_eq!(
+            env.get(argtuner_common::TUNING_MARKER_ENV)
+                .map(String::as_str),
+            Some(argtuner_common::TUNING_MARKER_VALUE)
+        );
+    }
 
     #[test]
     fn render_uses_trial_id_for_trial_dir() {

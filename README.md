@@ -226,6 +226,12 @@ Run the test suite (matches CI):
 cargo test --workspace --all-features
 ```
 
+> Note: unit and integration tests spawn the `mock_*` helper binaries from
+> `crates/mock-bin`, so scoped runs such as `cargo test -p argtuner --lib`
+> fail unless those binaries exist. Build them first with
+> `cargo build --workspace --all-features --bins`
+> (plain `cargo test --workspace` handles this on its own).
+
 > Note: `.cargo/config.toml.example` is only needed when hacking on the
 > extracted `term-wm` UI crates locally; a normal build resolves them from
 > crates.io and needs no extra configuration.
