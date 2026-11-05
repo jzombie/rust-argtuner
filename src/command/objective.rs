@@ -1296,6 +1296,42 @@ mod tests {
     }
 
     #[test]
+    fn resume_trial_refuses_unparseable_status() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (objective, _) = resume_test_objective(&dir);
+        let _ = objective.eval(&[]).expect("eval");
+
+        // A row-level `status` that isn't a TrialStatus shadows the record's
+        // status column on load (fields merge last in `record_to_map`), so
+        // resume sees no parseable status at all.
+        let mut fields = objective
+            .store()
+            .load_fields(0)
+            .expect("load fields")
+            .expect("fields row");
+        fields.insert(
+            crate::FIELD_TRIAL_STATUS.to_string(),
+            "not-a-status".to_string(),
+        );
+        objective
+            .store()
+            .update(&crate::TrialRecord {
+                trial_id: 0,
+                status: crate::TrialStatus::Running,
+                elapsed_ms: 0,
+                error: None,
+                fields,
+            })
+            .expect("update");
+
+        let err = objective.resume_trial(0).expect_err("unparseable status");
+        assert!(
+            err.contains("no parseable status"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn trial_csv_records_start_update_finish() {
         let dir = tempfile::tempdir().expect("tempdir");
         let template = crate::CommandTemplate::new(emit_result_command());
