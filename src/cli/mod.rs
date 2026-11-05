@@ -59,6 +59,19 @@ pub enum Commands {
         #[arg(long)]
         config_id: Option<usize>,
     },
+    /// Re-run an interrupted trial in its existing artifact dir (no sweep,
+    /// no wipe). The trial command re-renders from the stored row and the
+    /// training binary resumes from its latest checkpoint. History is
+    /// append-only: rows already logged stay, so purge unwanted epochs
+    /// first or the new run's rows will sit alongside the old ones.
+    ResumeTrial {
+        /// Path to the project directory
+        #[arg(value_name = "PROJECT_DIR")]
+        path: PathBuf,
+        /// Trial id to resume (must exist and not be completed)
+        #[arg(value_name = "TRIAL_ID")]
+        trial_id: usize,
+    },
     /// Show what argtuner parsed from the project's config
     Inspect {
         /// Path to the project directory
@@ -117,6 +130,93 @@ pub fn run() {
                 Ok(out) => println!("{out}"),
                 Err(e) => {
                     eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::ResumeTrial { path, trial_id } => {
+            let project = Project::new(path);
+            if let Err(e) = project.ensure_dirs() {
+                eprintln!("Error: failed to prepare project dirs: {e}");
+                std::process::exit(1);
+            }
+            let _lock = match project.acquire_lock() {
+                Ok(lock) => lock,
+                Err(e) => {
+                    eprintln!("Error: failed to acquire project lock: {e}");
+                    std::process::exit(1);
+                }
+            };
+            // Single read of the unified config: raw text first (for the
+            // snapshot comparison), then parse from the same bytes. This
+            // avoids re-reading the file for config/template/space/store
+            // separately (and the TOCTOU window between those reads);
+            // template/space/store construction from the parsed value is
+            // infallible.
+            let config_text = match std::fs::read_to_string(project.unified_config_path()) {
+                Ok(text) => text,
+                Err(e) => {
+                    eprintln!("Error: failed to load config: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let unified: crate::project::UnifiedConfig = match toml::from_str(&config_text) {
+                Ok(unified) => unified,
+                Err(e) => {
+                    eprintln!("Error: failed to load config: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let config = crate::project::ProjectConfig::from_sections(
+                unified.project,
+                unified.sampler,
+                unified.scheduler,
+            );
+            let template = crate::command::CommandTemplate::new(unified.template);
+            let space = unified.space;
+            if let Err(err) = validate_project_config(
+                &config,
+                &template,
+                &space,
+                &template.placeholders().unwrap_or_default(),
+            ) {
+                eprintln!("Error: {err}");
+                std::process::exit(1);
+            }
+            let store =
+                crate::trial::store::TrialStore::new(project.trials_path(), template.clone());
+            if let Err(e) = store.ensure_project_config(&config_text, false) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+            let objective = crate::command::CommandObjective::new(
+                store,
+                template,
+                space,
+                project.artifacts_dir(),
+                config.metric_key.clone(),
+                config.goal,
+                config.inject_trial_placeholders,
+                *trial_id,
+            )
+            .with_objectives(config.objectives.clone())
+            .with_runner_options(
+                if config.scheduler.trial_timeout_s > 0 {
+                    Some(std::time::Duration::from_secs(
+                        config.scheduler.trial_timeout_s,
+                    ))
+                } else {
+                    None
+                },
+                None,
+            );
+            // Deliberately no stale-trial sweep: resume preserves the trial
+            // dir (checkpoints, optimizer state). The training binary picks
+            // up from its latest checkpoint on its own.
+            match objective.resume_trial(*trial_id) {
+                Ok(score) => println!("resumed trial {trial_id}: score={score:.6}"),
+                Err(e) => {
+                    eprintln!("Error: {e}");
                     std::process::exit(1);
                 }
             }

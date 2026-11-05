@@ -2,4 +2,6 @@
 **/artifacts/
 *.csv
 *.sqlite*
+*.profraw
 .cargo/config.toml
+.codegraph

@@ -18,6 +18,50 @@ pub struct TrialOverrides {
     pub env: BTreeMap<String, String>,
 }
 
+/// Result columns: per-run outputs, never inputs. Stripped when rebuilding
+/// a resume base so the new run's metrics land fresh instead of inheriting
+/// stale values through `or_insert` merges. Single source of truth — every
+/// place that separates trial inputs from trial outputs uses this.
+pub fn is_result_field(key: &str) -> bool {
+    // Zero-alloc prefix check: `metric.` without formatting a new string
+    // per call (this runs per key inside `retain`).
+    key.strip_prefix(METRIC_NAMESPACE)
+        .is_some_and(|rest| rest.starts_with('.'))
+        || key.starts_with("score.")
+        || key == crate::constants::FIELD_METRIC
+        || key == crate::constants::FIELD_SCORE
+}
+
+/// Row-level bookkeeping keys. They live on the record, never in a trial's
+/// inputs; stripped alongside result columns on resume (they shadow the
+/// record status on load).
+pub fn is_row_field(key: &str) -> bool {
+    key == FIELD_TRIAL_STATUS || key == FIELD_TRIAL_ELAPSED_MS || key == FIELD_TRIAL_ERROR
+}
+
+/// Stamp a trial's managed-subprocess identity onto an env map. Single
+/// source of truth — the render path and resume both come through here so
+/// the marker/identity contract can't diverge between them.
+pub fn fill_trial_env(
+    env: &mut BTreeMap<String, String>,
+    trial_id: usize,
+    trial_dir: Option<&Path>,
+) {
+    // Identity is unconditional: every managed subprocess knows its trial,
+    // whether or not it got a checkpoint dir. Only the dir is conditional.
+    env.insert(ENV_TRIAL_ID.to_string(), trial_id.to_string());
+    if let Some(dir) = trial_dir {
+        env.entry(ENV_TRIAL_DIR.to_string())
+            .or_insert_with(|| dir.to_string_lossy().to_string());
+    }
+    // Always mark this subprocess as an argtuner-managed trial so the ipc
+    // binding can suppress stdout emission for standalone (non-argtuner) runs.
+    env.insert(
+        argtuner_common::TUNING_MARKER_ENV.to_string(),
+        argtuner_common::TUNING_MARKER_VALUE.to_string(),
+    );
+}
+
 pub struct RenderedTrial {
     pub command: String,
     pub fields: BTreeMap<String, String>,
@@ -82,17 +126,9 @@ pub fn render_trial_command_with_overrides(
         fields
             .entry(PLACEHOLDER_TRIAL_DIR.to_string())
             .or_insert_with(|| dir.to_string_lossy().to_string());
-        env.insert(ENV_TRIAL_ID.to_string(), trial_id.to_string());
-        env.entry(ENV_TRIAL_DIR.to_string())
-            .or_insert_with(|| dir.to_string_lossy().to_string());
         trial_dir = Some(dir);
     }
-    // Always mark this subprocess as an argtuner-managed trial so the ipc
-    // binding can suppress stdout emission for standalone (non-argtuner) runs.
-    env.insert(
-        argtuner_common::TUNING_MARKER_ENV.to_string(),
-        argtuner_common::TUNING_MARKER_VALUE.to_string(),
-    );
+    fill_trial_env(&mut env, trial_id, trial_dir.as_deref());
     let command = if inactive.is_empty() {
         template.render(&values)?
     } else {
@@ -172,6 +208,21 @@ pub fn enforce_hp_immutability(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trial_env_exports_identity_without_checkpoint_dir() {
+        // Identity must not depend on filesystem provisioning: even with no
+        // trial dir, the subprocess learns its trial id (DIR stays absent).
+        let mut env = BTreeMap::new();
+        super::fill_trial_env(&mut env, 7, None);
+        assert_eq!(env.get(ENV_TRIAL_ID).map(String::as_str), Some("7"));
+        assert!(!env.contains_key(ENV_TRIAL_DIR));
+        assert_eq!(
+            env.get(argtuner_common::TUNING_MARKER_ENV)
+                .map(String::as_str),
+            Some(argtuner_common::TUNING_MARKER_VALUE)
+        );
+    }
 
     #[test]
     fn render_uses_trial_id_for_trial_dir() {

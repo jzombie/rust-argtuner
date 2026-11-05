@@ -516,6 +516,82 @@ impl CommandObjective {
                 }
             }
         }
+        self.run_rendered_trial(trial_id, rendered, existing_fields, persist_invalid_config)
+    }
+
+    /// Re-run an interrupted trial in its existing artifact dir.
+    ///
+    /// Unlike the sweep path (which deletes stale trial dirs), resume
+    /// preserves everything on disk: checkpoints, optimizer state, logs.
+    /// The training binary itself resumes from its latest checkpoint.
+    /// Refuses completed trials and trials whose dir is gone.
+    ///
+    /// History is append-only: already-logged epoch/step rows are kept,
+    /// so purge unwanted epochs before resuming or the new run's rows
+    /// will sit alongside the old ones.
+    pub fn resume_trial(&self, trial_id: usize) -> Result<f64, String> {
+        // Single error format for every refusal below.
+        let fail = |why: &dyn std::fmt::Display| format!("trial {trial_id}: {why}");
+        let stored = self
+            .store
+            .load_fields(trial_id)
+            .map_err(|e| format!("trial log load failed: {e}"))?
+            .ok_or_else(|| fail(&"not present in the store"))?;
+        match stored
+            .get(crate::constants::FIELD_TRIAL_STATUS)
+            .and_then(|s| s.parse::<TrialStatus>().ok())
+        {
+            Some(TrialStatus::Running) | Some(TrialStatus::Error) => {}
+            Some(TrialStatus::Ok) => {
+                return Err(fail(&"already completed; nothing to resume"));
+            }
+            None => {
+                return Err(fail(&"has no parseable status; refusing to resume"));
+            }
+        }
+        let trial_dir = self.artifacts_dir.join(format!("trial_{trial_id}"));
+        if !trial_dir.is_dir() {
+            return Err(fail(&format_args!(
+                "dir is gone ({}); resume needs its checkpoints",
+                trial_dir.display()
+            )));
+        }
+        let (command, _) = self
+            .store
+            .render_command_with_values(trial_id)
+            .map_err(|e| format!("trial command render failed: {e}"))?
+            .ok_or_else(|| fail(&"has no stored command"))?;
+        // Base fields: the stored row minus result and row-level columns,
+        // so the new run's metrics land fresh instead of inheriting stale
+        // values through `or_insert` merges (and stale status shadowing the
+        // record on load). Classification lives in one place (`trial::`).
+        let mut base_fields = stored.clone();
+        base_fields.retain(|key, _| {
+            !(crate::trial::is_result_field(key) || crate::trial::is_row_field(key))
+        });
+        let mut env = std::collections::BTreeMap::new();
+        crate::trial::fill_trial_env(&mut env, trial_id, Some(&trial_dir));
+        let rendered = crate::trial::RenderedTrial {
+            command,
+            fields: base_fields,
+            trial_dir: Some(trial_dir),
+            env,
+        };
+        self.run_rendered_trial(trial_id, rendered, Some(stored), true)
+            .map(|(score, _)| score)
+    }
+
+    /// Execute an already-rendered trial command and finalize its
+    /// record exactly like the eval path (live feed, metric
+    /// extraction, Ok/Error bookkeeping). Shared by fresh evals and
+    /// resumes so the two can never diverge.
+    fn run_rendered_trial(
+        &self,
+        trial_id: usize,
+        rendered: crate::trial::RenderedTrial,
+        existing_fields: Option<BTreeMap<String, String>>,
+        persist_invalid_config: bool,
+    ) -> Result<(f64, Vec<f64>), String> {
         let command = rendered.command;
         let start = std::time::Instant::now();
 
@@ -1113,6 +1189,146 @@ mod tests {
         assert_eq!(
             fields.get(crate::FIELD_TRIAL_STATUS),
             Some(&"error".to_string())
+        );
+    }
+
+    fn resume_test_objective(dir: &tempfile::TempDir) -> (CommandObjective, std::path::PathBuf) {
+        let template = crate::CommandTemplate::new(emit_result_command());
+        let store = crate::TrialStore::new(
+            dir.path().join(crate::TRIALS_CSV_FILENAME),
+            template.clone(),
+        );
+        let space = crate::SearchSpace { params: vec![] };
+        let artifacts = dir.path().join("artifacts");
+        let objective = CommandObjective::new(
+            store,
+            template,
+            space,
+            artifacts.clone(),
+            "metric".to_string(),
+            crate::Goal::Min,
+            true,
+            0,
+        );
+        (objective, artifacts)
+    }
+
+    fn mark_trial_running(objective: &CommandObjective, trial_id: usize) {
+        let mut fields = objective
+            .store()
+            .load_fields(trial_id)
+            .expect("load fields")
+            .expect("fields row");
+        // Drop row-level keys or they shadow the record status on load.
+        fields.remove(crate::FIELD_TRIAL_STATUS);
+        fields.remove(crate::FIELD_TRIAL_ELAPSED_MS);
+        fields.remove(crate::FIELD_TRIAL_ERROR);
+        objective
+            .store()
+            .update(&crate::TrialRecord {
+                trial_id,
+                status: crate::TrialStatus::Running,
+                elapsed_ms: 0,
+                error: None,
+                fields,
+            })
+            .expect("mark running");
+    }
+
+    #[test]
+    fn resume_trial_reruns_command_without_wiping_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (objective, artifacts) = resume_test_objective(&dir);
+        let score = objective.eval(&[]).expect("eval");
+        assert!((score - 0.42).abs() < 1e-6);
+
+        // Simulate an interrupted run: checkpoint-like sentinel plus a
+        // Running record, as if the process died mid-trial.
+        let trial_dir = artifacts.join("trial_0");
+        assert!(trial_dir.is_dir(), "eval must create the trial dir");
+        let sentinel = trial_dir.join("checkpoint_epoch_005.mpk");
+        std::fs::write(&sentinel, b"weights").expect("sentinel");
+        mark_trial_running(&objective, 0);
+
+        let resumed = objective.resume_trial(0).expect("resume");
+        assert!((resumed - 0.42).abs() < 1e-6);
+        assert!(
+            sentinel.exists(),
+            "resume must preserve the trial dir (sweep deletes it)"
+        );
+        let fields = objective
+            .store()
+            .load_fields(0)
+            .expect("load fields")
+            .expect("fields row");
+        assert_eq!(
+            fields.get(crate::FIELD_TRIAL_STATUS),
+            Some(&"ok".to_string())
+        );
+        // Fresh metrics from the resumed run, not the pre-interruption row.
+        assert_eq!(fields.get("metric.last_epoch"), Some(&"7".to_string()));
+    }
+
+    #[test]
+    fn resume_trial_refuses_completed_or_missing_trials() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (objective, _) = resume_test_objective(&dir);
+        let _ = objective.eval(&[]).expect("eval");
+
+        let err = objective.resume_trial(0).expect_err("completed trial");
+        assert!(err.contains("already completed"), "unexpected error: {err}");
+        let err = objective.resume_trial(99).expect_err("missing trial");
+        assert!(
+            err.contains("not present in the store"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resume_trial_refuses_when_dir_is_gone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (objective, artifacts) = resume_test_objective(&dir);
+        let _ = objective.eval(&[]).expect("eval");
+        mark_trial_running(&objective, 0);
+        std::fs::remove_dir_all(artifacts.join("trial_0")).expect("rm dir");
+
+        let err = objective.resume_trial(0).expect_err("dir gone");
+        assert!(err.contains("dir is gone"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resume_trial_refuses_unparseable_status() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (objective, _) = resume_test_objective(&dir);
+        let _ = objective.eval(&[]).expect("eval");
+
+        // A row-level `status` that isn't a TrialStatus shadows the record's
+        // status column on load (fields merge last in `record_to_map`), so
+        // resume sees no parseable status at all.
+        let mut fields = objective
+            .store()
+            .load_fields(0)
+            .expect("load fields")
+            .expect("fields row");
+        fields.insert(
+            crate::FIELD_TRIAL_STATUS.to_string(),
+            "not-a-status".to_string(),
+        );
+        objective
+            .store()
+            .update(&crate::TrialRecord {
+                trial_id: 0,
+                status: crate::TrialStatus::Running,
+                elapsed_ms: 0,
+                error: None,
+                fields,
+            })
+            .expect("update");
+
+        let err = objective.resume_trial(0).expect_err("unparseable status");
+        assert!(
+            err.contains("no parseable status"),
+            "unexpected error: {err}"
         );
     }
 

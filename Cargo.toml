@@ -24,7 +24,7 @@ resolver = "2"
 
 [workspace.package]
 authors = ["Jeremy Harris <jeremy.harris@zenosmosis.com>"]
-version = "0.2.0-alpha"
+version = "0.3.0-alpha"
 edition = "2024"
 description = "Project-based command-template hyperparameter tuner CLI."
 repository = "https://github.com/jzombie/rust-argtuner"
@@ -34,10 +34,10 @@ publish = true
 [workspace.dependencies]
 argmin = { version = "0.11", features = ["serde1"] }
 argmin-math = { version = "0.5.1", features = ["vec"] }
-argtuner = { path = ".", version = "0.2.0-alpha" }
-argtuner-common = { path = "crates/common", version = "0.2.0-alpha" }
-argtuner-derive = { path = "crates/argtuner-derive", version = "0.2.0-alpha" }
-argtuner-sdk = { path = "crates/argtuner-sdk", version = "0.2.0-alpha" }
+argtuner = { path = ".", version = "0.3.0-alpha" }
+argtuner-common = { path = "crates/common", version = "0.3.0-alpha" }
+argtuner-derive = { path = "crates/argtuner-derive", version = "0.3.0-alpha" }
+argtuner-sdk = { path = "crates/argtuner-sdk", version = "0.3.0-alpha" }
 chrono = { version = "0.4.42", features = ["serde", "alloc"] }
 clap = "4.5.53"
 command-group = "5.0.1"
@@ -48,7 +48,7 @@ hostname = "0.4.2"
 ignore = "0.4.33"
 indicatif = "0.18.3"
 indoc = "2.0.7"
-jsonschema = { version = "0.57.0", default-features = false }
+jsonschema = { version = "0.58.6", default-features = false }
 libc = "0.2.176"
 line-ending = "1.5.1"
 portable-pty = "0.9.0"
@@ -57,7 +57,7 @@ quote = "1.0.47"
 rand = "0.10.2"
 ratatui = "0.30.0"
 resvg = "0.45.1"
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 schemars = { version = "1.2.2", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.148"

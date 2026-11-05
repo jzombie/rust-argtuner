@@ -1,10 +1,25 @@
 # Changelog
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/) and this project adheres to
 (or is loosely based on) Semantic Versioning.
 
-## [0.2.0-alpha] - 2026-09-13
+## [0.3.0-alpha] - 2026-11-05
+
+## Changes
+
+- **`resume-trial` command:** `argtuner resume-trial <project> <trial-id>` re-runs an interrupted trial in its existing artifact dir. Refuses completed trials, missing trials, and gone dirs.
+- Bump rusqlite from 0.37.0 to 0.40.2
+- Bump jsonschema from 0.57.0 to 0.58.6
+- Bump schemars from 1.2.2 to 1.2.3
+- Bump serde_json from 1.0.151 to 1.0.154
+- Bump indoc from 2.0.7 to 2.0.8
+- Bump pulldown-cmark from 0.13.4 to 0.13.6 (RUSTSEC-2026-0414, RUSTSEC-2026-0433 — both `ENABLE_WIKILINKS` parsing DoS, fixed upstream in 0.13.5/0.13.6)
+- Bump chacha20 from 0.10.1 to 0.10.2 (yanked release)
+- Bump clipboard-win from 5.4.1 to 5.4.3 (yanked release)
+
+## [0.2.0-alpha] - 2026-10-13
 
 ## Changes
 
