@@ -531,29 +531,27 @@ impl CommandObjective {
     /// will sit alongside the old ones.
     pub fn resume_trial(&self, trial_id: usize) -> Result<f64, String> {
         // Single error format for every refusal below.
-        let fail = |why: String| format!("trial {trial_id}: {why}");
+        let fail = |why: &dyn std::fmt::Display| format!("trial {trial_id}: {why}");
         let stored = self
             .store
             .load_fields(trial_id)
             .map_err(|e| format!("trial log load failed: {e}"))?
-            .ok_or_else(|| fail("not present in the store".to_string()))?;
+            .ok_or_else(|| fail(&"not present in the store"))?;
         match stored
             .get(crate::constants::FIELD_TRIAL_STATUS)
             .and_then(|s| s.parse::<TrialStatus>().ok())
         {
             Some(TrialStatus::Running) | Some(TrialStatus::Error) => {}
             Some(TrialStatus::Ok) => {
-                return Err(fail("already completed; nothing to resume".to_string()));
+                return Err(fail(&"already completed; nothing to resume"));
             }
             None => {
-                return Err(fail(
-                    "has no parseable status; refusing to resume".to_string(),
-                ));
+                return Err(fail(&"has no parseable status; refusing to resume"));
             }
         }
         let trial_dir = self.artifacts_dir.join(format!("trial_{trial_id}"));
         if !trial_dir.is_dir() {
-            return Err(fail(format!(
+            return Err(fail(&format_args!(
                 "dir is gone ({}); resume needs its checkpoints",
                 trial_dir.display()
             )));
@@ -562,7 +560,7 @@ impl CommandObjective {
             .store
             .render_command_with_values(trial_id)
             .map_err(|e| format!("trial command render failed: {e}"))?
-            .ok_or_else(|| fail("has no stored command".to_string()))?;
+            .ok_or_else(|| fail(&"has no stored command"))?;
         // Base fields: the stored row minus result and row-level columns,
         // so the new run's metrics land fresh instead of inheriting stale
         // values through `or_insert` merges (and stale status shadowing the
