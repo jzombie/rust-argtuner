@@ -59,6 +59,17 @@ pub enum Commands {
         #[arg(long)]
         config_id: Option<usize>,
     },
+    /// Re-run an interrupted trial in its existing artifact dir (no sweep,
+    /// no wipe). The trial command re-renders from the stored row and the
+    /// training binary resumes from its latest checkpoint.
+    ResumeTrial {
+        /// Path to the project directory
+        #[arg(value_name = "PROJECT_DIR")]
+        path: PathBuf,
+        /// Trial id to resume (must exist and not be completed)
+        #[arg(value_name = "TRIAL_ID")]
+        trial_id: usize,
+    },
     /// Show what argtuner parsed from the project's config
     Inspect {
         /// Path to the project directory
@@ -117,6 +128,99 @@ pub fn run() {
                 Ok(out) => println!("{out}"),
                 Err(e) => {
                     eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::ResumeTrial { path, trial_id } => {
+            let project = Project::new(path);
+            if let Err(e) = project.ensure_dirs() {
+                eprintln!("Error: failed to prepare project dirs: {e}");
+                std::process::exit(1);
+            }
+            let _lock = match project.acquire_lock() {
+                Ok(lock) => lock,
+                Err(e) => {
+                    eprintln!("Error: failed to acquire project lock: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let config = match project.load_config() {
+                Ok(config) => config,
+                Err(e) => {
+                    eprintln!("Error: failed to load config: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let template = match project.read_template() {
+                Ok(template) => template,
+                Err(e) => {
+                    eprintln!("Error: failed to read template: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let space = match project.read_space() {
+                Ok(space) => space,
+                Err(e) => {
+                    eprintln!("Error: failed to read search space: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if let Err(err) = validate_project_config(
+                &config,
+                &template,
+                &space,
+                &template.placeholders().unwrap_or_default(),
+            ) {
+                eprintln!("Error: {err}");
+                std::process::exit(1);
+            }
+            let config_text = match project.read_unified_config_text() {
+                Ok(text) => text,
+                Err(e) => {
+                    eprintln!("Error: failed to read unified config: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let store = match project.store() {
+                Ok(store) => store,
+                Err(e) => {
+                    eprintln!("Error: failed to open trial store: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if let Err(e) = store.ensure_project_config(&config_text, false) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+            let objective = crate::command::CommandObjective::new(
+                store,
+                template,
+                space,
+                project.artifacts_dir(),
+                config.metric_key.clone(),
+                config.goal,
+                config.inject_trial_placeholders,
+                *trial_id,
+            )
+            .with_objectives(config.objectives.clone())
+            .with_runner_options(
+                if config.scheduler.trial_timeout_s > 0 {
+                    Some(std::time::Duration::from_secs(
+                        config.scheduler.trial_timeout_s,
+                    ))
+                } else {
+                    None
+                },
+                None,
+            );
+            // Deliberately no stale-trial sweep: resume preserves the trial
+            // dir (checkpoints, optimizer state). The training binary picks
+            // up from its latest checkpoint on its own.
+            match objective.resume_trial(*trial_id) {
+                Ok(score) => println!("resumed trial {trial_id}: score={score:.6}"),
+                Err(e) => {
+                    eprintln!("Error: {e}");
                     std::process::exit(1);
                 }
             }
