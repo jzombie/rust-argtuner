@@ -61,7 +61,9 @@ pub enum Commands {
     },
     /// Re-run an interrupted trial in its existing artifact dir (no sweep,
     /// no wipe). The trial command re-renders from the stored row and the
-    /// training binary resumes from its latest checkpoint.
+    /// training binary resumes from its latest checkpoint. History is
+    /// append-only: rows already logged stay, so purge unwanted epochs
+    /// first or the new run's rows will sit alongside the old ones.
     ResumeTrial {
         /// Path to the project directory
         #[arg(value_name = "PROJECT_DIR")]

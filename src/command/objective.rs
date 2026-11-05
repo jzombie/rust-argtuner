@@ -525,6 +525,10 @@ impl CommandObjective {
     /// preserves everything on disk: checkpoints, optimizer state, logs.
     /// The training binary itself resumes from its latest checkpoint.
     /// Refuses completed trials and trials whose dir is gone.
+    ///
+    /// History is append-only: already-logged epoch/step rows are kept,
+    /// so purge unwanted epochs before resuming or the new run's rows
+    /// will sit alongside the old ones.
     pub fn resume_trial(&self, trial_id: usize) -> Result<f64, String> {
         let stored = self
             .store
