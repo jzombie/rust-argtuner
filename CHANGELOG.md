@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 ## Changes
 
 - **`resume-trial` command:** `argtuner resume-trial <project> <trial-id>` re-runs an interrupted trial in its existing artifact dir. Refuses completed trials, missing trials, and gone dirs.
+- Bump rusqlite from 0.37.0 to 0.40.2
+- Bump jsonschema from 0.57.0 to 0.58.6
+- Bump schemars from 1.2.2 to 1.2.3
+- Bump serde_json from 1.0.151 to 1.0.154
+- Bump indoc from 2.0.7 to 2.0.8
 
 ## [0.2.0-alpha] - 2026-10-13
 
