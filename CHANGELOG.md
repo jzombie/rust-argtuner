@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/) and this project adheres to
 (or is loosely based on) Semantic Versioning.
 
+## [Unreleased]
+
+## Changes
+
+- **`resume-trial` command:** `argtuner resume-trial <project> <trial-id>` re-runs an interrupted trial in its existing artifact dir. Refuses completed trials, missing trials, and gone dirs.
+
 ## [0.2.0-alpha] - 2026-09-13
 
 ## Changes

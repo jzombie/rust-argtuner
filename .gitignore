@@ -3,3 +3,4 @@
 *.csv
 *.sqlite*
 .cargo/config.toml
+.codegraph
