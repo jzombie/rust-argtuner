@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 
 - **`resume-trial` command:** `argtuner resume-trial <project> <trial-id>` re-runs an interrupted trial in its existing artifact dir. Refuses completed trials, missing trials, and gone dirs.
 
-## [0.2.0-alpha] - 2026-09-13
+## [0.2.0-alpha] - 2026-10-13
 
 ## Changes
 
