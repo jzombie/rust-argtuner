@@ -169,7 +169,7 @@ fn resume_trial_cli_refuses_missing_trial() {
     let root = dir.path().join("argtuner").join("cli-resume-missing");
     setup_project(&root);
 
-    assert_failed(&resume(&root, 7), "no trial 7");
+    assert_failed(&resume(&root, 7), "trial 7: not present in the store");
 }
 
 #[test]

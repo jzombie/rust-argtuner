@@ -1278,7 +1278,10 @@ mod tests {
         let err = objective.resume_trial(0).expect_err("completed trial");
         assert!(err.contains("already completed"), "unexpected error: {err}");
         let err = objective.resume_trial(99).expect_err("missing trial");
-        assert!(err.contains("not present in the store"), "unexpected error: {err}");
+        assert!(
+            err.contains("not present in the store"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
