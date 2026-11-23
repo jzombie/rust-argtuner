@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 
 ## Changes
 
-- **`watch` TUI no longer burns CPU at idle:** the SQLite poll moved from a repeating scheduler task (which pinned 60fps redraws) to the palette-tick hook, so the loop sleeps until input or the next `--poll-ms`. Polls fetch only new rows, detect DB replacement, and follow `-wal` state; pushes are dirty-gated and `Arc`-shared, with live TCP steps reconciled in a separate buffer.
+- **`watch` TUI no longer burns CPU at idle:** the SQLite poll moved from a repeating scheduler task (which pinned 60fps redraws) to the palette-tick hook, so the loop sleeps until input or the next `--poll-ms`. The first load runs before the first paint, so panes show data immediately. Polls fetch only new rows, detect DB replacement, and follow `-wal` state; pushes are dirty-gated and `Arc`-shared, with live TCP steps reconciled in a separate buffer.
 - **Clearer metric charts:** each Braille column now plots only its min/max pair instead of every raw point, removing overdraw noise while preserving extrema. Parsed series and hyperparameter domains are cached instead of rebuilt every frame.
 
 ## [0.3.0-alpha] - 2026-11-05

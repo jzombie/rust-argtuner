@@ -153,6 +153,13 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
     }
     app.apply_chart_mode();
 
+    // Initial synchronous load so the first paint already shows data.
+    // Without this the event loop's pre-loop render paints empty panes and
+    // the UI sits on "No trials loaded" until the first poll's full
+    // history load (seconds on a large DB) completes.
+    app.refresh_trials();
+    app.next_poll_at = std::time::Instant::now() + app.poll;
+
     let mut output = ConsoleRenderTarget::new()?;
     let mut input = ConsoleEventSource::new();
     output.enter()?;
