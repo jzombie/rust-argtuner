@@ -1,9 +1,14 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::constants::{FIELD_METRIC, FIELD_SCORE, HP_PREFIX};
+use crate::constants::{
+    FIELD_METRIC, FIELD_SCORE, FIELD_TRIAL_BUDGET_EPOCHS, FIELD_TRIAL_CONFIG_ID, FIELD_TRIAL_RUNG,
+    FIELD_TRIAL_TIME, HP_PREFIX,
+};
 use crate::project::Project;
 use crate::trial::store::StepSubscriber;
 use ratatui::layout::Rect;
@@ -37,7 +42,6 @@ use term_wm_console::console_render_target::ConsoleRenderTarget;
 use term_wm_core::hitbox_registry::HitboxRegistry;
 use term_wm_core::impl_component_delegate;
 use term_wm_core::impl_view_component;
-use term_wm_core::task_scheduler::{AppTask, TaskHandle};
 use term_wm_ui_facade::{LayerComponent, OverlayComponent};
 
 pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
@@ -88,13 +92,38 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         inner,
         db_path,
         poll,
-        trials: Vec::new(),
+        trials: Arc::new(Vec::new()),
         epoch_rows: BTreeMap::new(),
         step_rows: BTreeMap::new(),
+        pending_live_steps: BTreeMap::new(),
+        pending_version: 0,
+        field_pool: HashMap::new(),
         step_subscriber,
         last_error: None,
         chart_mode: ChartMode::Metrics,
         last_selected_trial: usize::MAX,
+        next_poll_at: std::time::Instant::now(),
+        data_version: 0,
+        max_epoch_row_id: 0,
+        max_step_row_id: 0,
+        last_pushed_version: u64::MAX,
+        last_pushed_pending: u64::MAX,
+        last_pushed_selection: usize::MAX,
+        last_pushed_mode: ChartMode::Metrics,
+        last_pushed_source: ChartSource::Steps,
+        last_pushed_axes: Vec::new(),
+        last_pushed_error: None,
+        last_pushed_count: usize::MAX,
+        last_frontier_in_progress: false,
+        cached_multi_objective: false,
+        last_title_trial: None,
+        last_title_mode: ChartMode::Metrics,
+        last_title_source: ChartSource::Steps,
+        last_title_view: ChartView::Summary,
+        last_title_selected: usize::MAX,
+        last_title_metrics_len: usize::MAX,
+        last_title_focused: false,
+        last_title_multi: false,
         trials_key,
         charts_key,
         details_key,
@@ -124,6 +153,13 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
     }
     app.apply_chart_mode();
 
+    // Initial synchronous load so the first paint already shows data.
+    // Without this the event loop's pre-loop render paints empty panes and
+    // the UI sits on "No trials loaded" until the first poll's full
+    // history load (seconds on a large DB) completes.
+    app.refresh_trials();
+    app.next_poll_at = std::time::Instant::now() + app.poll;
+
     let mut output = ConsoleRenderTarget::new()?;
     let mut input = ConsoleEventSource::new();
     output.enter()?;
@@ -137,18 +173,81 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
 /// that bridges inter-trial scheduling gaps.
 const IN_PROGRESS_HOLD: Duration = Duration::from_secs(10);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct TrialRow {
     trial_id: i64,
     status: String,
     elapsed_ms: i64,
     error: Option<String>,
-    fields: BTreeMap<String, String>,
+    /// Field keys are interned (`Arc<str>` shared from a pool): step/epoch
+    /// rows repeat the same metric keys tens of thousands of times, and a
+    /// per-row `String` key would heap-allocate every one of them. Values
+    /// stay owned `String`s — they differ per row.
+    fields: BTreeMap<Arc<str>, String>,
 }
 
-type TrialEpochRows = BTreeMap<i64, Vec<TrialRow>>;
+/// Field-key interning pool shared by every row this process loads.
+/// Bounded by `MAX_INTERNED_KEYS`: once full, new keys fall back to unpooled
+/// `Arc`s (still correct, just not shared).
+type FieldPool = HashMap<String, Arc<str>>;
+
+/// Cap on distinct interned field keys. Real schemas use dozens of keys;
+/// the cap only binds pathological cases (e.g. per-step unique key names),
+/// where pooling would itself become the leak.
+const MAX_INTERNED_KEYS: usize = 4096;
+
+/// Intern `key`, allocating a shared copy only on first sight.
+fn intern_key(pool: &mut FieldPool, key: &str) -> Arc<str> {
+    if let Some(shared) = pool.get(key) {
+        return Arc::clone(shared);
+    }
+    if pool.len() >= MAX_INTERNED_KEYS {
+        return Arc::from(key);
+    }
+    let shared: Arc<str> = Arc::from(key);
+    pool.insert(key.to_string(), Arc::clone(&shared));
+    shared
+}
+
+/// Move parsed `raw` fields into an interned-key map, reusing shared keys.
+fn intern_fields(
+    raw: BTreeMap<String, String>,
+    pool: &mut FieldPool,
+) -> BTreeMap<Arc<str>, String> {
+    raw.into_iter()
+        .map(|(key, value)| (intern_key(pool, &key), value))
+        .collect()
+}
+
 type TrialStepRows = BTreeMap<i64, Vec<TrialRow>>;
-type TrialLoadResult = Result<(Vec<TrialRow>, TrialEpochRows, TrialStepRows), String>;
+/// One parsed chart point: arrival-position `x`, metric value `y`.
+/// Same layout as the `(f64, f64)` tuple it replaces — `Copy`, no
+/// indirection, no perf difference. Named fields so call sites read as
+/// `point.x` / `point.y` instead of `.0` / `.1`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ChartPoint {
+    x: f64,
+    y: f64,
+}
+/// One parsed metric curve: shared points so every frame reads them
+/// without cloning.
+type SharedPoints = Arc<Vec<ChartPoint>>;
+/// All parsed curves for the selected chain, sorted by metric key.
+type SharedSeriesList = Arc<Vec<(String, SharedPoints)>>;
+/// One delta poll: reloaded trial rows, new epoch/step rows, the new
+/// `row_id` high-water marks, and whether the DB file was replaced or
+/// truncated under us (file max below the caller's cursor, or table gone
+/// while the cursor is nonzero) — in which case the caller must drop its
+/// maps and treat the deltas as a fresh full load.
+struct TrialsPoll {
+    trials: Vec<TrialRow>,
+    epoch_delta: BTreeMap<i64, Vec<TrialRow>>,
+    step_delta: TrialStepRows,
+    max_epoch: i64,
+    max_step: i64,
+    epoch_reset: bool,
+    step_reset: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChartMode {
@@ -181,9 +280,9 @@ enum ChartView {
 }
 
 struct ChartsView {
-    trials: Vec<TrialRow>,
-    epoch_rows: BTreeMap<i64, Vec<TrialRow>>,
-    step_rows: BTreeMap<i64, Vec<TrialRow>>,
+    /// Shared trial list (hyperparameter-space mode + empty-state checks).
+    /// The only row data this view holds — charts render a prebuilt series.
+    trials: Arc<Vec<TrialRow>>,
     chart_mode: ChartMode,
     chart_source: ChartSource,
     chart_view: ChartView,
@@ -195,6 +294,38 @@ struct ChartsView {
     params_x_offset: usize,
     enabled_axes: Vec<AxisKey>,
     scroll_handle: Option<ScrollHandle>,
+    /// `data_version` from the last `AppState` push. Keys the HP cache below.
+    snapshot_version: u64,
+    /// Prebuilt metric series for the selected trial, refreshed on every
+    /// gated push. The 60fps render only clones this handle (O(1)).
+    chart_series: SharedSeriesList,
+    /// Whether the selected chain had any rows when the series was built.
+    /// Distinguishes "no data yet" from "data but no numeric curves".
+    series_had_rows: bool,
+    /// Hyperparameter-space cache (domains + objective range).
+    hp_cache: HpCache,
+}
+
+/// Hyperparameter-space render cache for `ChartsView`: per-axis domains plus
+/// the objective range, keyed by snapshot version and the exact enabled-axis
+/// list. Rebuilding them scans every trial's fields, so idle frames reuse the
+/// cache while per-trial colors stay live (cheap float lookups, no parsing).
+#[derive(Debug, Default)]
+struct HpCache {
+    /// Snapshot version the entries below were built from.
+    version: u64,
+    /// Enabled-axis list the entries were built from, in order.
+    axes: Vec<AxisKey>,
+    /// Per-axis domains parallel to `axes`.
+    domains: Vec<ParamDomain>,
+    /// Objective range across trials.
+    obj_range: Option<(f64, f64)>,
+}
+
+impl HpCache {
+    fn valid(&self, version: u64, axes: &[AxisKey]) -> bool {
+        self.version == version && self.axes == axes
+    }
 }
 
 impl Component<TermWmAction> for ChartsView {
@@ -449,13 +580,67 @@ struct AppState {
     inner: TermWmApp<AppComponent>,
     db_path: PathBuf,
     poll: Duration,
-    trials: Vec<TrialRow>,
+    /// Sole-owned snapshots. `AppState` is the only holder, so delta merges
+    /// mutate in place with zero copies, and the charts render a series
+    /// prebuilt at push time instead of holding shared maps.
+    trials: Arc<Vec<TrialRow>>,
     epoch_rows: BTreeMap<i64, Vec<TrialRow>>,
     step_rows: BTreeMap<i64, Vec<TrialRow>>,
+    /// Next wall-clock time the palette-tick hook runs `refresh_trials`.
+    next_poll_at: std::time::Instant,
+    /// Live TCP rows with no DB twin visible yet. Kept OUT of `step_rows` so
+    /// the strict `trial.time` DB twin can never permanently duplicate them,
+    /// and identical consecutive steps are never dropped. Reconciled against
+    /// persisted multiset counts every poll; concatenated with persisted rows
+    /// only when the display series is built.
+    pending_live_steps: BTreeMap<i64, Vec<TrialRow>>,
+    /// Bumped whenever the pending buffer mutates. Part of the push gate.
+    pending_version: u64,
+    /// Field-key interning pool shared by every row this process loads.
+    /// Bounded by `MAX_INTERNED_KEYS`; see `intern_key`.
+    field_pool: FieldPool,
     step_subscriber: StepSubscriber,
     last_error: Option<String>,
     chart_mode: ChartMode,
     last_selected_trial: usize,
+    /// Monotonic counter bumped whenever a poll actually delivers new or
+    /// changed persisted rows. The 60fps `render()` only pushes data into
+    /// components when this (or selection/mode/source/pending) moved.
+    data_version: u64,
+    /// Highest `row_id` already merged for the append-only tables. Polls
+    /// fetch only `row_id > max_*`, so per-poll work stays proportional to
+    /// new rows instead of re-parsing the whole step history. Reset to zero
+    /// (with the maps cleared) if the DB file is replaced/truncated.
+    max_epoch_row_id: i64,
+    max_step_row_id: i64,
+    /// Last signals consumed by `push_data_to_components`. When the current
+    /// signals all match, the 60fps frame skips the push entirely.
+    last_pushed_version: u64,
+    last_pushed_pending: u64,
+    last_pushed_selection: usize,
+    last_pushed_mode: ChartMode,
+    last_pushed_source: ChartSource,
+    last_pushed_axes: Vec<AxisKey>,
+    last_pushed_error: Option<String>,
+    last_pushed_count: usize,
+    /// Last `run_in_progress()` value rendered into the frontier window.
+    /// The frontier text rebuilds only when trials change or this flips.
+    last_frontier_in_progress: bool,
+    /// Whether the current snapshot is multi-objective (any `score.*` field).
+    /// Refreshed only when `trials` changes; the per-frame title/scan paths
+    /// read this instead of re-scanning every trial's fields at 60Hz.
+    cached_multi_objective: bool,
+    /// Last signals consumed by `update_titles`, which runs AFTER
+    /// `render_app` so `metrics_len` is never one frame stale. Idle frames
+    /// allocate nothing here.
+    last_title_trial: Option<i64>,
+    last_title_mode: ChartMode,
+    last_title_source: ChartSource,
+    last_title_view: ChartView,
+    last_title_selected: usize,
+    last_title_metrics_len: usize,
+    last_title_focused: bool,
+    last_title_multi: bool,
     trials_key: WindowKey,
     charts_key: WindowKey,
     details_key: WindowKey,
@@ -577,14 +762,155 @@ impl AppState {
         axes
     }
 
+    /// Build the selected trial's display series: same-config chain up to the
+    /// selected rung (oldest-first, so a promoted trial's curve continues its
+    /// ancestors), concatenated in rung order, parsed to per-metric series.
+    /// Unreconciled TCP rows ride behind the persisted rows of their own
+    /// trial. Returns the series plus whether the chain had any rows (the
+    /// render path distinguishes "no data yet" from "no numeric curves").
+    fn build_display_series(
+        &self,
+        selected: usize,
+        source: ChartSource,
+    ) -> (SharedSeriesList, bool) {
+        let Some(trial) = self.trials.get(selected) else {
+            return (Arc::new(Vec::new()), false);
+        };
+        // Lineage: same-config trials up to the selected trial's rung,
+        // ordered oldest-first, so a promoted trial's curve continues its
+        // ancestors instead of restarting at x=0 — and never leaks in later
+        // rungs the selected trial hasn't reached. Rows keep arrival-position
+        // x across the concatenation (rungs are chronological), so curves
+        // still never fold. Falls back to the selected trial alone when it
+        // has no config key or no siblings.
+        let selected_rung: i64 = trial
+            .fields
+            .get(FIELD_TRIAL_RUNG)
+            .and_then(|r| r.parse::<i64>().ok())
+            .unwrap_or(i64::MAX);
+        let mut chain: Vec<&TrialRow> = self
+            .trials
+            .iter()
+            .filter(|t| {
+                trial
+                    .fields
+                    .get(FIELD_TRIAL_CONFIG_ID)
+                    .is_some_and(|c| t.fields.get(FIELD_TRIAL_CONFIG_ID) == Some(c))
+                    && t.fields
+                        .get(FIELD_TRIAL_RUNG)
+                        .and_then(|r| r.parse::<i64>().ok())
+                        .is_some_and(|r| r <= selected_rung)
+            })
+            .collect();
+        chain.sort_by_key(|t| {
+            t.fields
+                .get(FIELD_TRIAL_RUNG)
+                .and_then(|r| r.parse::<i64>().ok())
+                .unwrap_or(i64::MAX)
+        });
+        if chain.is_empty() {
+            chain.push(trial);
+        }
+        // Live step rows are the finest-grained live data (persisted live
+        // while the trial runs); the source toggle picks which stream the
+        // charts sweep, falling back to the other when the selected one is
+        // empty (e.g. epochs for a trial that emitted no steps). Never
+        // merged: shared `metric.*` keys hold different values per stream
+        // (step loss vs epoch val_loss). Selection applies per chain link,
+        // then links concatenate in rung order. Borrowed refs only — no row
+        // payload is cloned to build the series.
+        let mut chain_rows: Vec<&TrialRow> = Vec::new();
+        let empty: Vec<TrialRow> = Vec::new();
+        for link in &chain {
+            let steps = self.step_rows.get(&link.trial_id).unwrap_or(&empty);
+            let epochs = self.epoch_rows.get(&link.trial_id).unwrap_or(&empty);
+            let live = self
+                .pending_live_steps
+                .get(&link.trial_id)
+                .unwrap_or(&empty);
+            match source {
+                ChartSource::Steps if !steps.is_empty() || !live.is_empty() => {
+                    chain_rows.extend(steps.iter());
+                    chain_rows.extend(live.iter());
+                }
+                ChartSource::Epochs if !epochs.is_empty() => {
+                    chain_rows.extend(epochs.iter());
+                }
+                _ => {
+                    if !steps.is_empty() || !live.is_empty() {
+                        chain_rows.extend(steps.iter());
+                        chain_rows.extend(live.iter());
+                    } else {
+                        chain_rows.extend(epochs.iter());
+                    }
+                }
+            }
+        }
+        // Parse every numeric `metric.*` series once per gated push — never
+        // per frame. Per-frame parsing (string `f64` parses plus a `Vec` per
+        // chart) was the residual 60Hz allocation burn whenever input kept
+        // the loop in Streaming.
+        let had_rows = !chain_rows.is_empty();
+        let series = collect_metric_keys(&chain_rows)
+            .into_iter()
+            .map(|key| {
+                let points = Arc::new(metric_series_for_key(&chain_rows, &key));
+                (key, points)
+            })
+            .collect::<Vec<_>>();
+        (Arc::new(series), had_rows)
+    }
+
+    /// Push snapshot data into the window components, but only when one of
+    /// the cheap per-frame signals moved. The 60fps `render()` calls this
+    /// every frame; without the gate each frame paid for full clones of the
+    /// step/epoch maps plus detail/frontier rebuilds — the sustained CPU
+    /// burn. Polls bump `data_version`/`pending_version`, so idle frames now
+    /// do a handful of borrows and return. `AppState` solely owns the row
+    /// maps; the charts receive a prebuilt series, so no per-frame or
+    /// per-push map cloning happens anywhere.
+    ///
+    /// The axis gate compares `Vec<AxisKey>` directly: one small allocation
+    /// per frame for the toggle walk, zero string re-allocations, and no
+    /// component push unless the set actually moved.
     fn push_data_to_components(&mut self) {
-        let trials = self.trials.clone();
-        let epochs = self.epoch_rows.clone();
-        let steps = self.step_rows.clone();
-        let last_error = self.last_error.clone();
         let selected = self.selected_trial_idx();
-        let axes = self.enabled_axes();
         let mode = self.chart_mode;
+        let source = match self.charts_sv() {
+            Some(sv) => sv.content.borrow().chart_source,
+            None => ChartSource::Steps,
+        };
+        let axes = self.enabled_axes();
+
+        if self.last_pushed_version == self.data_version
+            && self.last_pushed_pending == self.pending_version
+            && self.last_pushed_selection == selected
+            && self.last_pushed_mode == mode
+            && self.last_pushed_source == source
+            && self.last_pushed_axes == axes
+            && self.last_pushed_error == self.last_error
+            && self.last_pushed_count == self.trials.len()
+        {
+            return;
+        }
+        self.last_pushed_version = self.data_version;
+        self.last_pushed_pending = self.pending_version;
+        self.last_pushed_selection = selected;
+        self.last_pushed_mode = mode;
+        self.last_pushed_source = source;
+        self.last_pushed_axes = axes.clone();
+        self.last_pushed_error = self.last_error.clone();
+        self.last_pushed_count = self.trials.len();
+
+        let last_error = self.last_error.clone();
+        let data_version = self.data_version;
+        // Clone the `Arc` handle (O(1)) BEFORE borrowing any component:
+        // `charts_sv()` holds `&mut self` while the borrow lives.
+        let trials = Arc::clone(&self.trials);
+        // Chart series + detail text built from `&self` BEFORE borrowing any
+        // component (`charts_sv()`/`details_sv()` hold `&mut self` while live).
+        let (series_list, series_had_rows) = self.build_display_series(selected, source);
+        let count = self.trials.len();
 
         // Scroll charts/details back to top when the selected trial changes.
         if self.last_selected_trial != selected {
@@ -599,28 +925,38 @@ impl AppState {
             }
         }
 
+        // Detail text built from the local data BEFORE borrowing any
+        // component.
+        let detail_text = {
+            let idx = selected.min(self.trials.len().saturating_sub(1));
+            match self.trials.get(idx) {
+                Some(trial) => {
+                    let rows = self
+                        .epoch_rows
+                        .get(&trial.trial_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    Text::from(trial_detail_lines(trial, &rows, &self.trials))
+                }
+                None => Text::from(vec![Line::from("No trial selected.")]),
+            }
+        };
+
         if let Some(sv) = self.charts_sv() {
             let mut c = sv.content.borrow_mut();
-            c.trials = trials.clone();
-            c.epoch_rows = epochs.clone();
-            c.step_rows = steps.clone();
+            c.trials = trials;
             c.chart_mode = mode;
             c.last_error = last_error.clone();
             c.selected_trial_idx = selected;
-            c.enabled_axes = axes.clone();
+            // Moved, not cloned: `axes` is not read after this block.
+            c.enabled_axes = axes;
+            c.snapshot_version = data_version;
+            c.chart_series = series_list;
+            c.series_had_rows = series_had_rows;
         }
         if let Some(sv) = self.details_sv() {
-            let idx = selected.min(trials.len().saturating_sub(1));
-            let text = match trials.get(idx) {
-                Some(trial) => {
-                    let epoch_rows = epochs.get(&trial.trial_id).cloned().unwrap_or_default();
-                    Text::from(trial_detail_lines(trial, &epoch_rows, &trials[..]))
-                }
-                None => Text::from(vec![Line::from("No trial selected.")]),
-            };
-            sv.content.borrow_mut().set_text(text);
+            sv.content.borrow_mut().set_text(detail_text);
         }
-        let count = self.trials.len();
         if count != self.project_info_count {
             self.project_info_count = count;
             // Clone the cached static lines BEFORE borrowing the component.
@@ -630,22 +966,51 @@ impl AppState {
                 sv.content.borrow_mut().set_text(Text::from(lines));
             }
         }
+    }
 
-        // Titles — standalone block AFTER all component borrows are dropped
-        // (each set_window_title needs &mut WindowManager).
+    /// Window titles, refreshed AFTER `render_app` so `metrics_len` (set
+    /// during chart render) is never one frame stale. Dirty-checked on
+    /// (trial, mode, source, view, selection, metrics, focus, objective
+    /// count): idle frames allocate nothing here.
+    fn update_titles(&mut self) {
+        let selected = self.selected_trial_idx();
+        let mode = self.chart_mode;
         let charts_focused = self.inner.wm().focused_window() == self.charts_key;
-        let (cv, cs, ml) = match self.charts_sv() {
+        let (source, view, chart_selected, metrics_len) = match self.charts_sv() {
             Some(sv) => {
                 let c = sv.content.borrow();
-                (c.chart_view, c.chart_selected, c.metrics_len)
+                (
+                    c.chart_source,
+                    c.chart_view,
+                    c.chart_selected,
+                    c.metrics_len,
+                )
             }
-            None => (ChartView::Summary, 0, 0),
+            None => (ChartSource::Steps, ChartView::Summary, 0, 0),
         };
-        let trial_id = trials.get(selected).map(|t| t.trial_id);
-        let source = self
-            .charts_sv()
-            .map(|sv| sv.content.borrow().chart_source)
-            .unwrap_or(ChartSource::Steps);
+        let trial_id = self.trials.get(selected).map(|t| t.trial_id);
+        let multi = self.cached_multi_objective;
+
+        if self.last_title_trial == trial_id
+            && self.last_title_mode == mode
+            && self.last_title_source == source
+            && self.last_title_view == view
+            && self.last_title_selected == selected
+            && self.last_title_metrics_len == metrics_len
+            && self.last_title_focused == charts_focused
+            && self.last_title_multi == multi
+        {
+            return;
+        }
+        self.last_title_trial = trial_id;
+        self.last_title_mode = mode;
+        self.last_title_source = source;
+        self.last_title_view = view;
+        self.last_title_selected = selected;
+        self.last_title_metrics_len = metrics_len;
+        self.last_title_focused = charts_focused;
+        self.last_title_multi = multi;
+
         let wm = self.inner.wm();
         wm.set_window_title(self.trials_key, "Trials");
         wm.set_window_title(
@@ -657,11 +1022,19 @@ impl AppState {
         );
         wm.set_window_title(
             self.charts_key,
-            charts_window_title(mode, source, cv, cs, ml, charts_focused, trial_id),
+            charts_window_title(
+                mode,
+                source,
+                view,
+                chart_selected,
+                metrics_len,
+                charts_focused,
+                trial_id,
+            ),
         );
         wm.set_window_title(
             self.frontier_key,
-            if is_multi_objective(&self.trials) {
+            if multi {
                 "Pareto Frontier"
             } else {
                 "Best Trials"
@@ -671,11 +1044,16 @@ impl AppState {
 
     fn refresh_trials(&mut self) {
         let mut saw_activity = false;
-        // Live step rows arriving over TCP since the last poll. Merged below
-        // after the DB snapshot replaces the map, skipping rows the DB
-        // already has (each flush writes the DB and pushes TCP together, so
-        // most live rows have a DB twin by poll time).
-        let mut live_step_rows: BTreeMap<i64, Vec<TrialRow>> = BTreeMap::new();
+        // `pending_changed` gates the `pending_version` bump at the end: the
+        // common tick (TCP frame + SQLite rows landing together, reconciled
+        // away in the same pass) leaves the version untouched — no redundant
+        // pushes or chart rebuilds.
+        let mut pending_changed = false;
+        // Live step rows arriving over TCP since the last poll. They land in
+        // the ephemeral pending buffer — NEVER in `step_rows` — so the
+        // writer-stamped `trial.time` twin in SQLite can never permanently
+        // duplicate them, and identical consecutive steps are never dropped.
+        const MAX_PENDING_PER_TRIAL: usize = 2000;
         while let Some(line) = self.step_subscriber.try_recv() {
             saw_activity = true;
             if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line)
@@ -684,84 +1062,145 @@ impl AppState {
                     msg.get("steps").and_then(|v| v.as_array()),
                 )
             {
-                let rows: Vec<TrialRow> = steps
-                    .iter()
-                    .filter_map(|s| s.as_object())
-                    .map(|fields| {
-                        let mut map = BTreeMap::new();
-                        for (k, v) in fields {
-                            map.insert(k.clone(), v.as_str().unwrap_or("").to_string());
-                        }
-                        TrialRow {
-                            trial_id,
-                            status: "running".to_string(),
-                            elapsed_ms: 0,
-                            error: None,
-                            fields: map,
-                        }
-                    })
-                    .collect();
-                live_step_rows.entry(trial_id).or_default().extend(rows);
+                let entry = self.pending_live_steps.entry(trial_id).or_default();
+                for fields in steps.iter().filter_map(|s| s.as_object()) {
+                    let mut map = BTreeMap::new();
+                    for (k, v) in fields {
+                        // Disjoint field borrows: `entry` borrows
+                        // `pending_live_steps`, interning borrows `field_pool`.
+                        map.insert(
+                            intern_key(&mut self.field_pool, k),
+                            v.as_str().unwrap_or("").to_string(),
+                        );
+                    }
+                    entry.push(TrialRow {
+                        trial_id,
+                        status: "running".to_string(),
+                        elapsed_ms: 0,
+                        error: None,
+                        fields: map,
+                    });
+                    pending_changed = true;
+                }
+                if entry.len() > MAX_PENDING_PER_TRIAL {
+                    let drain = entry.len() - MAX_PENDING_PER_TRIAL;
+                    entry.drain(..drain);
+                    pending_changed = true;
+                }
             }
         }
-        match load_trials(&self.db_path) {
-            Ok((trials, epoch_rows, step_rows)) => {
+        let after_epoch = self.max_epoch_row_id;
+        let after_step = self.max_step_row_id;
+        match load_trials_after(&self.db_path, after_epoch, after_step, &mut self.field_pool) {
+            Ok(poll) => {
+                // Single-connection reset detection: the file was replaced or
+                // truncated under us. Drop the world and treat this poll's
+                // deltas as a fresh full load — otherwise every new row is
+                // silently skipped by a stale cursor.
+                if poll.epoch_reset || poll.step_reset {
+                    if poll.epoch_reset {
+                        self.epoch_rows = BTreeMap::new();
+                        self.max_epoch_row_id = 0;
+                    }
+                    if poll.step_reset {
+                        self.step_rows = BTreeMap::new();
+                        self.max_step_row_id = 0;
+                    }
+                    if poll.epoch_reset && poll.step_reset {
+                        // Full reset: no retained row references any pooled
+                        // key anymore, so the pool can start over. (Partial
+                        // resets keep it: retained rows still share its Arcs.)
+                        self.field_pool.clear();
+                    }
+                    if !self.pending_live_steps.is_empty() {
+                        self.pending_live_steps = BTreeMap::new();
+                        pending_changed = true;
+                    }
+                    self.data_version = self.data_version.wrapping_add(1);
+                }
                 let prev_sel = match self.trials_sv() {
                     Some(sv) => sv.content.borrow().selected(),
                     None => 0,
                 };
                 let prev_trial_id = self.trials.get(prev_sel).map(|t| t.trial_id);
-                self.trials = trials;
-                self.epoch_rows = epoch_rows;
-                // Replace (not extend): the DB snapshot is complete, so
-                // extending would duplicate every row on each poll cycle.
-                self.step_rows = step_rows;
-                // Re-apply live rows not yet covered by the snapshot. Field
-                // maps identify twins (subscriber rows carry elapsed_ms 0
-                // while their DB twins carry the real value).
-                for (trial_id, rows) in live_step_rows {
-                    let entry = self.step_rows.entry(trial_id).or_default();
-                    for row in rows {
-                        if !entry.iter().any(|r| r.fields == row.fields) {
-                            entry.push(row);
-                        }
+                let trials_changed = poll.trials[..] != self.trials[..];
+                if trials_changed {
+                    self.trials = Arc::new(poll.trials);
+                    self.cached_multi_objective = is_multi_objective(&self.trials);
+                }
+                // Append-only tables: merge the delta in place so per-poll work
+                // (and memory) stays proportional to new rows, not the full
+                // history. `AppState` solely owns these maps — no shared
+                // `Arc`s — so merging never clones.
+                //
+                // In-memory step history is capped per trial: the DB keeps
+                // everything, the TUI keeps a trailing window. Twin matching
+                // is scoped to the current poll's delta (see
+                // `merge_trial_steps`), so evicted rows take nothing with
+                // them.
+                let mut deltas_changed = false;
+                if poll.epoch_delta.values().any(|rows| !rows.is_empty()) {
+                    deltas_changed = true;
+                    for (trial_id, rows) in poll.epoch_delta {
+                        self.epoch_rows.entry(trial_id).or_default().extend(rows);
                     }
                 }
-                if self.trials.iter().any(|t| t.status == "running")
-                    || self
-                        .epoch_rows
-                        .values()
-                        .flatten()
-                        .any(|r| r.status == "running")
-                    || self
-                        .step_rows
-                        .values()
-                        .flatten()
-                        .any(|r| r.status == "running")
-                {
+                if poll.step_delta.values().any(|rows| !rows.is_empty()) {
+                    deltas_changed = true;
+                    for (trial_id, rows) in poll.step_delta {
+                        let retained = self.step_rows.entry(trial_id).or_default();
+                        let pending = self.pending_live_steps.get_mut(&trial_id);
+                        if merge_trial_steps(retained, rows, pending) {
+                            pending_changed = true;
+                        }
+                    }
+                    // Drop fully-reconciled (now empty) trial entries so the
+                    // pending map never accumulates dead keys.
+                    let before = self.pending_live_steps.len();
+                    self.pending_live_steps.retain(|_, rows| !rows.is_empty());
+                    pending_changed |= self.pending_live_steps.len() != before;
+                }
+                self.max_epoch_row_id = poll.max_epoch;
+                self.max_step_row_id = poll.max_step;
+                if pending_changed {
+                    self.pending_version = self.pending_version.wrapping_add(1);
+                }
+                if trials_changed || deltas_changed {
+                    self.data_version = self.data_version.wrapping_add(1);
+                }
+                // Activity = fresh TCP frames, a `running` trial row, or newly
+                // persisted rows. Never the append-only history scan: step and
+                // epoch rows keep `status = "running"` forever by design, so
+                // scanning them would latch "Run in progress" permanently.
+                if self.trials.iter().any(|t| t.status == "running") || deltas_changed {
                     saw_activity = true;
                 }
                 if saw_activity {
                     self.last_activity = Some(std::time::Instant::now());
                 }
                 let in_progress = self.run_in_progress();
-                let items = build_trial_items(&self.trials);
-                if let Some(sv) = self.trials_sv() {
-                    sv.content.borrow_mut().update_items(items);
+                if trials_changed {
+                    let items = build_trial_items(&self.trials);
+                    if let Some(sv) = self.trials_sv() {
+                        sv.content.borrow_mut().update_items(items);
+                    }
+                    if let Some(tid) = prev_trial_id
+                        && let Some(pos) = self.trials.iter().position(|t| t.trial_id == tid)
+                        && let Some(sv) = self.trials_sv()
+                    {
+                        let sel = sv.content.borrow().selected();
+                        let delta = pos as isize - sel as isize;
+                        sv.content.borrow_mut().move_selection(delta);
+                    }
+                    sync_param_toggles(self);
                 }
-                let frontier = frontier_lines(&self.trials, in_progress);
-                if let Some(sv) = self.frontier_sv() {
-                    sv.content.borrow_mut().set_text(Text::from(frontier));
+                if trials_changed || in_progress != self.last_frontier_in_progress {
+                    self.last_frontier_in_progress = in_progress;
+                    let frontier = frontier_lines(&self.trials, in_progress);
+                    if let Some(sv) = self.frontier_sv() {
+                        sv.content.borrow_mut().set_text(Text::from(frontier));
+                    }
                 }
-                if let Some(tid) = prev_trial_id
-                    && let Some(pos) = self.trials.iter().position(|t| t.trial_id == tid)
-                    && let Some(sv) = self.trials_sv()
-                {
-                    let sel = sv.content.borrow().selected();
-                    let delta = pos as isize - sel as isize;
-                    sv.content.borrow_mut().move_selection(delta);
-                }
-                sync_param_toggles(self);
                 self.last_error = None;
             }
             Err(err) => {
@@ -806,25 +1245,38 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
     fn render(&mut self, backend: &mut dyn RenderBackend) {
         self.push_data_to_components();
         self.inner.render_app(backend);
+        // Titles after the draw so `metrics_len` (set during chart render)
+        // is never one frame stale.
+        self.update_titles();
     }
 
-    /// Schedule the recurring SQLite refresh on the app-task scheduler. Called
-    /// by `run_with_defaults` before the event loop starts. `fire_immediate`
-    /// runs the first poll right away so the initial load doesn't wait a full
-    /// `--poll-ms` interval.
-    fn on_app_scheduler_ready(&mut self, handle: TaskHandle<AppTask<Self>>) {
-        let _ = handle.schedule_repeating(
-            self.poll,
-            true,
-            AppTask::new(|app: &mut Self| {
-                app.refresh_trials();
-                tracing::info!(
-                    "refresh trials poll tick: {} trials, {} epoch rows",
-                    app.trials.len(),
-                    app.epoch_rows.len()
-                );
-            }),
-        );
+    /// The SQLite poll, driven off the palette-tick hook instead of a
+    /// repeating scheduler task — deliberately. Any outstanding
+    /// `TaskScheduler` entry makes `has_pending()` true, which pins the
+    /// runner's power profile at Streaming (16ms poll, ~60fps full redraws)
+    /// for the lifetime of the process. The palette hook instead only
+    /// clamps the idle sleep to the next deadline, so the loop sits in
+    /// PowerSaver and wakes on input or once per `--poll-ms`.
+    fn poll_palette_tick(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        if now < self.next_poll_at {
+            return false;
+        }
+        self.refresh_trials();
+        // Stamp AFTER the poll completes so a slow poll can never produce a
+        // zero-sleep spin: the loop always sleeps at least `poll` between
+        // consecutive SQLite passes, even at the 16ms floor.
+        self.next_poll_at = std::time::Instant::now() + self.poll;
+        // One frame per poll unconditionally: cheap (push/titles are gated),
+        // and it guarantees the run-state header flip is never stranded.
+        true
+    }
+
+    fn palette_tick_deadline(&self) -> Option<Duration> {
+        Some(
+            self.next_poll_at
+                .saturating_duration_since(std::time::Instant::now()),
+        )
     }
 
     fn toggle_debug_window(&mut self) {
@@ -1033,9 +1485,7 @@ fn mk_trials_window() -> TrialsWindow {
 
 fn mk_charts_window() -> ChartsWindow {
     let mut sv = ScrollViewComponent::new(ChartsView {
-        trials: Vec::new(),
-        epoch_rows: BTreeMap::new(),
-        step_rows: BTreeMap::new(),
+        trials: Arc::new(Vec::new()),
         chart_mode: ChartMode::Metrics,
         chart_source: ChartSource::Steps,
         chart_view: ChartView::Summary,
@@ -1047,6 +1497,10 @@ fn mk_charts_window() -> ChartsWindow {
         params_x_offset: 0,
         enabled_axes: Vec::new(),
         scroll_handle: None,
+        snapshot_version: 0,
+        chart_series: Arc::new(Vec::new()),
+        series_had_rows: false,
+        hp_cache: HpCache::default(),
     });
     // PageUp/PageDown/Home/End scroll the chart list (the wrapper owns the
     // viewport). Up/Down fall through to ChartsView for selection moves.
@@ -1076,18 +1530,21 @@ fn mk_toggle_window(title: &str) -> ToggleWindow {
 fn sync_param_toggles(app: &mut AppState) {
     let mut names = BTreeSet::new();
     let mut metric_names = BTreeSet::new();
-    for trial in &app.trials {
+    for trial in app.trials.iter() {
         for key in trial.fields.keys() {
-            if key.starts_with(HP_PREFIX) {
-                names.insert(key.clone());
+            // `&**key`: plain `&str` view of the interned key. (`Arc<str>`
+            // has no stable `.as_str()`; the deref pair is the same thing.)
+            let key_str: &str = &**key;
+            if key_str.starts_with(HP_PREFIX) {
+                names.insert(Arc::clone(key));
                 continue;
             }
-            if key.starts_with("metric.") && key.as_str() != FIELD_METRIC {
-                metric_names.insert(key.clone());
+            if key_str.starts_with("metric.") && key_str != FIELD_METRIC {
+                metric_names.insert(Arc::clone(key));
                 continue;
             }
-            if key.as_str() == FIELD_SCORE {
-                metric_names.insert(key.clone());
+            if key_str == FIELD_SCORE {
+                metric_names.insert(Arc::clone(key));
             }
         }
     }
@@ -1111,25 +1568,26 @@ fn sync_param_toggles(app: &mut AppState) {
         .map(|value| format!("metric.{value}"));
     let mut params = Vec::with_capacity(names.len());
     for name in names {
-        let enabled = existing.get(&name).copied().unwrap_or(true);
+        let enabled = existing.get(&*name).copied().unwrap_or(true);
         params.push(ToggleItem {
-            id: name.clone(),
+            id: name.to_string(),
             label: display_axis_name(&name),
             checked: enabled,
         });
     }
     let mut metrics = Vec::with_capacity(metric_names.len());
     for name in metric_names {
+        let name_str: &str = &name;
         let default_enabled = main_metric
             .as_ref()
-            .map(|metric| metric == &name)
-            .unwrap_or(name == FIELD_SCORE);
+            .map(|metric| metric == name_str)
+            .unwrap_or(name_str == FIELD_SCORE);
         let enabled = existing_metrics
-            .get(&name)
+            .get(name_str)
             .copied()
             .unwrap_or(default_enabled);
         metrics.push(ToggleItem {
-            id: name.clone(),
+            id: name.to_string(),
             label: display_axis_name(&name),
             checked: enabled,
         });
@@ -1142,16 +1600,52 @@ fn sync_param_toggles(app: &mut AppState) {
     }
 }
 
-fn load_trials(path: &Path) -> TrialLoadResult {
+/// Delta poll: `trial_records` is tiny (one row per trial, upserted in
+/// place) so it reloads fully, but the append-only epoch/step tables fetch
+/// only `row_id > max_*` — per-poll work stays proportional to new rows
+/// instead of re-parsing the whole step history every `--poll-ms`.
+///
+/// Reset detection happens on this same connection: a file max below the
+/// caller's cursor (or a missing table with a nonzero cursor) means the DB
+/// file was replaced or truncated, so the effective cursor resets to zero
+/// and the caller must drop its maps and treat the deltas as a full load.
+fn load_trials_after(
+    path: &Path,
+    after_epoch_id: i64,
+    after_step_id: i64,
+    pool: &mut FieldPool,
+) -> Result<TrialsPoll, String> {
     let conn = open_connection(path)?;
-    let trials = load_trial_rows(&conn, "trial_records")?;
-    let epoch_rows = load_epoch_rows(&conn)?;
-    let step_rows = load_step_rows(&conn)?;
-    Ok((trials, epoch_rows, step_rows))
+    let db_epoch = db_max_row_id(&conn, "trial_epoch_records")?;
+    let db_step = db_max_row_id(&conn, "trial_step_records")?;
+    let epoch_reset =
+        db_epoch.is_none() && after_epoch_id > 0 || db_epoch.is_some_and(|m| m < after_epoch_id);
+    let step_reset =
+        db_step.is_none() && after_step_id > 0 || db_step.is_some_and(|m| m < after_step_id);
+    let (eff_epoch, eff_step) = (
+        if epoch_reset { 0 } else { after_epoch_id },
+        if step_reset { 0 } else { after_step_id },
+    );
+    let trials = load_trial_rows(&conn, "trial_records", pool)?;
+    let (epoch_delta, max_epoch) = load_epoch_rows_after(&conn, eff_epoch, pool)?;
+    let (step_delta, max_step) = load_step_rows_after(&conn, eff_step, pool)?;
+    Ok(TrialsPoll {
+        trials,
+        epoch_delta,
+        step_delta,
+        max_epoch,
+        max_step,
+        epoch_reset,
+        step_reset,
+    })
 }
 
 // TODO: SQL queries should not be here
-fn load_trial_rows(conn: &Connection, table: &str) -> Result<Vec<TrialRow>, String> {
+fn load_trial_rows(
+    conn: &Connection,
+    table: &str,
+    pool: &mut FieldPool,
+) -> Result<Vec<TrialRow>, String> {
     let mut stmt = conn
         .prepare(&format!(
             r#"
@@ -1164,7 +1658,7 @@ fn load_trial_rows(conn: &Connection, table: &str) -> Result<Vec<TrialRow>, Stri
     let rows = stmt
         .query_map([], |row| {
             let fields_json: String = row.get(4)?;
-            let fields: BTreeMap<String, String> =
+            let raw: BTreeMap<String, String> =
                 serde_json::from_str(&fields_json).map_err(|err| {
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
@@ -1177,7 +1671,7 @@ fn load_trial_rows(conn: &Connection, table: &str) -> Result<Vec<TrialRow>, Stri
                 status: row.get(1)?,
                 elapsed_ms: row.get(2)?,
                 error: row.get(3)?,
-                fields,
+                fields: intern_fields(raw, pool),
             })
         })
         .map_err(|err| err.to_string())?;
@@ -1189,13 +1683,19 @@ fn load_trial_rows(conn: &Connection, table: &str) -> Result<Vec<TrialRow>, Stri
     Ok(trials)
 }
 
-// TODO: SQL queries should not be here
-fn load_epoch_rows(conn: &Connection) -> Result<BTreeMap<i64, Vec<TrialRow>>, String> {
+/// Fetch only epoch rows with `row_id > after`, returning the new high-water
+/// mark alongside. Callers merge the delta into their existing map.
+fn load_epoch_rows_after(
+    conn: &Connection,
+    after: i64,
+    pool: &mut FieldPool,
+) -> Result<(BTreeMap<i64, Vec<TrialRow>>, i64), String> {
     let mut stmt = match conn.prepare(
         r#"
-        SELECT trial_id, status, elapsed_ms, error, fields_json
+        SELECT row_id, trial_id, status, elapsed_ms, error, fields_json
         FROM trial_epoch_records
-        ORDER BY trial_id ASC, row_id ASC
+        WHERE row_id > ?1
+        ORDER BY row_id ASC
         "#,
     ) {
         Ok(stmt) => stmt,
@@ -1204,15 +1704,15 @@ fn load_epoch_rows(conn: &Connection) -> Result<BTreeMap<i64, Vec<TrialRow>>, St
                 .to_string()
                 .contains("no such table: trial_epoch_records")
             {
-                return Ok(BTreeMap::new());
+                return Ok((BTreeMap::new(), after));
             }
             return Err(err.to_string());
         }
     };
     let rows = stmt
-        .query_map([], |row| {
-            let fields_json: String = row.get(4)?;
-            let fields: BTreeMap<String, String> =
+        .query_map([after], |row| {
+            let fields_json: String = row.get(5)?;
+            let raw: BTreeMap<String, String> =
                 serde_json::from_str(&fields_json).map_err(|err| {
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
@@ -1220,31 +1720,43 @@ fn load_epoch_rows(conn: &Connection) -> Result<BTreeMap<i64, Vec<TrialRow>>, St
                         Box::new(err),
                     )
                 })?;
-            Ok(TrialRow {
-                trial_id: row.get(0)?,
-                status: row.get(1)?,
-                elapsed_ms: row.get(2)?,
-                error: row.get(3)?,
-                fields,
-            })
+            // `row_id` stays in the loader cursor only — never in `TrialRow`
+            // — so high-water marks can't leak into equality or display.
+            let row_id: i64 = row.get(0)?;
+            let trial = TrialRow {
+                trial_id: row.get(1)?,
+                status: row.get(2)?,
+                elapsed_ms: row.get(3)?,
+                error: row.get(4)?,
+                fields: intern_fields(raw, pool),
+            };
+            Ok((row_id, trial))
         })
         .map_err(|err| err.to_string())?;
 
     let mut by_trial: BTreeMap<i64, Vec<TrialRow>> = BTreeMap::new();
+    let mut max_id = after;
     for row in rows {
-        let row = row.map_err(|err| err.to_string())?;
+        let (row_id, row) = row.map_err(|err| err.to_string())?;
+        max_id = max_id.max(row_id);
         by_trial.entry(row.trial_id).or_default().push(row);
     }
-    Ok(by_trial)
+    Ok((by_trial, max_id))
 }
 
-// TODO: SQL queries should not be here
-fn load_step_rows(conn: &Connection) -> Result<TrialStepRows, String> {
+/// Fetch only step rows with `row_id > after`, returning the new high-water
+/// mark alongside. Callers merge the delta into their existing map.
+fn load_step_rows_after(
+    conn: &Connection,
+    after: i64,
+    pool: &mut FieldPool,
+) -> Result<(TrialStepRows, i64), String> {
     let mut stmt = match conn.prepare(
         r#"
-        SELECT trial_id, status, elapsed_ms, error, fields_json
+        SELECT row_id, trial_id, status, elapsed_ms, error, fields_json
         FROM trial_step_records
-        ORDER BY trial_id ASC, row_id ASC
+        WHERE row_id > ?1
+        ORDER BY row_id ASC
         "#,
     ) {
         Ok(stmt) => stmt,
@@ -1253,15 +1765,15 @@ fn load_step_rows(conn: &Connection) -> Result<TrialStepRows, String> {
                 .to_string()
                 .contains("no such table: trial_step_records")
             {
-                return Ok(BTreeMap::new());
+                return Ok((BTreeMap::new(), after));
             }
             return Err(err.to_string());
         }
     };
     let rows = stmt
-        .query_map([], |row| {
-            let fields_json: String = row.get(4)?;
-            let fields: BTreeMap<String, String> =
+        .query_map([after], |row| {
+            let fields_json: String = row.get(5)?;
+            let raw: BTreeMap<String, String> =
                 serde_json::from_str(&fields_json).map_err(|err| {
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
@@ -1269,22 +1781,26 @@ fn load_step_rows(conn: &Connection) -> Result<TrialStepRows, String> {
                         Box::new(err),
                     )
                 })?;
-            Ok(TrialRow {
-                trial_id: row.get(0)?,
-                status: row.get(1)?,
-                elapsed_ms: row.get(2)?,
-                error: row.get(3)?,
-                fields,
-            })
+            let row_id: i64 = row.get(0)?;
+            let trial = TrialRow {
+                trial_id: row.get(1)?,
+                status: row.get(2)?,
+                elapsed_ms: row.get(3)?,
+                error: row.get(4)?,
+                fields: intern_fields(raw, pool),
+            };
+            Ok((row_id, trial))
         })
         .map_err(|err| err.to_string())?;
 
     let mut by_trial: BTreeMap<i64, Vec<TrialRow>> = BTreeMap::new();
+    let mut max_id = after;
     for row in rows {
-        let row = row.map_err(|err| err.to_string())?;
+        let (row_id, row) = row.map_err(|err| err.to_string())?;
+        max_id = max_id.max(row_id);
         by_trial.entry(row.trial_id).or_default().push(row);
     }
-    Ok(by_trial)
+    Ok((by_trial, max_id))
 }
 
 // TODO: SQL queries should not be here
@@ -1293,31 +1809,117 @@ fn open_connection(path: &Path) -> Result<Connection, String> {
         return Err(format!("missing db: {}", path.display()));
     }
 
-    let uri = format!("file:{}?immutable=1", path.display());
-    let ro_flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
-    if let Ok(conn) = Connection::open_with_flags(&uri, ro_flags) {
-        return Ok(conn);
-    }
+    // Plain read-only open (no URI): no percent-escaping hazards, and the
+    // reader follows `-wal` state instead of `immutable=1` freezing it.
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|err| format!("db open failed (read-only) for {}: {err}", path.display()))?;
+    conn.busy_timeout(Duration::from_millis(50))
+        .map_err(|err| format!("db busy_timeout failed for {}: {err}", path.display()))?;
+    Ok(conn)
+}
 
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|err| {
-        format!(
-            "db open failed (uri={uri}, fallback rw err={err}) for {}",
-            path.display()
-        )
-    })
+/// Current `MAX(row_id)` per append-only table, or `None` when the table does
+/// not exist yet (project created, no run recorded).
+fn db_max_row_id(conn: &Connection, table: &str) -> Result<Option<i64>, String> {
+    let sql = format!("SELECT COALESCE(MAX(row_id), 0) FROM {table}");
+    match conn.query_row(&sql, [], |row| row.get::<_, i64>(0)) {
+        Ok(max) => Ok(Some(max)),
+        Err(err) => {
+            if err.to_string().contains("no such table") {
+                Ok(None)
+            } else {
+                Err(err.to_string())
+            }
+        }
+    }
+}
+
+/// Normalized field hash for step-twin reconciliation: `trial.time` is
+/// writer-stamped AFTER the TCP push, so twins differ by exactly that key.
+/// Hashing the rest identifies twins without false-dropping identical
+/// consecutive steps (only pending rows are ever dropped, never persisted
+/// ones).
+fn step_row_hash(fields: &BTreeMap<Arc<str>, String>) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    let mut hasher = DefaultHasher::new();
+    for (key, value) in fields.iter().filter(|(k, _)| &***k != FIELD_TRIAL_TIME) {
+        key.hash(&mut hasher);
+        value.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Consume one persisted twin for `hash`, returning whether one existed.
+/// Shared by reconciliation (pending rows) and history capping (dropped
+/// retained rows) so the multiset invariant — counts == retained-unmatched
+/// rows — holds under both.
+fn consume_twin(counts: &mut BTreeMap<u64, usize>, hash: u64) -> bool {
+    match counts.get_mut(&hash) {
+        Some(left) if *left > 0 => {
+            *left -= 1;
+            if *left == 0 {
+                counts.remove(&hash);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Trailing in-memory step history per trial. The DB keeps everything; the
+/// TUI keeps a trailing window so a pathological run cannot grow RSS without
+/// bound.
+const MAX_RETAINED_STEPS_PER_TRIAL: usize = 10_000;
+
+/// Merge one trial's step delta: index this poll's twins, append rows, cap
+/// the retained trailing window, then reconcile pending rows against the
+/// delta twins. Returns true if `pending` changed.
+///
+/// The twin multiset is scoped to the current poll on purpose. The writer
+/// persists before pushing TCP, so a pending row's twin is always committed
+/// before the frame is readable — it lands in this poll's delta (or was
+/// reconciled away by an earlier tick). No cross-poll twin state is kept,
+/// which makes history-cap eviction trivially safe: evicted rows take no
+/// counts with them because counts never outlive the tick. (Keeping
+/// persistent counts across polls instead corrupts them the moment an
+/// evicted oldest row shares a payload hash with a newly arrived row.)
+fn merge_trial_steps(
+    retained: &mut Vec<TrialRow>,
+    delta: Vec<TrialRow>,
+    pending: Option<&mut Vec<TrialRow>>,
+) -> bool {
+    let mut delta_counts: BTreeMap<u64, usize> = BTreeMap::new();
+    if pending.as_ref().is_some_and(|rows| !rows.is_empty()) {
+        for row in &delta {
+            *delta_counts.entry(step_row_hash(&row.fields)).or_insert(0) += 1;
+        }
+    }
+    retained.extend(delta);
+    if retained.len() > MAX_RETAINED_STEPS_PER_TRIAL {
+        retained.drain(..retained.len() - MAX_RETAINED_STEPS_PER_TRIAL);
+    }
+    let Some(pending) = pending else {
+        return false;
+    };
+    let before = pending.len();
+    pending.retain(|row| !consume_twin(&mut delta_counts, step_row_hash(&row.fields)));
+    before != pending.len()
 }
 
 fn metric_for_trial(trial: &TrialRow) -> Option<(String, f64)> {
     if let Some(key) = trial.fields.get("metric") {
         let field = format!("metric.{key}");
-        let value = trial.fields.get(&field)?.parse::<f64>().ok()?;
+        let value = trial.fields.get(field.as_str())?.parse::<f64>().ok()?;
         return Some((field, value));
     }
     trial
         .fields
         .iter()
         .find(|(k, _)| k.starts_with("metric."))
-        .and_then(|(k, v)| v.parse::<f64>().ok().map(|value| (k.clone(), value)))
+        .and_then(|(k, v)| v.parse::<f64>().ok().map(|value| (k.to_string(), value)))
 }
 
 fn metric_value_text(trial: &TrialRow) -> Option<String> {
@@ -1326,8 +1928,8 @@ fn metric_value_text(trial: &TrialRow) -> Option<String> {
     let mut metrics: Vec<(String, f64)> = trial
         .fields
         .iter()
-        .filter(|(k, _)| k.starts_with("metric.") && k.as_str() != "metric")
-        .filter_map(|(k, v)| v.parse::<f64>().ok().map(|value| (k.clone(), value)))
+        .filter(|(k, _)| k.starts_with("metric.") && &***k != "metric")
+        .filter_map(|(k, v)| v.parse::<f64>().ok().map(|value| (k.to_string(), value)))
         .collect();
     metrics.sort_by(|a, b| a.0.cmp(&b.0));
     if !metrics.is_empty() {
@@ -1372,17 +1974,17 @@ fn build_trial_items(trials: &[TrialRow]) -> Vec<String> {
             // indexes self.trials positionally).
             let cfg = trial
                 .fields
-                .get("trial.config_id")
+                .get(FIELD_TRIAL_CONFIG_ID)
                 .map(String::as_str)
                 .unwrap_or("?");
             let rung = trial
                 .fields
-                .get("trial.rung")
+                .get(FIELD_TRIAL_RUNG)
                 .map(String::as_str)
                 .unwrap_or("?");
             let budget = trial
                 .fields
-                .get("trial.budget_epochs")
+                .get(FIELD_TRIAL_BUDGET_EPOCHS)
                 .map(String::as_str)
                 .unwrap_or("?");
             format!(
@@ -1421,7 +2023,7 @@ fn nondominated_trial_ids(trials: &[TrialRow]) -> std::collections::HashSet<i64>
 /// order derived from `score.<name>` fields; falls back to the single `score`
 /// column.
 fn trial_signed_scores(trial: &TrialRow) -> Option<Vec<f64>> {
-    let mut keys: Vec<String> = trial
+    let mut keys: Vec<Arc<str>> = trial
         .fields
         .keys()
         .filter(|k| k.starts_with("score."))
@@ -1500,7 +2102,7 @@ fn frontier_lines(trials: &[TrialRow], in_progress: bool) -> Vec<Line<'static>> 
             let metric = trial
                 .fields
                 .get("metric")
-                .and_then(|name| trial.fields.get(&format!("metric.{name}")))
+                .and_then(|name| trial.fields.get(format!("metric.{name}").as_str()))
                 .and_then(|v| v.parse::<f64>().ok());
             let metric_part = metric
                 .map(|m| format!("  metric={m:.4}"))
@@ -1552,7 +2154,7 @@ fn frontier_lines(trials: &[TrialRow], in_progress: bool) -> Vec<Line<'static>> 
             .map(|(name, value)| {
                 let raw = trial
                     .fields
-                    .get(&format!("metric.{name}"))
+                    .get(format!("metric.{name}").as_str())
                     .and_then(|v| v.parse::<f64>().ok());
                 format!("{name}={:.4}", raw.unwrap_or(*value))
             })
@@ -1586,98 +2188,43 @@ fn render_charts_content(
             .render(area, &mut backend.buffer);
         return;
     }
-    let Some(trial) = charts.trials.get(charts.selected_trial_idx) else {
+    if charts.trials.get(charts.selected_trial_idx).is_none() {
         Paragraph::new("No trials loaded.").render(area, &mut backend.buffer);
         return;
-    };
-    // Lineage: same-config trials up to the selected trial's rung,
-    // ordered oldest-first, so a promoted trial's curve continues its
-    // ancestors instead of restarting at x=0 — and never leaks in later
-    // rungs the selected trial hasn't reached. Rows keep arrival-position
-    // x across the concatenation (rungs are chronological), so curves
-    // still never fold. Falls back to the selected trial alone when it
-    // has no config key or no siblings.
-    let selected_rung: i64 = trial
-        .fields
-        .get("trial.rung")
-        .and_then(|r| r.parse::<i64>().ok())
-        .unwrap_or(i64::MAX);
-    let mut chain: Vec<&TrialRow> = charts
-        .trials
-        .iter()
-        .filter(|t| {
-            trial
-                .fields
-                .get("trial.config_id")
-                .is_some_and(|c| t.fields.get("trial.config_id") == Some(c))
-                && t.fields
-                    .get("trial.rung")
-                    .and_then(|r| r.parse::<i64>().ok())
-                    .is_some_and(|r| r <= selected_rung)
-        })
-        .collect();
-    chain.sort_by_key(|t| {
-        t.fields
-            .get("trial.rung")
-            .and_then(|r| r.parse::<i64>().ok())
-            .unwrap_or(i64::MAX)
-    });
-    if chain.is_empty() {
-        chain.push(trial);
     }
-    // Live step rows are the finest-grained live data (persisted ~1/sec while
-    // the trial runs); the source toggle picks which stream the charts sweep,
-    // falling back to the other when the selected one is empty (e.g. epochs
-    // for a trial that emitted no steps). Never merged: shared `metric.*`
-    // keys hold different values per stream (step loss vs epoch val_loss).
-    // Selection applies per chain link, then links concatenate in rung order.
-    let mut owned: Vec<TrialRow> = Vec::new();
-    for link in &chain {
-        let steps = charts
-            .step_rows
-            .get(&link.trial_id)
-            .cloned()
-            .unwrap_or_default();
-        let epochs = charts
-            .epoch_rows
-            .get(&link.trial_id)
-            .cloned()
-            .unwrap_or_default();
-        match charts.chart_source {
-            ChartSource::Steps if !steps.is_empty() => owned.extend(steps),
-            ChartSource::Epochs if !epochs.is_empty() => owned.extend(epochs),
-            _ => {
-                owned.extend(if !steps.is_empty() { steps } else { epochs });
-            }
-        }
-    }
-    let rows: &[TrialRow] = &owned;
-    if rows.is_empty() {
-        Paragraph::new("No epoch or step metrics for selected trial.")
-            .render(area, &mut backend.buffer);
+    if charts.chart_series.is_empty() {
+        // `series_had_rows` distinguishes an empty chain (no data yet) from
+        // a chain with no numeric curves (e.g. a trial that emitted no
+        // parseable metrics).
+        let message = if charts.series_had_rows {
+            "No numeric metric curves."
+        } else {
+            "No epoch or step metrics for selected trial."
+        };
+        Paragraph::new(message).render(area, &mut backend.buffer);
         return;
     }
     // x is always the row's arrival position (1-based). Rows arrive in
     // chronological order, so the curve can never fold back on itself, flip
     // mid-run, or depend on field names in any way.
-    render_metric_charts(backend, charts, rows, area, ctx);
+    let series_list = Arc::clone(&charts.chart_series);
+    render_metric_charts_cached(backend, charts, &series_list, area, ctx);
 }
 
-fn render_metric_charts(
+fn render_metric_charts_cached(
     backend: &mut RatatuiBackend,
     charts: &mut ChartsView,
-    rows: &[TrialRow],
+    series_list: &[(String, SharedPoints)],
     area: Rect,
     ctx: &ComponentContext,
 ) {
-    let metric_keys = collect_metric_keys(rows);
-    charts.metrics_len = metric_keys.len();
-    if metric_keys.is_empty() {
+    charts.metrics_len = series_list.len();
+    if series_list.is_empty() {
         Paragraph::new("No numeric metric curves.").render(area, &mut backend.buffer);
         return;
     }
-    if charts.chart_selected >= metric_keys.len() {
-        charts.chart_selected = metric_keys.len().saturating_sub(1);
+    if charts.chart_selected >= series_list.len() {
+        charts.chart_selected = series_list.len().saturating_sub(1);
     }
 
     // Always reserve the bottom row for the config-derived keybinding hint so
@@ -1693,7 +2240,7 @@ fn render_metric_charts(
 
     match charts.chart_view {
         ChartView::Summary => {
-            let total_items = metric_keys.len();
+            let total_items = series_list.len();
             let content_h = total_items * CHART_ITEM_HEIGHT as usize;
             if let Some(handle) = ctx.scroll_handle() {
                 handle.set_content_size(chart_area.width as usize, content_h);
@@ -1706,7 +2253,7 @@ fn render_metric_charts(
 
             let first_chart = (offset_y / chart_item_h).saturating_sub(1);
             let max_visible = vp_h.div_ceil(CHART_ITEM_HEIGHT as usize);
-            let last_chart = (first_chart + max_visible + 2).min(metric_keys.len());
+            let last_chart = (first_chart + max_visible + 2).min(series_list.len());
 
             #[allow(clippy::needless_range_loop)]
             for abs_idx in first_chart..last_chart {
@@ -1723,21 +2270,16 @@ fn render_metric_charts(
                     width: chart_area.width,
                     height: h,
                 };
-                render_metric_chart(
-                    backend,
-                    rows,
-                    &metric_keys[abs_idx],
-                    rect,
-                    charts.chart_zoom,
-                );
+                let (key, series) = &series_list[abs_idx];
+                render_metric_chart(backend, series, key, rect, charts.chart_zoom);
             }
         }
         ChartView::Focused => {
             if let Some(handle) = ctx.scroll_handle() {
                 handle.set_content_size(chart_area.width as usize, chart_area.height as usize);
             }
-            let key = &metric_keys[charts.chart_selected];
-            render_metric_chart(backend, rows, key, chart_area, charts.chart_zoom);
+            let (key, series) = &series_list[charts.chart_selected];
+            render_metric_chart(backend, series, key, chart_area, charts.chart_zoom);
         }
     }
 
@@ -1758,6 +2300,25 @@ fn render_hyperparam_space(backend: &mut RatatuiBackend, charts: &mut ChartsView
     if area.height == 0 || area.width == 0 {
         return;
     }
+    // Cache per-axis domains + objective range: rebuilding them parses every
+    // trial's fields on every frame. Keyed by snapshot version + the exact
+    // enabled-axis list; per-trial colors and the selection highlight below
+    // stay live (cheap float lookups, no parsing).
+    if !charts
+        .hp_cache
+        .valid(charts.snapshot_version, &charts.enabled_axes)
+    {
+        let domains = charts
+            .enabled_axes
+            .iter()
+            .map(|axis| param_domain(&charts.trials, &axis.name))
+            .collect::<Vec<_>>();
+        let obj_range = objective_range(&charts.trials);
+        charts.hp_cache.version = charts.snapshot_version;
+        charts.hp_cache.axes = charts.enabled_axes.clone();
+        charts.hp_cache.domains = domains;
+        charts.hp_cache.obj_range = obj_range;
+    }
     let trials = &charts.trials;
     let selected = charts.selected_trial_idx;
     let enabled_axes: Vec<&AxisKey> = charts.enabled_axes.iter().collect();
@@ -1775,11 +2336,8 @@ fn render_hyperparam_space(backend: &mut RatatuiBackend, charts: &mut ChartsView
         Paragraph::new("No parameters in view.").render(area, &mut backend.buffer);
         return;
     }
-    let domains = visible
-        .iter()
-        .map(|axis| param_domain(trials, &axis.name))
-        .collect::<Vec<_>>();
-    let objective_range = objective_range(trials);
+    let domains = &charts.hp_cache.domains[start..end];
+    let objective_range = charts.hp_cache.obj_range;
     let x_max = if visible_len == 1 {
         1.0
     } else {
@@ -1813,7 +2371,7 @@ fn render_hyperparam_space(backend: &mut RatatuiBackend, charts: &mut ChartsView
                 };
                 let mut last: Option<(f64, f64)> = None;
                 for (idx, (axis, domain)) in visible.iter().zip(domains.iter()).enumerate() {
-                    let Some(value) = trial.fields.get(&axis.name) else {
+                    let Some(value) = trial.fields.get(axis.name.as_str()) else {
                         last = None;
                         continue;
                     };
@@ -1832,29 +2390,90 @@ fn render_hyperparam_space(backend: &mut RatatuiBackend, charts: &mut ChartsView
     canvas.render(area, &mut backend.buffer);
 }
 
+/// X-bounds for a metric chart: the full arrival-position range, or the
+/// trailing `zoom` fraction of it when zoomed. Degenerate single-point
+/// ranges expand to width 1.0 BEFORE zooming, and zooming clamps against the
+/// expanded full bounds — so a zoomed 1-point series keeps `[x, x + 1.0]`
+/// and never collapses to zero width for Ratatui `Chart`.
+fn chart_x_bounds(series: &[ChartPoint], zoom: f64) -> (f64, f64) {
+    let (full_min_x, mut full_max_x) = match (series.first(), series.last()) {
+        (Some(first), Some(last)) => (first.x, last.x),
+        _ => (0.0, 1.0),
+    };
+    if full_max_x == full_min_x {
+        full_max_x = full_min_x + 1.0;
+    }
+    if series.is_empty() || zoom >= 1.0 {
+        return (full_min_x, full_max_x);
+    }
+    let window = ((full_max_x - full_min_x) * zoom).max(1e-6);
+    let mut max_x = full_max_x;
+    let mut min_x = max_x - window;
+    if min_x < full_min_x {
+        min_x = full_min_x;
+        max_x = (min_x + window).min(full_max_x);
+    }
+    (min_x, max_x)
+}
+
 fn render_metric_chart(
     backend: &mut RatatuiBackend,
-    rows: &[TrialRow],
+    series: &[ChartPoint],
     key: &str,
     area: Rect,
     zoom: f64,
 ) {
-    let series = metric_series_for_key(rows, key);
-    let (min_x, max_x, min_y, max_y) = zoomed_series_bounds(&series, zoom);
+    // x is the arrival position (ascending), so the zoom window is found with
+    // two binary searches — O(log n), not the old O(n) full-series scan.
+    let (min_x, max_x) = chart_x_bounds(series, zoom);
+    let start = series.partition_point(|point| point.x < min_x);
+    let end = series.partition_point(|point| point.x <= max_x);
+    let window = if start < end {
+        &series[start..end]
+    } else {
+        series
+    };
+    // Decimate to the Braille grid: at most ~2 points per horizontal dot
+    // column. `Chart::render` then draws O(width) segments no matter how
+    // long the step history grows. Min/max bucketing preserves the window
+    // extrema exactly, so y bounds match the undecimated curve.
+    let max_points = ((area.width as usize) * 2).max(8);
+    let drawn: Vec<ChartPoint>;
+    let view: &[ChartPoint] = if window.len() > max_points {
+        drawn = decimate_min_max(window, max_points);
+        &drawn
+    } else {
+        window
+    };
+    let (mut min_y, mut max_y) = view
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), point| {
+            (lo.min(point.y), hi.max(point.y))
+        });
+    if !min_y.is_finite() || !max_y.is_finite() {
+        (min_y, max_y) = (0.0, 1.0);
+    } else if min_y == max_y {
+        max_y = min_y + 1.0;
+    }
     let x_labels = axis_labels(min_x, max_x);
     let y_labels = axis_labels(min_y, max_y);
     let y_title = metric_axis_title(key);
-    let title = if let Some(last) = series.last().map(|point| point.1) {
+    let title = if let Some(last) = series.last().map(|point| point.y) {
         format!("{key}  last={last:.4}")
     } else {
         key.to_string()
     };
+    // Ratatui's `Dataset::data` takes `&[(f64, f64)]`, so the decimated view
+    // is mapped at the boundary. Width-bounded (<= ~2 points per Braille
+    // column), so this copy is trivially small — the full history is never
+    // converted.
+    let plot: Vec<(f64, f64)> = view.iter().map(|point| (point.x, point.y)).collect();
     let dataset = Dataset::default()
         .name(key.to_string())
         .graph_type(GraphType::Line)
         .marker(Marker::Braille)
         .style(Style::default().fg(Color::Cyan))
-        .data(&series);
+        .data(&plot);
     let chart = Chart::new(vec![dataset])
         .block(Block::default().borders(Borders::ALL).title(title))
         .x_axis(
@@ -1872,102 +2491,73 @@ fn render_metric_chart(
     chart.render(area, &mut backend.buffer);
 }
 
+/// Reduce `window` to at most `max_points` points while preserving its y
+/// extrema: one (min, max) pair per index bucket, ordered by x so the line
+/// never folds. Requires `max_points >= 2`.
+fn decimate_min_max(window: &[ChartPoint], max_points: usize) -> Vec<ChartPoint> {
+    if window.len() <= max_points || max_points < 2 {
+        return window.to_vec();
+    }
+    let buckets = max_points / 2;
+    let mut out = Vec::with_capacity(buckets * 2);
+    let n = window.len();
+    for bucket in 0..buckets {
+        let start = bucket * n / buckets;
+        let end = ((bucket + 1) * n / buckets).max(start + 1).min(n);
+        let slice = &window[start..end];
+        let (mut lo, mut hi) = (0usize, 0usize);
+        for (idx, point) in slice.iter().enumerate() {
+            if point.y < slice[lo].y {
+                lo = idx;
+            }
+            if point.y > slice[hi].y {
+                hi = idx;
+            }
+        }
+        if lo == hi {
+            out.push(slice[lo]);
+        } else if lo < hi {
+            out.push(slice[lo]);
+            out.push(slice[hi]);
+        } else {
+            out.push(slice[hi]);
+            out.push(slice[lo]);
+        }
+    }
+    out
+}
+
 /// Every numeric `metric.*` field gets its own chart. That is the entire
 /// rule: no variance tests, no exclusions, no name lists. A constant field
 /// draws a flat line, a counter draws a staircase — both are data, both plot.
-fn collect_metric_keys(rows: &[TrialRow]) -> Vec<String> {
-    let mut keys = BTreeMap::new();
+fn collect_metric_keys(rows: &[&TrialRow]) -> Vec<String> {
+    let mut keys = BTreeSet::new();
     for row in rows {
         for (key, value) in &row.fields {
-            if !key.starts_with("metric.") || key.as_str() == "metric" {
+            if !key.starts_with("metric.") || &**key == "metric" {
                 continue;
             }
             if value.parse::<f64>().is_ok() {
-                keys.entry(key.clone()).or_insert(());
+                keys.insert(Arc::clone(key));
             }
         }
     }
-    keys.into_keys().collect()
+    keys.into_iter().map(|key| key.to_string()).collect()
 }
 
-fn metric_series_for_key(rows: &[TrialRow], key: &str) -> Vec<(f64, f64)> {
+fn metric_series_for_key(rows: &[&TrialRow], key: &str) -> Vec<ChartPoint> {
     let mut series = Vec::with_capacity(rows.len());
     for (idx, row) in rows.iter().enumerate() {
         let value = row.fields.get(key).and_then(|v| v.parse::<f64>().ok());
         let Some(value) = value else {
             continue;
         };
-        series.push(((idx + 1) as f64, value));
+        series.push(ChartPoint {
+            x: (idx + 1) as f64,
+            y: value,
+        });
     }
     series
-}
-
-fn series_bounds(series: &[(f64, f64)]) -> (f64, f64, f64, f64) {
-    if series.is_empty() {
-        return (0.0, 1.0, 0.0, 1.0);
-    }
-    let mut min_x = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    for (x, y) in series {
-        min_x = min_x.min(*x);
-        max_x = max_x.max(*x);
-        min_y = min_y.min(*y);
-        max_y = max_y.max(*y);
-    }
-    if min_x == max_x {
-        max_x = min_x + 1.0;
-    }
-    if min_y == max_y {
-        max_y = min_y + 1.0;
-    }
-    (min_x, max_x, min_y, max_y)
-}
-
-fn zoomed_series_bounds(series: &[(f64, f64)], zoom: f64) -> (f64, f64, f64, f64) {
-    let (full_min_x, full_max_x, full_min_y, full_max_y) = series_bounds(series);
-    if series.is_empty() || zoom >= 1.0 {
-        return (full_min_x, full_max_x, full_min_y, full_max_y);
-    }
-    let full_range = full_max_x - full_min_x;
-    if full_range <= 0.0 {
-        return (full_min_x, full_max_x, full_min_y, full_max_y);
-    }
-    let window = (full_range * zoom).max(1e-6);
-    let mut max_x = full_max_x;
-    let mut min_x = max_x - window;
-    if min_x < full_min_x {
-        min_x = full_min_x;
-        max_x = (min_x + window).min(full_max_x);
-    }
-
-    if let Some((min_y, max_y)) = series_y_bounds_in_range(series, min_x, max_x) {
-        (min_x, max_x, min_y, max_y)
-    } else {
-        (full_min_x, full_max_x, full_min_y, full_max_y)
-    }
-}
-
-fn series_y_bounds_in_range(series: &[(f64, f64)], min_x: f64, max_x: f64) -> Option<(f64, f64)> {
-    let mut min_y = f64::INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    for (x, y) in series {
-        if *x < min_x || *x > max_x {
-            continue;
-        }
-        min_y = min_y.min(*y);
-        max_y = max_y.max(*y);
-    }
-    if min_y.is_finite() && max_y.is_finite() {
-        if min_y == max_y {
-            Some((min_y, max_y + 1.0))
-        } else {
-            Some((min_y, max_y))
-        }
-    } else {
-        None
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1976,7 +2566,7 @@ enum ParamDomain {
     Categorical { categories: Vec<String> },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct AxisKey {
     name: String,
 }
@@ -2208,14 +2798,14 @@ fn trial_detail_lines(
     lines.push(Line::from(format!("status: {}", trial.status)));
     // Promotion chain: siblings sharing this trial's config, ordered by
     // rung, so a resumed trial shows where it came from and where it sits.
-    if let Some(cfg) = trial.fields.get("trial.config_id") {
+    if let Some(cfg) = trial.fields.get(FIELD_TRIAL_CONFIG_ID) {
         let mut chain: Vec<&TrialRow> = all
             .iter()
-            .filter(|t| t.fields.get("trial.config_id") == Some(cfg))
+            .filter(|t| t.fields.get(FIELD_TRIAL_CONFIG_ID) == Some(cfg))
             .collect();
         chain.sort_by_key(|t| {
             t.fields
-                .get("trial.rung")
+                .get(FIELD_TRIAL_RUNG)
                 .and_then(|r| r.parse::<i64>().ok())
                 .unwrap_or(i64::MAX)
         });
@@ -2225,7 +2815,7 @@ fn trial_detail_lines(
                 .map(|t| {
                     let r = t
                         .fields
-                        .get("trial.rung")
+                        .get(FIELD_TRIAL_RUNG)
                         .map(String::as_str)
                         .unwrap_or("?");
                     let here = if t.trial_id == trial.trial_id {
@@ -2257,17 +2847,17 @@ fn trial_detail_lines(
     let mut metric_fields: BTreeMap<String, String> = BTreeMap::new();
     let mut other_fields = Vec::new();
     for (key, value) in &trial.fields {
-        if key.starts_with("metric.") && key.as_str() != "metric" {
-            metric_fields.insert(key.clone(), value.clone());
+        if key.starts_with("metric.") && &**key != "metric" {
+            metric_fields.insert(key.to_string(), value.clone());
         } else if !key.starts_with("metric") {
             other_fields.push(format!("{key} = {value}"));
         }
     }
     if let Some(last_epoch) = epochs.last() {
         for (key, value) in &last_epoch.fields {
-            if key.starts_with("metric.") && key.as_str() != "metric" {
+            if key.starts_with("metric.") && &**key != "metric" {
                 metric_fields
-                    .entry(key.clone())
+                    .entry(key.to_string())
                     .or_insert_with(|| value.clone());
             }
         }
@@ -2341,11 +2931,11 @@ mod frontier_tests {
             elapsed_ms: 0,
             error: None,
             fields: BTreeMap::from([
-                ("hp.dummy".to_string(), id.to_string()),
-                ("metric.loss".to_string(), loss.to_string()),
-                ("metric.latency_ms".to_string(), latency.to_string()),
-                ("score.loss".to_string(), loss.to_string()),
-                ("score.latency_ms".to_string(), latency.to_string()),
+                (Arc::<str>::from("hp.dummy"), id.to_string()),
+                (Arc::<str>::from("metric.loss"), loss.to_string()),
+                (Arc::<str>::from("metric.latency_ms"), latency.to_string()),
+                (Arc::<str>::from("score.loss"), loss.to_string()),
+                (Arc::<str>::from("score.latency_ms"), latency.to_string()),
             ]),
         }
     }
@@ -2399,10 +2989,10 @@ mod frontier_tests {
             elapsed_ms: 0,
             error: None,
             fields: BTreeMap::from([
-                ("hp.x".to_string(), id.to_string()),
-                ("metric".to_string(), "loss".to_string()),
-                ("metric.loss".to_string(), metric.to_string()),
-                ("score".to_string(), score.to_string()),
+                (Arc::<str>::from("hp.x"), id.to_string()),
+                (Arc::<str>::from("metric"), "loss".to_string()),
+                (Arc::<str>::from("metric.loss"), metric.to_string()),
+                (Arc::<str>::from("score"), score.to_string()),
             ]),
         };
         let trials = vec![
@@ -2442,7 +3032,7 @@ mod frontier_tests {
             status: "ok".to_string(),
             elapsed_ms: 0,
             error: None,
-            fields: BTreeMap::from([("score".to_string(), "0.5".to_string())]),
+            fields: BTreeMap::from([(Arc::<str>::from("score"), "0.5".to_string())]),
         }];
         let items = build_trial_items(&single);
         assert!(!items[0].contains("[nd]"), "{}", items[0]);
@@ -2539,7 +3129,7 @@ mod view_tests {
             error: None,
             fields: pairs
                 .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .map(|(k, v)| (Arc::<str>::from(*k), v.to_string()))
                 .collect(),
         }
     }
@@ -2553,9 +3143,14 @@ mod view_tests {
             axis_test_row(&[("metric.step", "1"), ("metric.loss", "0.8")]),
             axis_test_row(&[("metric.step", "2"), ("metric.loss", "0.7")]),
         ];
+        let refs: Vec<&TrialRow> = rows.iter().collect();
         assert_eq!(
-            metric_series_for_key(&rows, "metric.loss"),
-            vec![(1.0, 0.9), (2.0, 0.8), (3.0, 0.7)]
+            metric_series_for_key(&refs, "metric.loss"),
+            vec![
+                ChartPoint { x: 1.0, y: 0.9 },
+                ChartPoint { x: 2.0, y: 0.8 },
+                ChartPoint { x: 3.0, y: 0.7 },
+            ]
         );
     }
 
@@ -2567,9 +3162,10 @@ mod view_tests {
             axis_test_row(&[("metric.loss", "0.7")]),
         ];
         // Position counts rows, not points: the curve keeps true spacing.
+        let refs: Vec<&TrialRow> = rows.iter().collect();
         assert_eq!(
-            metric_series_for_key(&rows, "metric.loss"),
-            vec![(1.0, 0.9), (3.0, 0.7)]
+            metric_series_for_key(&refs, "metric.loss"),
+            vec![ChartPoint { x: 1.0, y: 0.9 }, ChartPoint { x: 3.0, y: 0.7 },]
         );
     }
 
@@ -2593,13 +3189,157 @@ mod view_tests {
                 ("note", "world"),
             ]),
         ];
+        let refs: Vec<&TrialRow> = rows.iter().collect();
         assert_eq!(
-            collect_metric_keys(&rows),
+            collect_metric_keys(&refs),
             vec![
                 "metric.loss".to_string(),
                 "metric.lr".to_string(),
                 "metric.step".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn step_hash_matches_db_twin_modulo_trial_time() {
+        // The writer stamps `trial.time` into the DB row AFTER the TCP push,
+        // so a live row and its persisted twin differ by exactly that key.
+        // The reconciler must recognize them as the same step.
+        let mut pending: BTreeMap<Arc<str>, String> = BTreeMap::new();
+        pending.insert(Arc::<str>::from("metric.loss"), "0.5".to_string());
+        pending.insert(Arc::<str>::from("metric.step"), "7".to_string());
+        let mut twin = pending.clone();
+        twin.insert(
+            Arc::<str>::from(FIELD_TRIAL_TIME),
+            "2026-01-01T00:00:00Z".to_string(),
+        );
+        assert_eq!(step_row_hash(&pending), step_row_hash(&twin));
+    }
+
+    #[test]
+    fn step_hash_distinguishes_different_steps() {
+        // Identical consecutive steps must NOT collapse: distinct payloads
+        // hash distinctly, so reconciliation only ever drops a pending row
+        // with a true persisted twin — persisted history is never deduped.
+        let mut a: BTreeMap<Arc<str>, String> = BTreeMap::new();
+        a.insert(Arc::<str>::from("metric.loss"), "0.5".to_string());
+        let mut b = a.clone();
+        b.insert(Arc::<str>::from("metric.loss"), "0.4".to_string());
+        assert_ne!(step_row_hash(&a), step_row_hash(&b));
+    }
+
+    fn pending_row(trial_id: i64, loss: &str) -> TrialRow {
+        TrialRow {
+            trial_id,
+            status: "running".to_string(),
+            elapsed_ms: 0,
+            error: None,
+            fields: BTreeMap::from([(Arc::<str>::from("metric.loss"), loss.to_string())]),
+        }
+    }
+
+    #[test]
+    fn merge_keeps_identical_pending_steps_until_each_twin_arrives() {
+        // Two identical pending steps, no twins in the delta: both survive.
+        let mut retained = Vec::new();
+        let mut pending = vec![pending_row(1, "0.5"), pending_row(1, "0.5")];
+        assert!(!merge_trial_steps(
+            &mut retained,
+            vec![],
+            Some(&mut pending)
+        ));
+        assert_eq!(pending.len(), 2);
+
+        // One twin in the delta: exactly one pending copy is evicted, the
+        // other (whose twin is still in flight) survives. A `HashSet` would
+        // drop both here — the multiset collapse bug.
+        assert!(merge_trial_steps(
+            &mut retained,
+            vec![pending_row(1, "0.5")],
+            Some(&mut pending),
+        ));
+        assert_eq!(pending.len(), 1);
+
+        // Second twin in the delta: the last copy is evicted.
+        assert!(merge_trial_steps(
+            &mut retained,
+            vec![pending_row(1, "0.5")],
+            Some(&mut pending),
+        ));
+        assert!(pending.is_empty());
+        // Retained rows accumulated across the merges.
+        assert_eq!(retained.len(), 2);
+    }
+
+    #[test]
+    fn merge_at_cap_eviction_cannot_strand_pending_twin() {
+        // Regression test: trial already at the retention cap whose oldest
+        // row shares a payload hash with a newly arriving step + TCP twin.
+        // Evicting the oldest row must not consume the new row's twin count —
+        // the pending TCP row is still evicted and retained stays at cap.
+        let mut retained: Vec<TrialRow> = (0..MAX_RETAINED_STEPS_PER_TRIAL as i64)
+            .map(|i| pending_row(1, &format!("0.{i:05}")))
+            .collect();
+        // Oldest row shares the new payload exactly.
+        retained[0] = pending_row(1, "0.5");
+        let mut pending = vec![pending_row(1, "0.5")];
+        assert!(merge_trial_steps(
+            &mut retained,
+            vec![pending_row(1, "0.5")],
+            Some(&mut pending),
+        ));
+        assert!(pending.is_empty(), "twin evicted the pending row");
+        assert_eq!(
+            retained.len(),
+            MAX_RETAINED_STEPS_PER_TRIAL,
+            "retained stays capped"
+        );
+    }
+
+    #[test]
+    fn zoomed_single_point_series_keeps_non_degenerate_x_bounds() {
+        // A 1-point series expands to width 1.0; zooming must clamp against
+        // the expanded bounds, never collapse back to zero width.
+        let one = vec![ChartPoint { x: 1.0, y: 5.0 }];
+        let (min_x, max_x) = chart_x_bounds(&one, 0.5);
+        assert!(max_x > min_x, "zoomed 1-point bounds [{min_x}, {max_x}]");
+        let (min_x, max_x) = chart_x_bounds(&one, 1.0);
+        assert_eq!((min_x, max_x), (1.0, 2.0));
+        // Empty and multi-point series behave as before.
+        assert_eq!(chart_x_bounds(&[], 0.5), (0.0, 1.0));
+        let many = vec![
+            ChartPoint { x: 1.0, y: 1.0 },
+            ChartPoint { x: 2.0, y: 2.0 },
+            ChartPoint { x: 3.0, y: 3.0 },
+            ChartPoint { x: 4.0, y: 4.0 },
+        ];
+        assert_eq!(chart_x_bounds(&many, 1.0), (1.0, 4.0));
+        let (min_x, max_x) = chart_x_bounds(&many, 0.5);
+        assert!(max_x > min_x && min_x >= 1.0 && max_x <= 4.0);
+    }
+
+    #[test]
+    fn decimate_preserves_extrema_within_point_budget() {
+        // 1000-point curve with spikes at known positions.
+        let mut series = Vec::new();
+        for i in 0..1000 {
+            let y = if i == 123 {
+                999.0
+            } else if i == 876 {
+                -999.0
+            } else {
+                (i as f64 / 100.0).sin()
+            };
+            series.push(ChartPoint { x: i as f64, y });
+        }
+        let out = decimate_min_max(&series, 64);
+        assert!(out.len() <= 64, "budget respected: {}", out.len());
+        // Extrema survive decimation.
+        assert!(out.iter().any(|point| point.y == 999.0));
+        assert!(out.iter().any(|point| point.y == -999.0));
+        // x order preserved so the line never folds.
+        assert!(out.windows(2).all(|w| w[0].x <= w[1].x));
+        // Small windows pass through untouched.
+        assert_eq!(decimate_min_max(&series[..10], 64), series[..10]);
     }
 }

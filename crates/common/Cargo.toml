@@ -1,5 +1,6 @@
 [package]
 name = "argtuner-common"
+authors.workspace = true
 version.workspace = true
 edition.workspace = true
 description = "Shared constants and protocol types for the argtuner workspace."
@@ -17,3 +18,6 @@ toml.workspace = true
 
 [dev-dependencies]
 line-ending.workspace = true
+
+[lints]
+workspace = true

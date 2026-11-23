@@ -1,6 +1,7 @@
 
 [package]
 name = "argtuner"
+authors.workspace = true
 version.workspace = true
 edition.workspace = true
 description.workspace = true
@@ -31,10 +32,13 @@ repository = "https://github.com/jzombie/rust-argtuner"
 license = "MIT OR Apache-2.0"
 publish = true
 
+# Unused workspace dependencies fail the build instead of warning.
+[workspace.lints.cargo]
+unused_workspace_dependencies = "deny"
+
 [workspace.dependencies]
 argmin = { version = "0.11", features = ["serde1"] }
 argmin-math = { version = "0.5.1", features = ["vec"] }
-argtuner = { path = ".", version = "0.3.0-alpha" }
 argtuner-common = { path = "crates/common", version = "0.3.0-alpha" }
 argtuner-derive = { path = "crates/argtuner-derive", version = "0.3.0-alpha" }
 argtuner-sdk = { path = "crates/argtuner-sdk", version = "0.3.0-alpha" }
@@ -56,8 +60,7 @@ proc-macro2 = "1.0.107"
 quote = "1.0.47"
 rand = "0.10.2"
 ratatui = "0.30.0"
-resvg = "0.45.1"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.37.0", features = ["bundled"] }
 schemars = { version = "1.2.2", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.148"
@@ -145,6 +148,8 @@ thiserror = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 toml_edit = { workspace = true, features = ["serde"] }
 tracing = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"], optional = true }
 
 [dev-dependencies]
@@ -153,3 +158,6 @@ indicatif.workspace = true
 indoc.workspace = true
 jsonschema.workspace = true
 line-ending.workspace = true
+
+[lints]
+workspace = true
