@@ -176,6 +176,20 @@ struct TrialRow {
 }
 
 type TrialStepRows = BTreeMap<i64, Vec<TrialRow>>;
+/// One parsed chart point: arrival-position `x`, metric value `y`.
+/// Same layout as the `(f64, f64)` tuple it replaces — `Copy`, no
+/// indirection, no perf difference. Named fields so call sites read as
+/// `point.x` / `point.y` instead of `.0` / `.1`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ChartPoint {
+    x: f64,
+    y: f64,
+}
+/// One parsed metric curve: shared points so every frame reads them
+/// without cloning.
+type SharedPoints = Arc<Vec<ChartPoint>>;
+/// All parsed curves for the selected chain, sorted by metric key.
+type SharedSeriesList = Arc<Vec<(String, SharedPoints)>>;
 /// One delta poll: reloaded trial rows, new epoch/step rows, the new
 /// `row_id` high-water marks, and whether the DB file was replaced or
 /// truncated under us (file max below the caller's cursor, or table gone
@@ -264,7 +278,7 @@ struct ChartCache {
     /// Parsed metric series swept from `rows`: `(key, points)` sorted by key.
     /// `f64` parsing happens once per fingerprint change here — never per
     /// frame. Each series is separately `Arc`d so frames share it.
-    series: Arc<Vec<(String, Arc<Vec<(f64, f64)>>)>>,
+    series: SharedSeriesList,
     /// Snapshot version the HP entries below were built from.
     hp_version: u64,
     /// Enabled-axis list the HP entries were built from, in order.
@@ -1663,7 +1677,6 @@ fn open_connection(path: &Path) -> Result<Connection, String> {
 
 /// Current `MAX(row_id)` per append-only table, or `None` when the table does
 /// not exist yet (project created, no run recorded).
-
 fn db_max_row_id(conn: &Connection, table: &str) -> Result<Option<i64>, String> {
     let sql = format!("SELECT COALESCE(MAX(row_id), 0) FROM {table}");
     match conn.query_row(&sql, [], |row| row.get::<_, i64>(0)) {
@@ -2123,7 +2136,7 @@ fn render_charts_content(
 fn render_metric_charts_cached(
     backend: &mut RatatuiBackend,
     charts: &mut ChartsView,
-    series_list: &[(String, Arc<Vec<(f64, f64)>>)],
+    series_list: &[(String, SharedPoints)],
     area: Rect,
     ctx: &ComponentContext,
 ) {
@@ -2304,9 +2317,9 @@ fn render_hyperparam_space(backend: &mut RatatuiBackend, charts: &mut ChartsView
 /// ranges expand to width 1.0 BEFORE zooming, and zooming clamps against the
 /// expanded full bounds — so a zoomed 1-point series keeps `[x, x + 1.0]`
 /// and never collapses to zero width for Ratatui `Chart`.
-fn chart_x_bounds(series: &[(f64, f64)], zoom: f64) -> (f64, f64) {
+fn chart_x_bounds(series: &[ChartPoint], zoom: f64) -> (f64, f64) {
     let (full_min_x, mut full_max_x) = match (series.first(), series.last()) {
-        (Some(first), Some(last)) => (first.0, last.0),
+        (Some(first), Some(last)) => (first.x, last.x),
         _ => (0.0, 1.0),
     };
     if full_max_x == full_min_x {
@@ -2327,7 +2340,7 @@ fn chart_x_bounds(series: &[(f64, f64)], zoom: f64) -> (f64, f64) {
 
 fn render_metric_chart(
     backend: &mut RatatuiBackend,
-    series: &[(f64, f64)],
+    series: &[ChartPoint],
     key: &str,
     area: Rect,
     zoom: f64,
@@ -2335,8 +2348,8 @@ fn render_metric_chart(
     // x is the arrival position (ascending), so the zoom window is found with
     // two binary searches — O(log n), not the old O(n) full-series scan.
     let (min_x, max_x) = chart_x_bounds(series, zoom);
-    let start = series.partition_point(|point| point.0 < min_x);
-    let end = series.partition_point(|point| point.0 <= max_x);
+    let start = series.partition_point(|point| point.x < min_x);
+    let end = series.partition_point(|point| point.x <= max_x);
     let window = if start < end {
         &series[start..end]
     } else {
@@ -2347,8 +2360,8 @@ fn render_metric_chart(
     // long the step history grows. Min/max bucketing preserves the window
     // extrema exactly, so y bounds match the undecimated curve.
     let max_points = ((area.width as usize) * 2).max(8);
-    let drawn: Vec<(f64, f64)>;
-    let view: &[(f64, f64)] = if window.len() > max_points {
+    let drawn: Vec<ChartPoint>;
+    let view: &[ChartPoint] = if window.len() > max_points {
         drawn = decimate_min_max(window, max_points);
         &drawn
     } else {
@@ -2356,8 +2369,8 @@ fn render_metric_chart(
     };
     let (mut min_y, mut max_y) = view
         .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (_, y)| {
-            (lo.min(*y), hi.max(*y))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), point| {
+            (lo.min(point.y), hi.max(point.y))
         });
     if !min_y.is_finite() || !max_y.is_finite() {
         (min_y, max_y) = (0.0, 1.0);
@@ -2367,17 +2380,22 @@ fn render_metric_chart(
     let x_labels = axis_labels(min_x, max_x);
     let y_labels = axis_labels(min_y, max_y);
     let y_title = metric_axis_title(key);
-    let title = if let Some(last) = series.last().map(|point| point.1) {
+    let title = if let Some(last) = series.last().map(|point| point.y) {
         format!("{key}  last={last:.4}")
     } else {
         key.to_string()
     };
+    // Ratatui's `Dataset::data` takes `&[(f64, f64)]`, so the decimated view
+    // is mapped at the boundary. Width-bounded (<= ~2 points per Braille
+    // column), so this copy is trivially small — the full history is never
+    // converted.
+    let plot: Vec<(f64, f64)> = view.iter().map(|point| (point.x, point.y)).collect();
     let dataset = Dataset::default()
         .name(key.to_string())
         .graph_type(GraphType::Line)
         .marker(Marker::Braille)
         .style(Style::default().fg(Color::Cyan))
-        .data(view);
+        .data(&plot);
     let chart = Chart::new(vec![dataset])
         .block(Block::default().borders(Borders::ALL).title(title))
         .x_axis(
@@ -2398,7 +2416,7 @@ fn render_metric_chart(
 /// Reduce `window` to at most `max_points` points while preserving its y
 /// extrema: one (min, max) pair per index bucket, ordered by x so the line
 /// never folds. Requires `max_points >= 2`.
-fn decimate_min_max(window: &[(f64, f64)], max_points: usize) -> Vec<(f64, f64)> {
+fn decimate_min_max(window: &[ChartPoint], max_points: usize) -> Vec<ChartPoint> {
     if window.len() <= max_points || max_points < 2 {
         return window.to_vec();
     }
@@ -2411,10 +2429,10 @@ fn decimate_min_max(window: &[(f64, f64)], max_points: usize) -> Vec<(f64, f64)>
         let slice = &window[start..end];
         let (mut lo, mut hi) = (0usize, 0usize);
         for (idx, point) in slice.iter().enumerate() {
-            if point.1 < slice[lo].1 {
+            if point.y < slice[lo].y {
                 lo = idx;
             }
-            if point.1 > slice[hi].1 {
+            if point.y > slice[hi].y {
                 hi = idx;
             }
         }
@@ -2449,14 +2467,17 @@ fn collect_metric_keys(rows: &[TrialRow]) -> Vec<String> {
     keys.into_keys().collect()
 }
 
-fn metric_series_for_key(rows: &[TrialRow], key: &str) -> Vec<(f64, f64)> {
+fn metric_series_for_key(rows: &[TrialRow], key: &str) -> Vec<ChartPoint> {
     let mut series = Vec::with_capacity(rows.len());
     for (idx, row) in rows.iter().enumerate() {
         let value = row.fields.get(key).and_then(|v| v.parse::<f64>().ok());
         let Some(value) = value else {
             continue;
         };
-        series.push(((idx + 1) as f64, value));
+        series.push(ChartPoint {
+            x: (idx + 1) as f64,
+            y: value,
+        });
     }
     series
 }
@@ -3046,7 +3067,11 @@ mod view_tests {
         ];
         assert_eq!(
             metric_series_for_key(&rows, "metric.loss"),
-            vec![(1.0, 0.9), (2.0, 0.8), (3.0, 0.7)]
+            vec![
+                ChartPoint { x: 1.0, y: 0.9 },
+                ChartPoint { x: 2.0, y: 0.8 },
+                ChartPoint { x: 3.0, y: 0.7 },
+            ]
         );
     }
 
@@ -3060,7 +3085,7 @@ mod view_tests {
         // Position counts rows, not points: the curve keeps true spacing.
         assert_eq!(
             metric_series_for_key(&rows, "metric.loss"),
-            vec![(1.0, 0.9), (3.0, 0.7)]
+            vec![ChartPoint { x: 1.0, y: 0.9 }, ChartPoint { x: 3.0, y: 0.7 },]
         );
     }
 
@@ -3158,14 +3183,19 @@ mod view_tests {
     fn zoomed_single_point_series_keeps_non_degenerate_x_bounds() {
         // A 1-point series expands to width 1.0; zooming must clamp against
         // the expanded bounds, never collapse back to zero width.
-        let one = vec![(1.0, 5.0)];
+        let one = vec![ChartPoint { x: 1.0, y: 5.0 }];
         let (min_x, max_x) = chart_x_bounds(&one, 0.5);
         assert!(max_x > min_x, "zoomed 1-point bounds [{min_x}, {max_x}]");
         let (min_x, max_x) = chart_x_bounds(&one, 1.0);
         assert_eq!((min_x, max_x), (1.0, 2.0));
         // Empty and multi-point series behave as before.
         assert_eq!(chart_x_bounds(&[], 0.5), (0.0, 1.0));
-        let many = vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)];
+        let many = vec![
+            ChartPoint { x: 1.0, y: 1.0 },
+            ChartPoint { x: 2.0, y: 2.0 },
+            ChartPoint { x: 3.0, y: 3.0 },
+            ChartPoint { x: 4.0, y: 4.0 },
+        ];
         assert_eq!(chart_x_bounds(&many, 1.0), (1.0, 4.0));
         let (min_x, max_x) = chart_x_bounds(&many, 0.5);
         assert!(max_x > min_x && min_x >= 1.0 && max_x <= 4.0);
@@ -3183,15 +3213,15 @@ mod view_tests {
             } else {
                 (i as f64 / 100.0).sin()
             };
-            series.push((i as f64, y));
+            series.push(ChartPoint { x: i as f64, y });
         }
         let out = decimate_min_max(&series, 64);
         assert!(out.len() <= 64, "budget respected: {}", out.len());
         // Extrema survive decimation.
-        assert!(out.iter().any(|(_, y)| *y == 999.0));
-        assert!(out.iter().any(|(_, y)| *y == -999.0));
+        assert!(out.iter().any(|point| point.y == 999.0));
+        assert!(out.iter().any(|point| point.y == -999.0));
         // x order preserved so the line never folds.
-        assert!(out.windows(2).all(|w| w[0].0 <= w[1].0));
+        assert!(out.windows(2).all(|w| w[0].x <= w[1].x));
         // Small windows pass through untouched.
         assert_eq!(decimate_min_max(&series[..10], 64), series[..10]);
     }
