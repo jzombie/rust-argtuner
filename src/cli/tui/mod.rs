@@ -1532,9 +1532,9 @@ fn sync_param_toggles(app: &mut AppState) {
     let mut metric_names = BTreeSet::new();
     for trial in app.trials.iter() {
         for key in trial.fields.keys() {
-            // `&**key`: plain `&str` view of the interned key. (`Arc<str>`
-            // has no stable `.as_str()`; the deref pair is the same thing.)
-            let key_str: &str = &**key;
+            // Plain `&str` view of the interned key via auto-deref.
+            // (`Arc<str>` has no stable `.as_str()`.)
+            let key_str: &str = key;
             if key_str.starts_with(HP_PREFIX) {
                 names.insert(Arc::clone(key));
                 continue;
@@ -3138,7 +3138,7 @@ mod view_tests {
     fn series_uses_arrival_position_as_x() {
         // x is always 1-based arrival position: it cannot collapse, flip, or
         // depend on field names. Counter resets just draw over earlier x.
-        let rows = vec![
+        let rows = [
             axis_test_row(&[("metric.step", "3"), ("metric.loss", "0.9")]),
             axis_test_row(&[("metric.step", "1"), ("metric.loss", "0.8")]),
             axis_test_row(&[("metric.step", "2"), ("metric.loss", "0.7")]),
@@ -3156,7 +3156,7 @@ mod view_tests {
 
     #[test]
     fn series_skips_rows_missing_the_key() {
-        let rows = vec![
+        let rows = [
             axis_test_row(&[("metric.loss", "0.9")]),
             axis_test_row(&[("metric.other", "1.0")]),
             axis_test_row(&[("metric.loss", "0.7")]),
@@ -3173,7 +3173,7 @@ mod view_tests {
     fn chart_keys_include_every_numeric_metric_field() {
         // No filtering: constant lr and counters chart alongside loss.
         // What you see is everything the trial emitted, nothing curated.
-        let rows = vec![
+        let rows = [
             axis_test_row(&[
                 ("metric.loss", "0.9"),
                 ("metric.lr", "0.00005"),
