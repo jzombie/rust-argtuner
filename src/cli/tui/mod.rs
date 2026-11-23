@@ -97,7 +97,6 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         step_rows: BTreeMap::new(),
         pending_live_steps: BTreeMap::new(),
         pending_version: 0,
-        persisted_step_hashes: BTreeMap::new(),
         field_pool: HashMap::new(),
         step_subscriber,
         last_error: None,
@@ -187,13 +186,23 @@ struct TrialRow {
     fields: BTreeMap<Arc<str>, String>,
 }
 
-/// Field-key interning pool: one shared `Arc<str>` per distinct key.
+/// Field-key interning pool shared by every row this process loads.
+/// Bounded by `MAX_INTERNED_KEYS`: once full, new keys fall back to unpooled
+/// `Arc`s (still correct, just not shared).
 type FieldPool = HashMap<String, Arc<str>>;
 
-/// Intern `key`, allocating only on first sight.
+/// Cap on distinct interned field keys. Real schemas use dozens of keys;
+/// the cap only binds pathological cases (e.g. per-step unique key names),
+/// where pooling would itself become the leak.
+const MAX_INTERNED_KEYS: usize = 4096;
+
+/// Intern `key`, allocating a shared copy only on first sight.
 fn intern_key(pool: &mut FieldPool, key: &str) -> Arc<str> {
     if let Some(shared) = pool.get(key) {
         return Arc::clone(shared);
+    }
+    if pool.len() >= MAX_INTERNED_KEYS {
+        return Arc::from(key);
     }
     let shared: Arc<str> = Arc::from(key);
     pool.insert(key.to_string(), Arc::clone(&shared));
@@ -585,17 +594,10 @@ struct AppState {
     /// persisted multiset counts every poll; concatenated with persisted rows
     /// only when the display series is built.
     pending_live_steps: BTreeMap<i64, Vec<TrialRow>>,
-    /// Bumped whenever the pending buffer mutates. Part of the chart cache
-    /// fingerprint and the push gate.
+    /// Bumped whenever the pending buffer mutates. Part of the push gate.
     pending_version: u64,
-    /// Per-trial multiset of persisted step hashes (excluding `trial.time`),
-    /// counting twins not yet matched to a pending row. A `HashSet` would
-    /// collapse repeats: one persisted plateau value would evict every later
-    /// identical pending step before its own twin arrives. Counts make each
-    /// persisted row consumable exactly once, in arrival order.
-    persisted_step_hashes: BTreeMap<i64, BTreeMap<u64, usize>>,
     /// Field-key interning pool shared by every row this process loads.
-    /// See `intern_key`.
+    /// Bounded by `MAX_INTERNED_KEYS`; see `intern_key`.
     field_pool: FieldPool,
     step_subscriber: StepSubscriber,
     last_error: Option<String>,
@@ -815,10 +817,11 @@ impl AppState {
         // empty (e.g. epochs for a trial that emitted no steps). Never
         // merged: shared `metric.*` keys hold different values per stream
         // (step loss vs epoch val_loss). Selection applies per chain link,
-        // then links concatenate in rung order.
-        let mut owned: Vec<TrialRow> = Vec::new();
+        // then links concatenate in rung order. Borrowed refs only — no row
+        // payload is cloned to build the series.
+        let mut chain_rows: Vec<&TrialRow> = Vec::new();
+        let empty: Vec<TrialRow> = Vec::new();
         for link in &chain {
-            let empty: Vec<TrialRow> = Vec::new();
             let steps = self.step_rows.get(&link.trial_id).unwrap_or(&empty);
             let epochs = self.epoch_rows.get(&link.trial_id).unwrap_or(&empty);
             let live = self
@@ -827,18 +830,18 @@ impl AppState {
                 .unwrap_or(&empty);
             match source {
                 ChartSource::Steps if !steps.is_empty() || !live.is_empty() => {
-                    owned.extend(steps.iter().cloned());
-                    owned.extend(live.iter().cloned());
+                    chain_rows.extend(steps.iter());
+                    chain_rows.extend(live.iter());
                 }
                 ChartSource::Epochs if !epochs.is_empty() => {
-                    owned.extend(epochs.iter().cloned());
+                    chain_rows.extend(epochs.iter());
                 }
                 _ => {
                     if !steps.is_empty() || !live.is_empty() {
-                        owned.extend(steps.iter().cloned());
-                        owned.extend(live.iter().cloned());
+                        chain_rows.extend(steps.iter());
+                        chain_rows.extend(live.iter());
                     } else {
-                        owned.extend(epochs.iter().cloned());
+                        chain_rows.extend(epochs.iter());
                     }
                 }
             }
@@ -847,11 +850,11 @@ impl AppState {
         // per frame. Per-frame parsing (string `f64` parses plus a `Vec` per
         // chart) was the residual 60Hz allocation burn whenever input kept
         // the loop in Streaming.
-        let had_rows = !owned.is_empty();
-        let series = collect_metric_keys(&owned)
+        let had_rows = !chain_rows.is_empty();
+        let series = collect_metric_keys(&chain_rows)
             .into_iter()
             .map(|key| {
-                let points = Arc::new(metric_series_for_key(&owned, &key));
+                let points = Arc::new(metric_series_for_key(&chain_rows, &key));
                 (key, points)
             })
             .collect::<Vec<_>>();
@@ -1101,8 +1104,13 @@ impl AppState {
                     }
                     if poll.step_reset {
                         self.step_rows = BTreeMap::new();
-                        self.persisted_step_hashes.clear();
                         self.max_step_row_id = 0;
+                    }
+                    if poll.epoch_reset && poll.step_reset {
+                        // Full reset: no retained row references any pooled
+                        // key anymore, so the pool can start over. (Partial
+                        // resets keep it: retained rows still share its Arcs.)
+                        self.field_pool.clear();
                     }
                     if !self.pending_live_steps.is_empty() {
                         self.pending_live_steps = BTreeMap::new();
@@ -1126,10 +1134,10 @@ impl AppState {
                 // `Arc`s — so merging never clones.
                 //
                 // In-memory step history is capped per trial: the DB keeps
-                // everything, the TUI keeps a trailing window. Dropped rows
-                // consume their multiset counts so the invariant
-                // (counts == retained-unmatched rows) holds.
-                const MAX_RETAINED_STEPS_PER_TRIAL: usize = 10_000;
+                // everything, the TUI keeps a trailing window. Twin matching
+                // is scoped to the current poll's delta (see
+                // `merge_trial_steps`), so evicted rows take nothing with
+                // them.
                 let mut deltas_changed = false;
                 if poll.epoch_delta.values().any(|rows| !rows.is_empty()) {
                     deltas_changed = true;
@@ -1140,48 +1148,23 @@ impl AppState {
                 if poll.step_delta.values().any(|rows| !rows.is_empty()) {
                     deltas_changed = true;
                     for (trial_id, rows) in poll.step_delta {
-                        // Multiset: each persisted row is consumable exactly
-                        // once, so N identical pending steps need N twins.
-                        let counts = self.persisted_step_hashes.entry(trial_id).or_default();
-                        for row in &rows {
-                            *counts.entry(step_row_hash(&row.fields)).or_insert(0) += 1;
-                        }
                         let retained = self.step_rows.entry(trial_id).or_default();
-                        retained.extend(rows);
-                        if retained.len() > MAX_RETAINED_STEPS_PER_TRIAL {
-                            let drop = retained.len() - MAX_RETAINED_STEPS_PER_TRIAL;
-                            if let Some(trial_counts) =
-                                self.persisted_step_hashes.get_mut(&trial_id)
-                            {
-                                for row in retained.drain(..drop) {
-                                    consume_twin(trial_counts, step_row_hash(&row.fields));
-                                }
-                            } else {
-                                retained.drain(..drop);
-                            }
+                        let pending = self.pending_live_steps.get_mut(&trial_id);
+                        if merge_trial_steps(retained, rows, pending) {
+                            pending_changed = true;
                         }
                     }
+                    // Drop fully-reconciled (now empty) trial entries so the
+                    // pending map never accumulates dead keys.
+                    let before = self.pending_live_steps.len();
+                    self.pending_live_steps.retain(|_, rows| !rows.is_empty());
+                    pending_changed |= self.pending_live_steps.len() != before;
                 }
                 self.max_epoch_row_id = poll.max_epoch;
                 self.max_step_row_id = poll.max_step;
-                // Reconcile: consume one persisted twin per pending row, in
-                // arrival order. Only pending rows are ever dropped —
-                // persisted history is append-only and untouched.
-                if !self.pending_live_steps.is_empty() {
-                    let before: usize = self.pending_live_steps.values().map(Vec::len).sum();
-                    reconcile_pending(
-                        &mut self.pending_live_steps,
-                        &mut self.persisted_step_hashes,
-                    );
-                    let after: usize = self.pending_live_steps.values().map(Vec::len).sum();
-                    pending_changed |= after != before;
-                }
                 if pending_changed {
                     self.pending_version = self.pending_version.wrapping_add(1);
                 }
-                // First poll (or post-reset) full load: index counts for every
-                // persisted row exactly once, as each row passes through here.
-                // (Covered above: deltas carry all rows when marks are zero.)
                 if trials_changed || deltas_changed {
                     self.data_version = self.data_version.wrapping_add(1);
                 }
@@ -1886,26 +1869,44 @@ fn consume_twin(counts: &mut BTreeMap<u64, usize>, hash: u64) -> bool {
     }
 }
 
-/// Drop pending rows whose persisted twin has arrived, consuming one multiset
-/// count per row in arrival order. N identical pending steps need N persisted
-/// twins: with zero or one twin persisted, at least one pending copy survives
-/// (its own twin is still in flight). Only pending rows are ever removed.
-fn reconcile_pending(
-    pending: &mut BTreeMap<i64, Vec<TrialRow>>,
-    counts: &mut BTreeMap<i64, BTreeMap<u64, usize>>,
-) {
-    let mut drained = Vec::new();
-    for (trial_id, rows) in pending.iter_mut() {
-        if let Some(trial_counts) = counts.get_mut(trial_id) {
-            rows.retain(|row| !consume_twin(trial_counts, step_row_hash(&row.fields)));
-        }
-        if rows.is_empty() {
-            drained.push(*trial_id);
+/// Trailing in-memory step history per trial. The DB keeps everything; the
+/// TUI keeps a trailing window so a pathological run cannot grow RSS without
+/// bound.
+const MAX_RETAINED_STEPS_PER_TRIAL: usize = 10_000;
+
+/// Merge one trial's step delta: index this poll's twins, append rows, cap
+/// the retained trailing window, then reconcile pending rows against the
+/// delta twins. Returns true if `pending` changed.
+///
+/// The twin multiset is scoped to the current poll on purpose. The writer
+/// persists before pushing TCP, so a pending row's twin is always committed
+/// before the frame is readable — it lands in this poll's delta (or was
+/// reconciled away by an earlier tick). No cross-poll twin state is kept,
+/// which makes history-cap eviction trivially safe: evicted rows take no
+/// counts with them because counts never outlive the tick. (Keeping
+/// persistent counts across polls instead corrupts them the moment an
+/// evicted oldest row shares a payload hash with a newly arrived row.)
+fn merge_trial_steps(
+    retained: &mut Vec<TrialRow>,
+    delta: Vec<TrialRow>,
+    pending: Option<&mut Vec<TrialRow>>,
+) -> bool {
+    let mut delta_counts: BTreeMap<u64, usize> = BTreeMap::new();
+    if pending.as_ref().is_some_and(|rows| !rows.is_empty()) {
+        for row in &delta {
+            *delta_counts.entry(step_row_hash(&row.fields)).or_insert(0) += 1;
         }
     }
-    for trial_id in drained {
-        pending.remove(&trial_id);
+    retained.extend(delta);
+    if retained.len() > MAX_RETAINED_STEPS_PER_TRIAL {
+        retained.drain(..retained.len() - MAX_RETAINED_STEPS_PER_TRIAL);
     }
+    let Some(pending) = pending else {
+        return false;
+    };
+    let before = pending.len();
+    pending.retain(|row| !consume_twin(&mut delta_counts, step_row_hash(&row.fields)));
+    before != pending.len()
 }
 
 fn metric_for_trial(trial: &TrialRow) -> Option<(String, f64)> {
@@ -2529,7 +2530,7 @@ fn decimate_min_max(window: &[ChartPoint], max_points: usize) -> Vec<ChartPoint>
 /// Every numeric `metric.*` field gets its own chart. That is the entire
 /// rule: no variance tests, no exclusions, no name lists. A constant field
 /// draws a flat line, a counter draws a staircase — both are data, both plot.
-fn collect_metric_keys(rows: &[TrialRow]) -> Vec<String> {
+fn collect_metric_keys(rows: &[&TrialRow]) -> Vec<String> {
     let mut keys = BTreeSet::new();
     for row in rows {
         for (key, value) in &row.fields {
@@ -2544,7 +2545,7 @@ fn collect_metric_keys(rows: &[TrialRow]) -> Vec<String> {
     keys.into_iter().map(|key| key.to_string()).collect()
 }
 
-fn metric_series_for_key(rows: &[TrialRow], key: &str) -> Vec<ChartPoint> {
+fn metric_series_for_key(rows: &[&TrialRow], key: &str) -> Vec<ChartPoint> {
     let mut series = Vec::with_capacity(rows.len());
     for (idx, row) in rows.iter().enumerate() {
         let value = row.fields.get(key).and_then(|v| v.parse::<f64>().ok());
@@ -3142,8 +3143,9 @@ mod view_tests {
             axis_test_row(&[("metric.step", "1"), ("metric.loss", "0.8")]),
             axis_test_row(&[("metric.step", "2"), ("metric.loss", "0.7")]),
         ];
+        let refs: Vec<&TrialRow> = rows.iter().collect();
         assert_eq!(
-            metric_series_for_key(&rows, "metric.loss"),
+            metric_series_for_key(&refs, "metric.loss"),
             vec![
                 ChartPoint { x: 1.0, y: 0.9 },
                 ChartPoint { x: 2.0, y: 0.8 },
@@ -3160,8 +3162,9 @@ mod view_tests {
             axis_test_row(&[("metric.loss", "0.7")]),
         ];
         // Position counts rows, not points: the curve keeps true spacing.
+        let refs: Vec<&TrialRow> = rows.iter().collect();
         assert_eq!(
-            metric_series_for_key(&rows, "metric.loss"),
+            metric_series_for_key(&refs, "metric.loss"),
             vec![ChartPoint { x: 1.0, y: 0.9 }, ChartPoint { x: 3.0, y: 0.7 },]
         );
     }
@@ -3186,8 +3189,9 @@ mod view_tests {
                 ("note", "world"),
             ]),
         ];
+        let refs: Vec<&TrialRow> = rows.iter().collect();
         assert_eq!(
-            collect_metric_keys(&rows),
+            collect_metric_keys(&refs),
             vec![
                 "metric.loss".to_string(),
                 "metric.lr".to_string(),
@@ -3235,25 +3239,61 @@ mod view_tests {
     }
 
     #[test]
-    fn reconcile_keeps_identical_pending_steps_until_each_twin_arrives() {
-        // Two identical pending steps, no twins persisted: both survive.
-        let mut pending = BTreeMap::from([(1, vec![pending_row(1, "0.5"), pending_row(1, "0.5")])]);
-        let mut counts: BTreeMap<i64, BTreeMap<u64, usize>> = BTreeMap::new();
-        reconcile_pending(&mut pending, &mut counts);
-        assert_eq!(pending.get(&1).map(Vec::len), Some(2));
+    fn merge_keeps_identical_pending_steps_until_each_twin_arrives() {
+        // Two identical pending steps, no twins in the delta: both survive.
+        let mut retained = Vec::new();
+        let mut pending = vec![pending_row(1, "0.5"), pending_row(1, "0.5")];
+        assert!(!merge_trial_steps(
+            &mut retained,
+            vec![],
+            Some(&mut pending)
+        ));
+        assert_eq!(pending.len(), 2);
 
-        // One twin persisted: exactly one pending copy is evicted, the other
-        // (whose twin is still in flight) survives. A `HashSet` would drop
-        // both here — the multiset collapse bug.
-        let hash = step_row_hash(&pending_row(1, "0.5").fields);
-        counts.entry(1).or_default().insert(hash, 1);
-        reconcile_pending(&mut pending, &mut counts);
-        assert_eq!(pending.get(&1).map(Vec::len), Some(1));
+        // One twin in the delta: exactly one pending copy is evicted, the
+        // other (whose twin is still in flight) survives. A `HashSet` would
+        // drop both here — the multiset collapse bug.
+        assert!(merge_trial_steps(
+            &mut retained,
+            vec![pending_row(1, "0.5")],
+            Some(&mut pending),
+        ));
+        assert_eq!(pending.len(), 1);
 
-        // Second twin persisted: the last copy is evicted.
-        counts.entry(1).or_default().insert(hash, 1);
-        reconcile_pending(&mut pending, &mut counts);
-        assert!(!pending.contains_key(&1));
+        // Second twin in the delta: the last copy is evicted.
+        assert!(merge_trial_steps(
+            &mut retained,
+            vec![pending_row(1, "0.5")],
+            Some(&mut pending),
+        ));
+        assert!(pending.is_empty());
+        // Retained rows accumulated across the merges.
+        assert_eq!(retained.len(), 2);
+    }
+
+    #[test]
+    fn merge_at_cap_eviction_cannot_strand_pending_twin() {
+        // Regression test: trial already at the retention cap whose oldest
+        // row shares a payload hash with a newly arriving step + TCP twin.
+        // Evicting the oldest row must not consume the new row's twin count —
+        // the pending TCP row is still evicted and retained stays at cap.
+        let mut retained: Vec<TrialRow> = (0..MAX_RETAINED_STEPS_PER_TRIAL as i64)
+            .map(|i| pending_row(1, &format!("0.{i:05}")))
+            .collect();
+        // Oldest row shares the new payload exactly.
+        retained[0] = pending_row(1, "0.5");
+        let mut pending = vec![pending_row(1, "0.5")];
+        assert!(merge_trial_steps(
+            &mut retained,
+            vec![pending_row(1, "0.5")],
+            Some(&mut pending),
+        ));
+        assert!(pending.is_empty(), "twin evicted the pending row");
+        assert_eq!(
+            retained.len(),
+            MAX_RETAINED_STEPS_PER_TRIAL,
+            "retained stays capped"
+        );
     }
 
     #[test]
