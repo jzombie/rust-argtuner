@@ -42,7 +42,6 @@ use term_wm_console::console_render_target::ConsoleRenderTarget;
 use term_wm_core::hitbox_registry::HitboxRegistry;
 use term_wm_core::impl_component_delegate;
 use term_wm_core::impl_view_component;
-use term_wm_core::task_scheduler::{AppTask, TaskHandle};
 use term_wm_ui_facade::{LayerComponent, OverlayComponent};
 
 pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
@@ -103,6 +102,7 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         last_error: None,
         chart_mode: ChartMode::Metrics,
         last_selected_trial: usize::MAX,
+        next_poll_at: std::time::Instant::now(),
         data_version: 0,
         max_epoch_row_id: 0,
         max_step_row_id: 0,
@@ -515,6 +515,9 @@ struct AppState {
     trials: Arc<Vec<TrialRow>>,
     epoch_rows: Arc<BTreeMap<i64, Vec<TrialRow>>>,
     step_rows: Arc<BTreeMap<i64, Vec<TrialRow>>>,
+    /// Next wall-clock time the palette-tick hook runs `refresh_trials`.
+    /// Initialized to now so the first loop iteration loads immediately.
+    next_poll_at: std::time::Instant,
     /// Live TCP rows with no DB twin visible yet. Kept OUT of `step_rows` so
     /// the strict `trial.time` DB twin can never permanently duplicate them,
     /// and identical consecutive steps are never dropped. Reconciled against
@@ -1065,23 +1068,29 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
         self.update_titles();
     }
 
-    /// Schedule the recurring SQLite refresh on the app-task scheduler. Called
-    /// by `run_with_defaults` before the event loop starts. `fire_immediate`
-    /// runs the first poll right away so the initial load doesn't wait a full
-    /// `--poll-ms` interval.
-    fn on_app_scheduler_ready(&mut self, handle: TaskHandle<AppTask<Self>>) {
-        let _ = handle.schedule_repeating(
-            self.poll,
-            true,
-            AppTask::new(|app: &mut Self| {
-                app.refresh_trials();
-                tracing::info!(
-                    "refresh trials poll tick: {} trials, {} epoch rows",
-                    app.trials.len(),
-                    app.epoch_rows.len()
-                );
-            }),
-        );
+    /// The SQLite poll, driven off the palette-tick hook instead of a
+    /// repeating scheduler task — deliberately. Any outstanding
+    /// `TaskScheduler` entry makes `has_pending()` true, which pins the
+    /// runner's power profile at Streaming (16ms poll, ~60fps full redraws)
+    /// for the lifetime of the process. The palette hook instead only
+    /// clamps the idle sleep to the next deadline, so the loop sits in
+    /// PowerSaver and wakes on input or once per `--poll-ms`.
+    fn poll_palette_tick(&mut self) -> bool {
+        if std::time::Instant::now() < self.next_poll_at {
+            return false;
+        }
+        self.next_poll_at = std::time::Instant::now() + self.poll;
+        self.refresh_trials();
+        // One frame per poll unconditionally: cheap (push/titles are gated),
+        // and it guarantees the run-state header flip is never stranded.
+        true
+    }
+
+    fn palette_tick_deadline(&self) -> Option<Duration> {
+        Some(
+            self.next_poll_at
+                .saturating_duration_since(std::time::Instant::now()),
+        )
     }
 
     fn toggle_debug_window(&mut self) {
