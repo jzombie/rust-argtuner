@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - Bump `jsonschema` from 0.58.6 to 0.60.2
 - Bump `syn` from 3.0.8 to 3.0.9
 - Bump `libc` from 0.2.189 to 0.2.191
+- Bump `ignore` from 0.4.33 to 0.4.34
+- Bump `line-ending` from 1.5.1 to 1.6.0
 
 ## [0.3.0-alpha] - 2026-11-05
 
