@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - **`watch` TUI no longer burns CPU at idle:** the SQLite poll moved from a repeating scheduler task (which pinned 60fps redraws) to the palette-tick hook, so the loop sleeps until input or the next `--poll-ms`. The first load runs before the first paint, so panes show data immediately. Polls fetch only new rows, detect DB replacement, and follow `-wal` state; pushes are dirty-gated and `Arc`-shared, with live TCP steps reconciled in a separate buffer.
 - **Lower `watch` memory footprint:** field keys are interned (one shared copy across all rows instead of a heap string per field), in-memory step history is capped per trial (the DB keeps everything), and the charts render a prebuilt series instead of holding duplicate row maps — no more transient 2x clones on every poll.
 - **Clearer metric charts:** each Braille column now plots only its min/max pair instead of every raw point, removing overdraw noise while preserving extrema. Parsed series and hyperparameter domains are cached instead of rebuilt every frame.
+- Pin rusqlite to 0.37.0 for burn 0.21 (`burn-dataset`) compatibility.
 
 ## [0.3.0-alpha] - 2026-11-05
 
