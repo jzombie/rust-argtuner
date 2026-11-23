@@ -9,9 +9,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 
 ## Changes
 
-- **`watch` TUI no longer burns CPU at idle:** the SQLite poll moved from a repeating scheduler task (which pinned 60fps redraws) to the palette-tick hook, so the loop sleeps until input or the next `--poll-ms`. The first load runs before the first paint, so panes show data immediately. Polls fetch only new rows, detect DB replacement, and follow `-wal` state; pushes are dirty-gated and `Arc`-shared, with live TCP steps reconciled in a separate buffer.
-- **Lower `watch` memory footprint:** field keys are interned (one shared copy across all rows instead of a heap string per field), in-memory step history is capped per trial (the DB keeps everything), and the charts render a prebuilt series instead of holding duplicate row maps — no more transient 2x clones on every poll.
-- **Clearer metric charts:** each Braille column now plots only its min/max pair instead of every raw point, removing overdraw noise while preserving extrema. Parsed series and hyperparameter domains are cached instead of rebuilt every frame.
 - Pin `rusqlite` to 0.37.0 for `burn` 0.21 (`burn-dataset`) compatibility (RUSTSEC-2026-0459 waived, see `.cargo/deny.toml`).
 - Replace `chrono` with `jiff` 1.0.2 for trial timestamps (adds `jiff-core`/`jiff-static`/`portable-atomic-util` transitively; [`chrono` is soft-deprecated](https://github.com/chronotope/chrono/issues/1768)).
 - Bump `term-wm` from 0.10.15-alpha to 0.10.19-alpha.
@@ -21,6 +18,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - Bump `ignore` from 0.4.33 to 0.4.34
 - Bump `line-ending` from 1.5.1 to 1.6.0
 - Bump `url` from 2.5.8 to 2.5.9
+
+## Fixed
+
+- **`watch` TUI no longer burns CPU at idle:** the SQLite poll moved from a repeating scheduler task (which pinned 60fps redraws) to the palette-tick hook, so the loop sleeps until input or the next `--poll-ms`. The first load runs before the first paint, so panes show data immediately. Polls fetch only new rows, detect DB replacement, and follow `-wal` state; pushes are dirty-gated and `Arc`-shared, with live TCP steps reconciled in a separate buffer.
+- **Lower `watch` memory footprint:** field keys are interned (one shared copy across all rows instead of a heap string per field), in-memory step history is capped per trial (the DB keeps everything), and the charts render a prebuilt series instead of holding duplicate row maps — no more transient 2x clones on every poll.
+- **Clearer metric charts:** each Braille column now plots only its min/max pair instead of every raw point, removing overdraw noise while preserving extrema. Parsed series and hyperparameter domains are cached instead of rebuilt every frame.
 
 ## [0.3.0-alpha] - 2026-11-05
 
