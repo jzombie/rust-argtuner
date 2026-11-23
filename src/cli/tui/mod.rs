@@ -115,6 +115,7 @@ pub fn run(project: Project, poll_ms: u64) -> io::Result<()> {
         last_pushed_error: None,
         last_pushed_count: usize::MAX,
         last_frontier_in_progress: false,
+        cached_multi_objective: false,
         last_title_trial: None,
         last_title_mode: ChartMode::Metrics,
         last_title_source: ChartSource::Steps,
@@ -241,21 +242,47 @@ struct ChartsView {
     params_x_offset: usize,
     enabled_axes: Vec<AxisKey>,
     scroll_handle: Option<ScrollHandle>,
-    /// Monotonic version of the snapshot these rows came from (set by
-    /// `AppState` on push). Drives the render-side cache below.
-    data_version: u64,
-    /// Bumped whenever the live overlay mutates. Part of the cache
-    /// fingerprint so newly arrived live points rebuild the cache once,
-    /// then idle frames reuse it.
-    pending_version: u64,
-    /// Cached concatenation of the selected chain's rows plus the metric
-    /// keys swept from them. Rebuilt only when the fingerprint changes, not
-    /// on every 60fps frame. `Arc` so readers clone the handles (O(1))
-    /// instead of `mem::take`-ing the cache out and risking a poisoned
-    /// empty state on panic/early-return.
-    cached_rows: Arc<Vec<TrialRow>>,
-    cached_keys: Arc<Vec<String>>,
-    cached_fingerprint: Option<(Option<i64>, ChartSource, u64, u64)>,
+    /// Snapshot versions from the last `AppState` push
+    /// `(data_version, pending_version)`. The 60fps render builds its cache
+    /// fingerprints from these — no other per-frame state lives here.
+    snapshot_versions: (u64, u64),
+    /// All render caches, grouped so `ChartsView` stays lean. Every field is
+    /// derived data, rebuildable from a fingerprint mismatch.
+    cache: ChartCache,
+}
+
+/// Derived render data for `ChartsView`, kept in one child struct instead of
+/// a sprawl of parallel cache fields. `rows`/`series` rebuild on the full
+/// snapshot fingerprint; the hyperparameter-space entries rebuild on
+/// `(data_version, enabled_axes)`.
+#[derive(Debug, Default)]
+struct ChartCache {
+    /// Key for `rows` + `series`: (selected trial, source, data, pending).
+    fingerprint: Option<(Option<i64>, ChartSource, u64, u64)>,
+    /// Selected chain's concatenated rows (persisted + live overlay).
+    rows: Arc<Vec<TrialRow>>,
+    /// Parsed metric series swept from `rows`: `(key, points)` sorted by key.
+    /// `f64` parsing happens once per fingerprint change here — never per
+    /// frame. Each series is separately `Arc`d so frames share it.
+    series: Arc<Vec<(String, Arc<Vec<(f64, f64)>>)>>,
+    /// Snapshot version the HP entries below were built from.
+    hp_version: u64,
+    /// Enabled-axis list the HP entries were built from, in order.
+    hp_axes: Vec<AxisKey>,
+    /// Per-axis domains parallel to `hp_axes`.
+    hp_domains: Vec<ParamDomain>,
+    /// Objective range across trials.
+    hp_obj_range: Option<(f64, f64)>,
+}
+
+impl ChartCache {
+    fn rows_valid(&self, fingerprint: &(Option<i64>, ChartSource, u64, u64)) -> bool {
+        self.fingerprint.as_ref() == Some(fingerprint)
+    }
+
+    fn hp_valid(&self, version: u64, axes: &[AxisKey]) -> bool {
+        self.hp_version == version && self.hp_axes == axes
+    }
 }
 
 impl Component<TermWmAction> for ChartsView {
@@ -555,12 +582,16 @@ struct AppState {
     last_pushed_selection: usize,
     last_pushed_mode: ChartMode,
     last_pushed_source: ChartSource,
-    last_pushed_axes: Vec<String>,
+    last_pushed_axes: Vec<AxisKey>,
     last_pushed_error: Option<String>,
     last_pushed_count: usize,
     /// Last `run_in_progress()` value rendered into the frontier window.
     /// The frontier text rebuilds only when trials change or this flips.
     last_frontier_in_progress: bool,
+    /// Whether the current snapshot is multi-objective (any `score.*` field).
+    /// Refreshed only when `trials` changes; the per-frame title/scan paths
+    /// read this instead of re-scanning every trial's fields at 60Hz.
+    cached_multi_objective: bool,
     /// Last signals consumed by `update_titles`, which runs AFTER
     /// `render_app` so `metrics_len` is never one frame stale. Idle frames
     /// allocate nothing here.
@@ -701,6 +732,10 @@ impl AppState {
     /// do a handful of borrows and return. Snapshot sharing is `Arc` (O(1));
     /// only the selected trial's detail text and epoch slice are rebuilt,
     /// and only on a version/selection/mode/source change.
+    ///
+    /// The axis gate compares `Vec<AxisKey>` directly: one small allocation
+    /// per frame for the toggle walk, zero string re-allocations, and no
+    /// component push unless the set actually moved.
     fn push_data_to_components(&mut self) {
         let selected = self.selected_trial_idx();
         let mode = self.chart_mode;
@@ -709,14 +744,13 @@ impl AppState {
             None => ChartSource::Steps,
         };
         let axes = self.enabled_axes();
-        let axes_ids: Vec<String> = axes.iter().map(|a| a.name.clone()).collect();
 
         if self.last_pushed_version == self.data_version
             && self.last_pushed_pending == self.pending_version
             && self.last_pushed_selection == selected
             && self.last_pushed_mode == mode
             && self.last_pushed_source == source
-            && self.last_pushed_axes == axes_ids
+            && self.last_pushed_axes == axes
             && self.last_pushed_error == self.last_error
             && self.last_pushed_count == self.trials.len()
         {
@@ -727,7 +761,7 @@ impl AppState {
         self.last_pushed_selection = selected;
         self.last_pushed_mode = mode;
         self.last_pushed_source = source;
-        self.last_pushed_axes = axes_ids;
+        self.last_pushed_axes = axes.clone();
         self.last_pushed_error = self.last_error.clone();
         self.last_pushed_count = self.trials.len();
 
@@ -777,9 +811,9 @@ impl AppState {
             c.chart_mode = mode;
             c.last_error = last_error.clone();
             c.selected_trial_idx = selected;
-            c.enabled_axes = axes.clone();
-            c.data_version = data_version;
-            c.pending_version = pending_version;
+            // Moved, not cloned: `axes` is not read after this block.
+            c.enabled_axes = axes;
+            c.snapshot_versions = (data_version, pending_version);
         }
         if let Some(sv) = self.details_sv() {
             sv.content.borrow_mut().set_text(detail_text);
@@ -816,7 +850,7 @@ impl AppState {
             None => (ChartSource::Steps, ChartView::Summary, 0, 0),
         };
         let trial_id = self.trials.get(selected).map(|t| t.trial_id);
-        let multi = is_multi_objective(&self.trials);
+        let multi = self.cached_multi_objective;
 
         if self.last_title_trial == trial_id
             && self.last_title_mode == mode
@@ -942,6 +976,7 @@ impl AppState {
                 let trials_changed = poll.trials[..] != self.trials[..];
                 if trials_changed {
                     self.trials = Arc::new(poll.trials);
+                    self.cached_multi_objective = is_multi_objective(&self.trials);
                 }
                 // Append-only tables: merge the delta so per-poll work is
                 // proportional to new rows, not the full history. `make_mut`
@@ -1076,11 +1111,15 @@ impl WindowManagerHost<AppRootComponent<AppComponent>, LayerComponent, OverlayCo
     /// clamps the idle sleep to the next deadline, so the loop sits in
     /// PowerSaver and wakes on input or once per `--poll-ms`.
     fn poll_palette_tick(&mut self) -> bool {
-        if std::time::Instant::now() < self.next_poll_at {
+        let now = std::time::Instant::now();
+        if now < self.next_poll_at {
             return false;
         }
-        self.next_poll_at = std::time::Instant::now() + self.poll;
         self.refresh_trials();
+        // Stamp AFTER the poll completes so a slow poll can never produce a
+        // zero-sleep spin: the loop always sleeps at least `poll` between
+        // consecutive SQLite passes, even at the 16ms floor.
+        self.next_poll_at = std::time::Instant::now() + self.poll;
         // One frame per poll unconditionally: cheap (push/titles are gated),
         // and it guarantees the run-state header flip is never stranded.
         true
@@ -1314,11 +1353,8 @@ fn mk_charts_window() -> ChartsWindow {
         params_x_offset: 0,
         enabled_axes: Vec::new(),
         scroll_handle: None,
-        data_version: 0,
-        pending_version: 0,
-        cached_rows: Arc::new(Vec::new()),
-        cached_keys: Arc::new(Vec::new()),
-        cached_fingerprint: None,
+        snapshot_versions: (0, 0),
+        cache: ChartCache::default(),
     });
     // PageUp/PageDown/Home/End scroll the chart list (the wrapper owns the
     // viewport). Up/Down fall through to ChartsView for selection moves.
@@ -1993,10 +2029,10 @@ fn render_charts_content(
     let fingerprint = (
         Some(trial.trial_id),
         charts.chart_source,
-        charts.data_version,
-        charts.pending_version,
+        charts.snapshot_versions.0,
+        charts.snapshot_versions.1,
     );
-    if charts.cached_fingerprint != Some(fingerprint) {
+    if !charts.cache.rows_valid(&fingerprint) {
         let selected_rung: i64 = trial
             .fields
             .get(FIELD_TRIAL_RUNG)
@@ -2057,12 +2093,22 @@ fn render_charts_content(
                 }
             }
         }
-        let keys = collect_metric_keys(&owned);
-        charts.cached_rows = Arc::new(owned);
-        charts.cached_keys = Arc::new(keys);
-        charts.cached_fingerprint = Some(fingerprint);
+        // Parse every numeric `metric.*` series once per fingerprint change.
+        // Per-frame parsing (string `f64` parses plus a `Vec` per chart) was
+        // the residual 60Hz allocation burn whenever input kept the loop in
+        // Streaming.
+        let series = collect_metric_keys(&owned)
+            .into_iter()
+            .map(|key| {
+                let points = Arc::new(metric_series_for_key(&owned, &key));
+                (key, points)
+            })
+            .collect::<Vec<_>>();
+        charts.cache.rows = Arc::new(owned);
+        charts.cache.series = Arc::new(series);
+        charts.cache.fingerprint = Some(fingerprint);
     }
-    if charts.cached_rows.is_empty() {
+    if charts.cache.rows.is_empty() {
         Paragraph::new("No epoch or step metrics for selected trial.")
             .render(area, &mut backend.buffer);
         return;
@@ -2070,26 +2116,24 @@ fn render_charts_content(
     // x is always the row's arrival position (1-based). Rows arrive in
     // chronological order, so the curve can never fold back on itself, flip
     // mid-run, or depend on field names in any way.
-    let rows = Arc::clone(&charts.cached_rows);
-    let keys = Arc::clone(&charts.cached_keys);
-    render_metric_charts_cached(backend, charts, &rows, &keys, area, ctx);
+    let series_list = Arc::clone(&charts.cache.series);
+    render_metric_charts_cached(backend, charts, &series_list, area, ctx);
 }
 
 fn render_metric_charts_cached(
     backend: &mut RatatuiBackend,
     charts: &mut ChartsView,
-    rows: &[TrialRow],
-    metric_keys: &[String],
+    series_list: &[(String, Arc<Vec<(f64, f64)>>)],
     area: Rect,
     ctx: &ComponentContext,
 ) {
-    charts.metrics_len = metric_keys.len();
-    if metric_keys.is_empty() {
+    charts.metrics_len = series_list.len();
+    if series_list.is_empty() {
         Paragraph::new("No numeric metric curves.").render(area, &mut backend.buffer);
         return;
     }
-    if charts.chart_selected >= metric_keys.len() {
-        charts.chart_selected = metric_keys.len().saturating_sub(1);
+    if charts.chart_selected >= series_list.len() {
+        charts.chart_selected = series_list.len().saturating_sub(1);
     }
 
     // Always reserve the bottom row for the config-derived keybinding hint so
@@ -2105,7 +2149,7 @@ fn render_metric_charts_cached(
 
     match charts.chart_view {
         ChartView::Summary => {
-            let total_items = metric_keys.len();
+            let total_items = series_list.len();
             let content_h = total_items * CHART_ITEM_HEIGHT as usize;
             if let Some(handle) = ctx.scroll_handle() {
                 handle.set_content_size(chart_area.width as usize, content_h);
@@ -2118,7 +2162,7 @@ fn render_metric_charts_cached(
 
             let first_chart = (offset_y / chart_item_h).saturating_sub(1);
             let max_visible = vp_h.div_ceil(CHART_ITEM_HEIGHT as usize);
-            let last_chart = (first_chart + max_visible + 2).min(metric_keys.len());
+            let last_chart = (first_chart + max_visible + 2).min(series_list.len());
 
             #[allow(clippy::needless_range_loop)]
             for abs_idx in first_chart..last_chart {
@@ -2135,21 +2179,16 @@ fn render_metric_charts_cached(
                     width: chart_area.width,
                     height: h,
                 };
-                render_metric_chart(
-                    backend,
-                    rows,
-                    &metric_keys[abs_idx],
-                    rect,
-                    charts.chart_zoom,
-                );
+                let (key, series) = &series_list[abs_idx];
+                render_metric_chart(backend, series, key, rect, charts.chart_zoom);
             }
         }
         ChartView::Focused => {
             if let Some(handle) = ctx.scroll_handle() {
                 handle.set_content_size(chart_area.width as usize, chart_area.height as usize);
             }
-            let key = &metric_keys[charts.chart_selected];
-            render_metric_chart(backend, rows, key, chart_area, charts.chart_zoom);
+            let (key, series) = &series_list[charts.chart_selected];
+            render_metric_chart(backend, series, key, chart_area, charts.chart_zoom);
         }
     }
 
@@ -2170,6 +2209,25 @@ fn render_hyperparam_space(backend: &mut RatatuiBackend, charts: &mut ChartsView
     if area.height == 0 || area.width == 0 {
         return;
     }
+    // Cache per-axis domains + objective range: rebuilding them parses every
+    // trial's fields on every frame. Keyed by snapshot version + the exact
+    // enabled-axis list; per-trial colors and the selection highlight below
+    // stay live (cheap float lookups, no parsing).
+    if !charts
+        .cache
+        .hp_valid(charts.snapshot_versions.0, &charts.enabled_axes)
+    {
+        let domains = charts
+            .enabled_axes
+            .iter()
+            .map(|axis| param_domain(&charts.trials, &axis.name))
+            .collect::<Vec<_>>();
+        let obj_range = objective_range(&charts.trials);
+        charts.cache.hp_version = charts.snapshot_versions.0;
+        charts.cache.hp_axes = charts.enabled_axes.clone();
+        charts.cache.hp_domains = domains;
+        charts.cache.hp_obj_range = obj_range;
+    }
     let trials = &charts.trials;
     let selected = charts.selected_trial_idx;
     let enabled_axes: Vec<&AxisKey> = charts.enabled_axes.iter().collect();
@@ -2187,11 +2245,8 @@ fn render_hyperparam_space(backend: &mut RatatuiBackend, charts: &mut ChartsView
         Paragraph::new("No parameters in view.").render(area, &mut backend.buffer);
         return;
     }
-    let domains = visible
-        .iter()
-        .map(|axis| param_domain(trials, &axis.name))
-        .collect::<Vec<_>>();
-    let objective_range = objective_range(trials);
+    let domains = &charts.cache.hp_domains[start..end];
+    let objective_range = charts.cache.hp_obj_range;
     let x_max = if visible_len == 1 {
         1.0
     } else {
@@ -2244,15 +2299,71 @@ fn render_hyperparam_space(backend: &mut RatatuiBackend, charts: &mut ChartsView
     canvas.render(area, &mut backend.buffer);
 }
 
+/// X-bounds for a metric chart: the full arrival-position range, or the
+/// trailing `zoom` fraction of it when zoomed. Degenerate single-point
+/// ranges expand to width 1.0 BEFORE zooming, and zooming clamps against the
+/// expanded full bounds — so a zoomed 1-point series keeps `[x, x + 1.0]`
+/// and never collapses to zero width for Ratatui `Chart`.
+fn chart_x_bounds(series: &[(f64, f64)], zoom: f64) -> (f64, f64) {
+    let (full_min_x, mut full_max_x) = match (series.first(), series.last()) {
+        (Some(first), Some(last)) => (first.0, last.0),
+        _ => (0.0, 1.0),
+    };
+    if full_max_x == full_min_x {
+        full_max_x = full_min_x + 1.0;
+    }
+    if series.is_empty() || zoom >= 1.0 {
+        return (full_min_x, full_max_x);
+    }
+    let window = ((full_max_x - full_min_x) * zoom).max(1e-6);
+    let mut max_x = full_max_x;
+    let mut min_x = max_x - window;
+    if min_x < full_min_x {
+        min_x = full_min_x;
+        max_x = (min_x + window).min(full_max_x);
+    }
+    (min_x, max_x)
+}
+
 fn render_metric_chart(
     backend: &mut RatatuiBackend,
-    rows: &[TrialRow],
+    series: &[(f64, f64)],
     key: &str,
     area: Rect,
     zoom: f64,
 ) {
-    let series = metric_series_for_key(rows, key);
-    let (min_x, max_x, min_y, max_y) = zoomed_series_bounds(&series, zoom);
+    // x is the arrival position (ascending), so the zoom window is found with
+    // two binary searches — O(log n), not the old O(n) full-series scan.
+    let (min_x, max_x) = chart_x_bounds(series, zoom);
+    let start = series.partition_point(|point| point.0 < min_x);
+    let end = series.partition_point(|point| point.0 <= max_x);
+    let window = if start < end {
+        &series[start..end]
+    } else {
+        series
+    };
+    // Decimate to the Braille grid: at most ~2 points per horizontal dot
+    // column. `Chart::render` then draws O(width) segments no matter how
+    // long the step history grows. Min/max bucketing preserves the window
+    // extrema exactly, so y bounds match the undecimated curve.
+    let max_points = ((area.width as usize) * 2).max(8);
+    let drawn: Vec<(f64, f64)>;
+    let view: &[(f64, f64)] = if window.len() > max_points {
+        drawn = decimate_min_max(window, max_points);
+        &drawn
+    } else {
+        window
+    };
+    let (mut min_y, mut max_y) = view
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (_, y)| {
+            (lo.min(*y), hi.max(*y))
+        });
+    if !min_y.is_finite() || !max_y.is_finite() {
+        (min_y, max_y) = (0.0, 1.0);
+    } else if min_y == max_y {
+        max_y = min_y + 1.0;
+    }
     let x_labels = axis_labels(min_x, max_x);
     let y_labels = axis_labels(min_y, max_y);
     let y_title = metric_axis_title(key);
@@ -2266,7 +2377,7 @@ fn render_metric_chart(
         .graph_type(GraphType::Line)
         .marker(Marker::Braille)
         .style(Style::default().fg(Color::Cyan))
-        .data(&series);
+        .data(view);
     let chart = Chart::new(vec![dataset])
         .block(Block::default().borders(Borders::ALL).title(title))
         .x_axis(
@@ -2282,6 +2393,42 @@ fn render_metric_chart(
                 .labels(y_labels),
         );
     chart.render(area, &mut backend.buffer);
+}
+
+/// Reduce `window` to at most `max_points` points while preserving its y
+/// extrema: one (min, max) pair per index bucket, ordered by x so the line
+/// never folds. Requires `max_points >= 2`.
+fn decimate_min_max(window: &[(f64, f64)], max_points: usize) -> Vec<(f64, f64)> {
+    if window.len() <= max_points || max_points < 2 {
+        return window.to_vec();
+    }
+    let buckets = max_points / 2;
+    let mut out = Vec::with_capacity(buckets * 2);
+    let n = window.len();
+    for bucket in 0..buckets {
+        let start = bucket * n / buckets;
+        let end = ((bucket + 1) * n / buckets).max(start + 1).min(n);
+        let slice = &window[start..end];
+        let (mut lo, mut hi) = (0usize, 0usize);
+        for (idx, point) in slice.iter().enumerate() {
+            if point.1 < slice[lo].1 {
+                lo = idx;
+            }
+            if point.1 > slice[hi].1 {
+                hi = idx;
+            }
+        }
+        if lo == hi {
+            out.push(slice[lo]);
+        } else if lo < hi {
+            out.push(slice[lo]);
+            out.push(slice[hi]);
+        } else {
+            out.push(slice[hi]);
+            out.push(slice[lo]);
+        }
+    }
+    out
 }
 
 /// Every numeric `metric.*` field gets its own chart. That is the entire
@@ -2312,74 +2459,6 @@ fn metric_series_for_key(rows: &[TrialRow], key: &str) -> Vec<(f64, f64)> {
         series.push(((idx + 1) as f64, value));
     }
     series
-}
-
-fn series_bounds(series: &[(f64, f64)]) -> (f64, f64, f64, f64) {
-    if series.is_empty() {
-        return (0.0, 1.0, 0.0, 1.0);
-    }
-    let mut min_x = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    for (x, y) in series {
-        min_x = min_x.min(*x);
-        max_x = max_x.max(*x);
-        min_y = min_y.min(*y);
-        max_y = max_y.max(*y);
-    }
-    if min_x == max_x {
-        max_x = min_x + 1.0;
-    }
-    if min_y == max_y {
-        max_y = min_y + 1.0;
-    }
-    (min_x, max_x, min_y, max_y)
-}
-
-fn zoomed_series_bounds(series: &[(f64, f64)], zoom: f64) -> (f64, f64, f64, f64) {
-    let (full_min_x, full_max_x, full_min_y, full_max_y) = series_bounds(series);
-    if series.is_empty() || zoom >= 1.0 {
-        return (full_min_x, full_max_x, full_min_y, full_max_y);
-    }
-    let full_range = full_max_x - full_min_x;
-    if full_range <= 0.0 {
-        return (full_min_x, full_max_x, full_min_y, full_max_y);
-    }
-    let window = (full_range * zoom).max(1e-6);
-    let mut max_x = full_max_x;
-    let mut min_x = max_x - window;
-    if min_x < full_min_x {
-        min_x = full_min_x;
-        max_x = (min_x + window).min(full_max_x);
-    }
-
-    if let Some((min_y, max_y)) = series_y_bounds_in_range(series, min_x, max_x) {
-        (min_x, max_x, min_y, max_y)
-    } else {
-        (full_min_x, full_max_x, full_min_y, full_max_y)
-    }
-}
-
-fn series_y_bounds_in_range(series: &[(f64, f64)], min_x: f64, max_x: f64) -> Option<(f64, f64)> {
-    let mut min_y = f64::INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    for (x, y) in series {
-        if *x < min_x || *x > max_x {
-            continue;
-        }
-        min_y = min_y.min(*y);
-        max_y = max_y.max(*y);
-    }
-    if min_y.is_finite() && max_y.is_finite() {
-        if min_y == max_y {
-            Some((min_y, max_y + 1.0))
-        } else {
-            Some((min_y, max_y))
-        }
-    } else {
-        None
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -3073,5 +3152,47 @@ mod view_tests {
         counts.entry(1).or_default().insert(hash, 1);
         reconcile_pending(&mut pending, &mut counts);
         assert!(!pending.contains_key(&1));
+    }
+
+    #[test]
+    fn zoomed_single_point_series_keeps_non_degenerate_x_bounds() {
+        // A 1-point series expands to width 1.0; zooming must clamp against
+        // the expanded bounds, never collapse back to zero width.
+        let one = vec![(1.0, 5.0)];
+        let (min_x, max_x) = chart_x_bounds(&one, 0.5);
+        assert!(max_x > min_x, "zoomed 1-point bounds [{min_x}, {max_x}]");
+        let (min_x, max_x) = chart_x_bounds(&one, 1.0);
+        assert_eq!((min_x, max_x), (1.0, 2.0));
+        // Empty and multi-point series behave as before.
+        assert_eq!(chart_x_bounds(&[], 0.5), (0.0, 1.0));
+        let many = vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)];
+        assert_eq!(chart_x_bounds(&many, 1.0), (1.0, 4.0));
+        let (min_x, max_x) = chart_x_bounds(&many, 0.5);
+        assert!(max_x > min_x && min_x >= 1.0 && max_x <= 4.0);
+    }
+
+    #[test]
+    fn decimate_preserves_extrema_within_point_budget() {
+        // 1000-point curve with spikes at known positions.
+        let mut series = Vec::new();
+        for i in 0..1000 {
+            let y = if i == 123 {
+                999.0
+            } else if i == 876 {
+                -999.0
+            } else {
+                (i as f64 / 100.0).sin()
+            };
+            series.push((i as f64, y));
+        }
+        let out = decimate_min_max(&series, 64);
+        assert!(out.len() <= 64, "budget respected: {}", out.len());
+        // Extrema survive decimation.
+        assert!(out.iter().any(|(_, y)| *y == 999.0));
+        assert!(out.iter().any(|(_, y)| *y == -999.0));
+        // x order preserved so the line never folds.
+        assert!(out.windows(2).all(|w| w[0].0 <= w[1].0));
+        // Small windows pass through untouched.
+        assert_eq!(decimate_min_max(&series[..10], 64), series[..10]);
     }
 }
