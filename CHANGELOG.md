@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - **Clearer metric charts:** each Braille column now plots only its min/max pair instead of every raw point, removing overdraw noise while preserving extrema. Parsed series and hyperparameter domains are cached instead of rebuilt every frame.
 - Pin rusqlite to 0.37.0 for burn 0.21 (`burn-dataset`) compatibility.
 - Replace chrono with jiff for trial timestamps ([chrono is soft-deprecated](https://github.com/chronotope/chrono/issues/1768)).
+- Bump term-wm from 0.10.15-alpha to 0.10.19-alpha.
 
 ## [0.3.0-alpha] - 2026-11-05
 
