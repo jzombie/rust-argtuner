@@ -1,5 +1,6 @@
 [package]
 name = "argtuner-sdk"
+authors.workspace = true
 version.workspace = true
 edition.workspace = true
 description = "Lightweight stdio SDK for argtuner: declare parameters once, parse argv, and emit ::ARGTUNER:: IPC protocol events from ML training workloads."
@@ -16,3 +17,6 @@ clap.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 toml_edit = { workspace = true, features = ["serde"] }
+
+[lints]
+workspace = true
