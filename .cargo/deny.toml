@@ -5,6 +5,17 @@ ignore = [
   # It is a build-time-only transitive dependency (rstml -> syn_derive) with no
   # upstream fix available, so it cannot be migrated away from.
   "RUSTSEC-2026-0173",
+  # chrono is soft-deprecated (RUSTSEC-2026-0543). It is no longer a direct
+  # dependency (we use jiff); it remains only transitively via
+  # term-wm -> term-logging -> file-rotate 0.8. file-rotate 0.9 already drops
+  # chrono, so this clears when term-wm updates.
+  "RUSTSEC-2026-0543",
+  # libsqlite3-sys bundles a vulnerable SQLite (RUSTSEC-2026-0459). We must stay
+  # on rusqlite 0.37.0 for burn 0.21 (burn-dataset) compatibility, so the fixed
+  # libsqlite3-sys 0.39 (rusqlite 0.41) is out of reach. The attack needs a
+  # crafted local DB + -wal pair from a less-trusted party; argtuner only opens
+  # databases it creates itself.
+  "RUSTSEC-2026-0459",
 ]
 
 [licenses]

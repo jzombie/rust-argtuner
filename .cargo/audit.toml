@@ -1,0 +1,7 @@
+[advisories]
+# libsqlite3-sys bundles a vulnerable SQLite (RUSTSEC-2026-0459). We must stay
+# on rusqlite 0.37.0 for burn 0.21 (burn-dataset) compatibility, so the fixed
+# libsqlite3-sys 0.39 (rusqlite 0.41) is out of reach. The attack needs a
+# crafted local DB + -wal pair from a less-trusted party; argtuner only opens
+# databases it creates itself.
+ignore = ["RUSTSEC-2026-0459"]
