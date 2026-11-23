@@ -1,6 +1,7 @@
 
 [package]
 name = "argtuner"
+authors.workspace = true
 version.workspace = true
 edition.workspace = true
 description.workspace = true
@@ -24,21 +25,24 @@ resolver = "2"
 
 [workspace.package]
 authors = ["Jeremy Harris <jeremy.harris@zenosmosis.com>"]
-version = "0.3.0-alpha"
+version = "0.3.1-alpha"
 edition = "2024"
 description = "Project-based command-template hyperparameter tuner CLI."
 repository = "https://github.com/jzombie/rust-argtuner"
 license = "MIT OR Apache-2.0"
 publish = true
 
+# Unused dependencies fail the build instead of warning.
+[workspace.lints.cargo]
+unused_workspace_dependencies = "deny"
+unused_dependencies = "deny"
+
 [workspace.dependencies]
 argmin = { version = "0.11", features = ["serde1"] }
 argmin-math = { version = "0.5.1", features = ["vec"] }
-argtuner = { path = ".", version = "0.3.0-alpha" }
-argtuner-common = { path = "crates/common", version = "0.3.0-alpha" }
-argtuner-derive = { path = "crates/argtuner-derive", version = "0.3.0-alpha" }
-argtuner-sdk = { path = "crates/argtuner-sdk", version = "0.3.0-alpha" }
-chrono = { version = "0.4.42", features = ["serde", "alloc"] }
+argtuner-common = { path = "crates/common", version = "0.3.1-alpha" }
+argtuner-derive = { path = "crates/argtuner-derive", version = "0.3.1-alpha" }
+argtuner-sdk = { path = "crates/argtuner-sdk", version = "0.3.1-alpha" }
 clap = "4.5.53"
 command-group = "5.0.1"
 crossterm = "0.29.0"
@@ -48,7 +52,8 @@ hostname = "0.4.2"
 ignore = "0.4.33"
 indicatif = "0.18.3"
 indoc = "2.0.7"
-jsonschema = { version = "0.58.6", default-features = false }
+jiff = { version = "1.0.2", default-features = false, features = ["std"] }
+jsonschema = { version = "0.60.2", default-features = false }
 libc = "0.2.176"
 line-ending = "1.5.1"
 portable-pty = "0.9.0"
@@ -56,8 +61,7 @@ proc-macro2 = "1.0.107"
 quote = "1.0.47"
 rand = "0.10.2"
 ratatui = "0.30.0"
-resvg = "0.45.1"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.37.0", features = ["bundled"] }
 schemars = { version = "1.2.2", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.148"
@@ -65,11 +69,11 @@ shell-words = "1.1.1"
 similar = "3.2.0"
 syn = { version = "3.0.3", features = ["full"] }
 tempfile = "3.10"
-term-wm = { version = "0.10.15-alpha", default-features = false }
-term-wm-console = "0.10.15-alpha"
-term-wm-core = "0.10.15-alpha"
-term-wm-render = "0.10.15-alpha"
-term-wm-ui-facade = "0.10.15-alpha"
+term-wm = { version = "0.10.19-alpha", default-features = false }
+term-wm-console = "0.10.19-alpha"
+term-wm-core = "0.10.19-alpha"
+term-wm-render = "0.10.19-alpha"
+term-wm-ui-facade = "0.10.19-alpha"
 thiserror = "2.0.17"
 toml = "1.1.4"
 toml_edit = { version = "0.25.13", features = ["serde"] }
@@ -86,13 +90,13 @@ default = ["cli"]
 cli = [
     "dep:argmin",
     "dep:argmin-math",
-    "dep:chrono",
     "dep:command-group",
     "dep:crossterm",
     "dep:csv",
     "dep:ctrlc",
     "dep:hostname",
     "dep:ignore",
+    "dep:jiff",
     "dep:libc",
     "dep:line-ending",
     "dep:portable-pty",
@@ -117,7 +121,6 @@ cli = [
 argmin = { workspace = true, optional = true }
 argmin-math = { workspace = true, features = ["vec"], optional = true }
 argtuner-common.workspace = true
-chrono = { workspace = true, features = ["serde", "alloc"], optional = true }
 clap = { workspace = true, features = ["derive"] }
 command-group = { workspace = true, optional = true }
 crossterm = { workspace = true, optional = true }
@@ -125,6 +128,7 @@ csv = { workspace = true, optional = true }
 ctrlc = { workspace = true, optional = true }
 hostname = { workspace = true, optional = true }
 ignore = { workspace = true, optional = true }
+jiff = { workspace = true, default-features = false, features = ["std"], optional = true }
 libc = { workspace = true, optional = true }
 line-ending = { workspace = true, optional = true }
 portable-pty = { workspace = true, optional = true }
@@ -143,8 +147,9 @@ term-wm-render = { workspace = true, optional = true }
 term-wm-ui-facade = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
-toml_edit = { workspace = true, features = ["serde"] }
 tracing = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"], optional = true }
 
 [dev-dependencies]
@@ -153,3 +158,6 @@ indicatif.workspace = true
 indoc.workspace = true
 jsonschema.workspace = true
 line-ending.workspace = true
+
+[lints]
+workspace = true

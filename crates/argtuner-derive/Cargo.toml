@@ -1,5 +1,6 @@
 [package]
 name = "argtuner-derive"
+authors.workspace = true
 version.workspace = true
 edition.workspace = true
 description = "Procedural macro for the argtuner SDK: generates a clap CLI, command template, and search space from a plain struct."
@@ -26,3 +27,6 @@ syn = { workspace = true, features = ["full"] }
 [dev-dependencies]
 argtuner-common = { path = "../common" }
 argtuner-sdk = { path = "../argtuner-sdk" }
+
+[lints]
+workspace = true

@@ -180,8 +180,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
-          cargo llvm-cov --workspace --all-features --summary-only > coverage-summary.txt
+          cargo llvm-cov --workspace --all-features --no-report
+          cargo llvm-cov report --lcov --output-path lcov.info
+          cargo llvm-cov report --summary-only > coverage-summary.txt
           cat coverage-summary.txt
 
       - name: Parse coverage summary

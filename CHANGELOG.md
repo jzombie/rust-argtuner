@@ -5,25 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/) and this project adheres to
 (or is loosely based on) Semantic Versioning.
 
+## [0.3.1-alpha] - 2026-11-23
+
+## Changes
+
+- Pin `rusqlite` to 0.37.0 for `burn` 0.21 (`burn-dataset`) compatibility (RUSTSEC-2026-0459 waived, see `.cargo/deny.toml`).
+- Replace `chrono` with `jiff` 1.0.2 for trial timestamps (adds `jiff-core`/`jiff-static`/`portable-atomic-util` transitively; [`chrono` is soft-deprecated](https://github.com/chronotope/chrono/issues/1768)).
+- Bump `term-wm` from 0.10.15-alpha to 0.10.19-alpha.
+- Bump `jsonschema` from 0.58.6 to 0.60.2
+- Bump `syn` from 3.0.8 to 3.0.9
+- Bump `libc` from 0.2.189 to 0.2.191
+- Bump `ignore` from 0.4.33 to 0.4.34
+- Bump `line-ending` from 1.5.1 to 1.6.0
+- Bump `url` from 2.5.8 to 2.5.9
+
+## Fixed
+
+- **`watch` TUI no longer burns CPU at idle:** the SQLite poll moved from a repeating scheduler task (which pinned 60fps redraws) to the palette-tick hook, so the loop sleeps until input or the next `--poll-ms`. The first load runs before the first paint, so panes show data immediately. Polls fetch only new rows, detect DB replacement, and follow `-wal` state; pushes are dirty-gated and `Arc`-shared, with live TCP steps reconciled in a separate buffer.
+- **Lower `watch` memory footprint:** field keys are interned (one shared copy across all rows instead of a heap string per field), in-memory step history is capped per trial (the DB keeps everything), and the charts render a prebuilt series instead of holding duplicate row maps — no more transient 2x clones on every poll.
+- **Clearer metric charts:** each Braille column now plots only its min/max pair instead of every raw point, removing overdraw noise while preserving extrema. Parsed series and hyperparameter domains are cached instead of rebuilt every frame.
+
 ## [0.3.0-alpha] - 2026-11-05
 
 ## Changes
 
 - **`resume-trial` command:** `argtuner resume-trial <project> <trial-id>` re-runs an interrupted trial in its existing artifact dir. Refuses completed trials, missing trials, and gone dirs.
-- Bump rusqlite from 0.37.0 to 0.40.2
-- Bump jsonschema from 0.57.0 to 0.58.6
-- Bump schemars from 1.2.2 to 1.2.3
-- Bump serde_json from 1.0.151 to 1.0.154
-- Bump indoc from 2.0.7 to 2.0.8
-- Bump pulldown-cmark from 0.13.4 to 0.13.6 (RUSTSEC-2026-0414, RUSTSEC-2026-0433 — both `ENABLE_WIKILINKS` parsing DoS, fixed upstream in 0.13.5/0.13.6)
-- Bump chacha20 from 0.10.1 to 0.10.2 (yanked release)
-- Bump clipboard-win from 5.4.1 to 5.4.3 (yanked release)
+- Bump `rusqlite` from 0.37.0 to 0.40.2
+- Bump `jsonschema` from 0.57.0 to 0.58.6
+- Bump `schemars` from 1.2.2 to 1.2.3
+- Bump `serde_json` from 1.0.151 to 1.0.154
+- Bump `indoc` from 2.0.7 to 2.0.8
+- Bump `pulldown-cmark` from 0.13.4 to 0.13.6 (RUSTSEC-2026-0414, RUSTSEC-2026-0433 — both `ENABLE_WIKILINKS` parsing DoS, fixed upstream in 0.13.5/0.13.6)
+- Bump `chacha20` from 0.10.1 to 0.10.2 (yanked release)
+- Bump `clipboard-win` from 5.4.1 to 5.4.3 (yanked release)
 
 ## [0.2.0-alpha] - 2026-10-13
 
 ## Changes
 
-- Bump term-wm to v0.10.15-alpha (`term-wm`, `term-wm-console`, `term-wm-core`, `term-wm-render`, `term-wm-ui-facade`)
+- Bump `term-wm` to v0.10.15-alpha (`term-wm`, `term-wm-console`, `term-wm-core`, `term-wm-render`, `term-wm-ui-facade`)
 - **Echo fits the live viewport:** echoed fragments carrying the erase sequence (transient `\x1b[2K` progress-bar redraws) are cut to the live terminal width, re-queried per write so resizes apply immediately. Without this, an over-wide redraw wraps to two rows and the next in-place erase clears only one, eating line heads. One-shot `\r` records and plain `\n` lines pass whole, as does everything when piped/logged. Display-only: stored output and the live-parse callback keep every byte, with no width contracts on any platform. Width-aware children truncate bars to it instead of emitting wrap-prone lines.
 - **Split multibyte decoding:** the stream reader decoded each read with `from_utf8_lossy`, emitting U+FFFD for any multibyte sequence straddling two reads — corrupting non-ASCII bar text and any split multibyte inside protocol JSON (a dropped event). Reads now decode incrementally, retaining truncated trailing sequences for the next read.
 - **Promotion lineage in `watch`:** trial rows now carry their config/rung (`cfg=c r=r/b`), the details pane shows the full promotion chain (`t3(r0, ok) → t5(r1, ok) → t8(r2, error)`, selected trial marked), and metric charts chain same-config trials up to the selected rung into one continuous curve (arrival-position x, never folded). Previously every rung rendered as a disconnected trial restarting at x=0, making halving progress unreadable.
@@ -31,21 +51,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - **Robust output handling:** a line carrying the protocol prefix but failing JSON parse (a log line mentioning the prefix, PTY-interleaved stream garbage) is skipped with a stderr warning instead of failing the whole trial — a garbage-only trial still errors loudly at metric extraction. The stdout reassembly buffer is capped at 1MB with a warning (genuine event lines are single short prints), and the eager-echo hold-back is char-boundary safe.
 - **Protocol lines no longer echo to the terminal:** `RunnerOptions.suppress_protocol_echo` (enabled for trial runs) keeps `::ARGTUNER::` lines — including ones glued onto `\r` progress-bar fragments — out of the parent terminal while leaving the accumulated stdout (and post-exit parsing) intact. Human-readable fragments glued before a protocol payload are still echoed so progress bars keep animating, and `\r`-only output (bars during long newline-free stretches such as large grad-accum windows or eval phases) is echoed eagerly rather than buffered to the next newline. A split protocol prefix across read chunks is never broken: trailing bytes are held back until the line completes.
 - **Charts draw live step curves:** the Charts pane now renders per-step rows for the selected trial (falling back to epoch rows), fed live from the step publisher and the SQLite poll with replace-on-poll accumulation (no duplicates, no unbounded growth). Every numeric `metric.*` field gets its own chart, plotted against arrival position — no field inference, no name lists, nothing curated.
-- Bump jsonschema from 0.49.9 to 0.57.0
-- Bump clap from 4.6.6 to 4.6.7 (`clap`, `clap_builder`, `clap_derive`)
-- Bump toml from 1.1.4+spec-1.1.0 to 1.1.6+spec-1.1.0
-- Bump toml_edit from 0.25.13+spec-1.1.0 to 0.25.15+spec-1.1.0
-- Bump thiserror from 2.0.20 to 2.0.21
-- Bump syn from 3.0.3 to 3.0.6
-- Bump rand from 0.10.2 to 0.10.3
-- Bump similar from 2.7.0 to 3.2.0
+- Bump `jsonschema` from 0.49.9 to 0.57.0
+- Bump `clap` from 4.6.6 to 4.6.7 (`clap`, `clap_builder`, `clap_derive`)
+- Bump `toml` from 1.1.4+spec-1.1.0 to 1.1.6+spec-1.1.0
+- Bump `toml_edit` from 0.25.13+spec-1.1.0 to 0.25.15+spec-1.1.0
+- Bump `thiserror` from 2.0.20 to 2.0.21
+- Bump `syn` from 3.0.3 to 3.0.6
+- Bump `rand` from 0.10.2 to 0.10.3
+- Bump `similar` from 2.7.0 to 3.2.0
 
 ## [0.1.4-alpha] - 2026-09-03
 
 ## Changes
 
-- **`ParamRole::Cli` fields can now be required:** removed the compile-time constraint that `Cli`-role fields must be `Option<T>` or carry a `default`. Required `Cli` fields (non-`Option`, no default) are enforced by clap at parse time. `render_template_command` now includes `Cli` fields with defaults in the tuner template; required fields without defaults are excluded (argtuner cannot inject them).
-- Bump term-wm to v0.10.1-alpha
+- **`ParamRole::Cli` fields can now be required:** removed the compile-time constraint that `Cli`-role fields must be `Option<T>` or carry a `default`. Required `Cli` fields (non-`Option`, no default) are enforced by `clap` at parse time. `render_template_command` now includes `Cli` fields with defaults in the tuner template; required fields without defaults are excluded (argtuner cannot inject them).
+- Bump `term-wm` to v0.10.1-alpha
 
 ## [0.1.3-alpha] - 2026-08-15
 
@@ -57,7 +77,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 
 ### Changed
 
-- **`default` on a `Fixed` `Option<T>` field is rejected at compile time:** clap would always yield `Some(default)`, making the `Option` meaningless; the derive now emits a `syn::Error` telling the user to omit the default or drop the `Option`.
+- **`default` on a `Fixed` `Option<T>` field is rejected at compile time:** `clap` would always yield `Some(default)`, making the `Option` meaningless; the derive now emits a `syn::Error` telling the user to omit the default or drop the `Option`.
 - **`#[tuner_params]` parameters now use an explicit `role` (breaking):** each
   field declares who supplies its value via `#[param(role = ...)]` instead of
   relying on type- and bounds-inference. `role = ParamRole::Fixed` is the
@@ -95,7 +115,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - **`argtuner-common` — shared protocol types:** the canonical `TalkbackMessage` wire types, event names, and constants shared by the SDK and the tuner, plus the self-describing talkback protocol JSON Schema.
 - **Conditional hyperparameters (`#[param(parent = "...", parent_values = [...])]`):** a parameter is active only when its parent samples an allowed value. `validate_specs` enforces the dependency DAG (parent exists, declared before its child, yields a finite value set, no permanently unreachable children); sampling and rendering omit inactive parameters (no value, no `hp.*` field); and `CommandTemplate::strip_inactive_flags` removes both `--flag {value}` and `--flag={value}` segments from the rendered command. The random sampler's `DiscreteConfigPool` enumerates only parent-valid combinations so duplicate detection stays correct.
 - **Multi-objective optimization (Pareto frontier):** declare `[[project.objectives]]` (name / goal / primary) to optimize several objectives at once. A new Pareto engine (`src/sampler/pareto.rs`: `fast_nondominated_sort`, zero-variance-guarded `crowding_distance`, capacity-bounded `ParetoFront`) drives `run_pareto`; per-objective scores persist as `score.<name>` so the frontier is reconstructable on resume/rebuild; `argtuner run` prints the end-of-run frontier table. PSO remains single-objective (configs with objectives reject `Sampler::Pso`).
-- **Process-tree hygiene + per-trial timeouts:** piped trials spawn as a process group (`command-group`) and PTY trials rely on portable-pty's `setsid()`; aborting, Ctrl-C, or a timeout kills the whole group (`kill(-pgid, SIGKILL)`) with a reap-synchronized poll loop so a recycled PGID is never signaled. New `trial_timeout_s` on `[scheduler]` marks timed-out trials `error` ("timed out after Ns").
+- **Process-tree hygiene + per-trial timeouts:** piped trials spawn as a process group (`command-group`) and PTY trials rely on `portable-pty`'s `setsid()`; aborting, Ctrl-C, or a timeout kills the whole group (`kill(-pgid, SIGKILL)`) with a reap-synchronized poll loop so a recycled PGID is never signaled. New `trial_timeout_s` on `[scheduler]` marks timed-out trials `error` ("timed out after Ns").
 - **Cross-platform self-invoking subprocess test harness:** `argtuner::test_support::self_invoking_command` re-executes the test binary (libtest `--exact` filter + role env vars) instead of `sh`/`sleep`, and `assert_no_longer_running` proves group-kill via a frozen heartbeat file — so the process-hygiene tests run on Windows CI too.
 - **Watch TUI:** `argtuner watch` gained a full dashboard — seven panes (Trials, Charts, Trial Details, Hyperparameters, Metrics, Project Info, Pareto Frontier), live `model.step_end` streaming via `StepSubscriber`, focused/zoomed metric curves, a hyperparameter-space mode, drag-select-copy in the text panes, and adaptive "Pareto Frontier"/"Best Trials" titles with a live run-status header.
 - **`inspect` and `find` subcommands:** `argtuner inspect <project>` renders a project/space inspection (including conditional-parameter dependency lines), and `argtuner find [DIR]` recursively locates argtuner projects.
@@ -109,7 +129,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - **`argtuner` no longer re-exports the SDK (clean break):** the CLI crate is now just the tuner; `argtuner::init` / `argtuner::emit_*` users migrate to `argtuner-sdk`. The deprecated `argtuner-talkback` / `argtuner-talkback-derive` crates now re-export from `argtuner-sdk`.
 - **`#[talkback_args]` expansion targets `argtuner_sdk`:** the derive now generates `::argtuner_sdk::` paths so SDK-only consumers compile without the CLI crate.
 - **CLI restructured into `src/cli/`:** the binary is a thin shim; `src/cli/mod.rs` dispatches subcommands and `src/cli/tui/mod.rs` hosts the Watch TUI (moved from `src/tui/`).
-- **term-wm bumped to 0.9.25-alpha:** the Watch TUI uses the `impl_view_component!` `child:` delegation form — the component lifecycle forwards to a per-frame `view()`, while `desired_height`/selection/hitbox delegate to the window's child field — so the copy-on-release pipeline reads selection off the focused window root.
+- **`term-wm` bumped to 0.9.25-alpha:** the Watch TUI uses the `impl_view_component!` `child:` delegation form — the component lifecycle forwards to a per-frame `view()`, while `desired_height`/selection/hitbox delegate to the window's child field — so the copy-on-release pipeline reads selection off the focused window root.
 - **Removed `examples/guitar_tuning`** and the old `bindings/` tree in favor of the `crates/` layout.
 - **README overhauled** to cover the SDK, conditional parameters, multi-objective runs, and the Watch TUI.
 

@@ -6,13 +6,12 @@ use std::process::Command;
 fn binding_version_mismatch_exits_with_message() {
     let dir = tempfile::tempdir().expect("tempdir");
     let project_root = dir.path();
-    let exe = std::env::current_exe().expect("current exe");
-    let target_dir = exe.parent().and_then(|p| p.parent()).expect("target dir");
-    let argtuner_bin = target_dir.join(if cfg!(windows) {
-        "argtuner.exe"
-    } else {
-        "argtuner"
-    });
+    // NOTE: the target dir is not derived from `current_exe()`: newer
+    // toolchains place test binaries outside `target/debug/deps/` (e.g. under
+    // `target/debug/build/<pkg>/<hash>/out/`), so that layout assumption is
+    // stale. `CARGO_BIN_EXE_argtuner` is set by Cargo for same-package
+    // binaries; `bin_path` falls back to `target/debug/argtuner`.
+    let argtuner_bin = argtuner::test_support::bin_path("argtuner");
     let emit_bin = argtuner::test_support::bin_path("mock_emit_binding_version");
     assert!(
         argtuner_bin.exists(),
