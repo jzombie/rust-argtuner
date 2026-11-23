@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - **Lower `watch` memory footprint:** field keys are interned (one shared copy across all rows instead of a heap string per field), in-memory step history is capped per trial (the DB keeps everything), and the charts render a prebuilt series instead of holding duplicate row maps — no more transient 2x clones on every poll.
 - **Clearer metric charts:** each Braille column now plots only its min/max pair instead of every raw point, removing overdraw noise while preserving extrema. Parsed series and hyperparameter domains are cached instead of rebuilt every frame.
 - Pin rusqlite to 0.37.0 for burn 0.21 (`burn-dataset`) compatibility.
+- Replace chrono with jiff for trial timestamps ([chrono is soft-deprecated](https://github.com/chronotope/chrono/issues/1768)).
 
 ## [0.3.0-alpha] - 2026-11-05
 

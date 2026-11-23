@@ -15,7 +15,7 @@ use crate::constants::{
     TRIAL_PREFIX,
 };
 use crate::trial::db::TrialDb;
-use chrono::Utc;
+use jiff::Timestamp;
 use line_ending::LineEnding;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -505,7 +505,7 @@ fn diff_lines(old: &str, new: &str) -> String {
 fn record_with_time(record: &TrialRecord) -> TrialRecord {
     let mut fields = record.fields.clone();
     if !fields.contains_key(FIELD_TRIAL_TIME) {
-        fields.insert(FIELD_TRIAL_TIME.to_string(), Utc::now().to_rfc3339());
+        fields.insert(FIELD_TRIAL_TIME.to_string(), Timestamp::now().to_string());
     }
     TrialRecord {
         trial_id: record.trial_id,
@@ -533,7 +533,7 @@ fn record_to_map(record: &TrialRecord) -> BTreeMap<String, String> {
     }
     // Insert timestamp if not already present in fields. Use RFC3339 UTC time.
     if !record.fields.contains_key(FIELD_TRIAL_TIME) {
-        map.insert(FIELD_TRIAL_TIME.to_string(), Utc::now().to_rfc3339());
+        map.insert(FIELD_TRIAL_TIME.to_string(), Timestamp::now().to_string());
     }
     for (key, value) in record.fields.iter() {
         map.insert(key.clone(), value.clone());
