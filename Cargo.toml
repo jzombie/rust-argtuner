@@ -32,9 +32,10 @@ repository = "https://github.com/jzombie/rust-argtuner"
 license = "MIT OR Apache-2.0"
 publish = true
 
-# Unused workspace dependencies fail the build instead of warning.
+# Unused dependencies fail the build instead of warning.
 [workspace.lints.cargo]
 unused_workspace_dependencies = "deny"
+unused_dependencies = "deny"
 
 [workspace.dependencies]
 argmin = { version = "0.11", features = ["serde1"] }
