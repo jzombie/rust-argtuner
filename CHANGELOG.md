@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - Pin `rusqlite` to 0.37.0 for `burn` 0.21 (`burn-dataset`) compatibility.
 - Replace `chrono` with `jiff` 1.0.2 for trial timestamps (adds `jiff-core`/`jiff-static`/`portable-atomic-util` transitively; [`chrono` is soft-deprecated](https://github.com/chronotope/chrono/issues/1768)).
 - Bump `term-wm` from 0.10.15-alpha to 0.10.19-alpha.
+- Bump `jsonschema` from 0.58.6 to 0.60.2
+- Bump `syn` from 3.0.8 to 3.0.9
+- Bump `libc` from 0.2.189 to 0.2.191
 
 ## [0.3.0-alpha] - 2026-11-05
 
